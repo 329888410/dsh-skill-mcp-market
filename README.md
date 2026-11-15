@@ -6,7 +6,8 @@ DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装
 - 设置文件：`~/.dsh/market/settings.json`（可用 `market_set_paths` 改）
 - 默认技能目录：`~/.dsh/market/skills`；默认 MCP 目录：`~/.dsh/market/mcp`
 - 左侧面板：**「SKILL技能&MCP连接器」**
-- 「加载更多」按钮在**当前列表最后一行的正下方居中**，SKILL 与 MCP 都显示 `加载更多（n/m）`，到底后变成 `已到最后一页（n/m）`。按钮是**真翻页**：每个源都有自己的分页（服务端 `page`，或一次性取全量目录后本地切片），8 个技能源合计约 90 万条可翻。
+- 分页导航：上一页/下一页 + 当前页前后各 5 页页码（初始显示 1–10）+ 「跳至」输入框 + 每页条数选择器（12/24/48）。
+  总页数未知的源（官方注册表按 cursor 翻页）退化为「上一页 / 页码窗口 / 下一页」，状态文案显示「共约 N 个连接器 · 第 X 页（可继续加载）」。
 - 「已安装」标签两个区块（已装技能 / 已装 MCP）标题旁各加一个「打开目录」按钮
 - 安装技能后**立即出现在对话框 `/` 浮窗里**（junction 注册到 `$AGENTS_HOME/skills/`）。
 - skills.sh 卡片描述很简单的原因：上游目录/搜索 API **不携带描述字段**（只返回 `id/source/skillId/name/installs`），
@@ -16,9 +17,15 @@ DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装
   后台再刷新；不再每次切源都白屏重查。
 - 「已安装」标签的技能卡片和 MCP 卡片把「详情/编辑」按钮改成了「**打开文件夹**」：点了直接在资源管理器里定位到该技能 / MCP 定义所在目录，可查看 / 编辑内容（保存即生效，无需重启 DSH）。
 - 「已安装」标签顶部加一个**搜索框**，可按关键词过滤已安装的技能 / MCP（名称、描述）；清空后恢复完整列表。
-- 「已安装」标签现在同时列出 **DSH 内置技能**（`$AGENTS_HOME/skills/`）+ market 安装的技能（`settings.skillDirs`）；MCP 仍只列出 market 安装的。区块标题旁会显示「含 DSH 内置 N 个目录」。：插件会往 DSH 原生扫描路径 `$AGENTS_HOME/skills/` 写一份 junction（Windows）/ symlink（其它平台），指向技能实际安装位置；DSH 的"技能目录"扫描会把它列进去，`/` 浮窗随之更新，**无需重启 DSH**。卸载时不自动清理这份 junction（避免误删用户手工放置的）。
+- 「已安装」标签现在同时列出 **DSH 内置技能**（`$AGENTS_HOME/skills/`）+ market 安装的技能（`settings.skillDirs`）；MCP 仍只列出 market 安装的。区块标题旁会显示「含 DSH 内置 N 个目录」。
+  插件会往 DSH 原生扫描路径 `$AGENTS_HOME/skills/` 写一份 junction（Windows）/ symlink（其它平台），指向技能实际安装位置；
+  DSH 的「技能目录」扫描会把它列进去，`/` 浮窗随之更新，**无需重启 DSH**。
+  卸载时不自动清理这份 junction（避免误删用户手工放置的），但 `skill_market_uninstall` 会额外扫描 `$AGENTS_HOME/skills/` 并移除对应条目。
 
-- 「详情/编辑」改为**全屏模态**：半透明遮罩 + 居中 560px 卡片，不再在列表上方插入；右上角「关闭」按钮，或点遮罩外区域关闭；「保存」/「保存并重连」放在右下角。：点了直接在资源管理器里看 / 改（保存即生效，无需重启 DSH）；两个目录都还没配置时提示"还没有配置 … 目录"。
+- 详情面板：`detailUrlFor` 对 `skills.sh` / `clawhub` / `browse.sh` / `lobehub` 返回空串（不设详情按钮），
+  其余源用 `homepage` 或 `upstreamUrl`。`frame.check` 探测目标页是否允许嵌入（`x-frame-options` / CSP `frame-ancestors`），
+  不允许时显示友好提示面板（含「复制 URL」「在浏览器中打开」按钮），不显示空白 iframe。
+  可嵌入时在 iframe 上方加一条 URL 工具条（复制 URL + 在浏览器中打开）。
 - trusttools 技能市场：该 API 固定返回 10 行/页（`pageSize` 参数被忽略），面板默认要 24 行 → 自动拼 3 页；搜索词命中后走 10 分钟缓存，不重复打上游。
 
 ## 截图
@@ -27,7 +34,7 @@ DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装
 
 ### 技能市场
 
-顶部按来源切换（`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `modelscope`），卡片上直接「预览 / 安装」：
+顶部按来源切换（`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub` / `skillhub` / `modelscope`），卡片上直接「预览 / 安装」：
 
 ![技能市场：来源筛选与卡片](docs/screenshots/panel-skills.png)
 
@@ -64,7 +71,7 @@ dsh plugin --profile desktop add dsh-skill-mcp-market
 ```json
 {
   "dependencies": {
-    "dsh-skill-mcp-market": "^0.3.0"
+    "dsh-skill-mcp-market": "^0.5.42"
   },
   "dsh": {
     "profile": {
@@ -89,12 +96,12 @@ dsh plugin --profile desktop add dsh-skill-mcp-market
 
 ```yaml
 - insert:
-    - id: dsh-skill-mcp-market
-      name: dsh-skill-mcp-market
-      config:
-        skillDirs: []
-        mcpDirs: []
-        shippedRoot: ""
+  - id: dsh-skill-mcp-market
+    name: dsh-skill-mcp-market
+    config:
+      skillDirs: []
+      mcpDirs: []
+      shippedRoot: ""
 ```
 
 用了手写 insert 的话，卸载前先把它删掉（并确认 `dsh.profile.bundles` 里没有同名包），否则会看到上面的报错。
@@ -119,13 +126,12 @@ npm i dsh-skill-mcp-market      # 之后仍需把包名加入 dsh.profile.bundle
 ### 方式四：固定版本 / 多 profile / 本地开发
 
 ```bash
-dsh plugin --profile desktop add dsh-skill-mcp-market@0.3.0            # 固定版本
-dsh plugin --profile desktop why dsh-skill-mcp-market                  # 看装的哪个版本、谁引入的
-dsh plugin --profile desktop add link:/path/to/dsh-market                       # 本地开发（换成你的仓库路径）
+dsh plugin --profile desktop add dsh-skill-mcp-market@0.5.42          # 固定版本
+dsh plugin --profile desktop why dsh-skill-mcp-market                 # 看装的哪个版本、谁引入的
+dsh plugin --profile desktop add link:/path/to/dsh-market             # 本地开发（换成你的仓库路径）
 ```
 
 `link:` 情况下 `bundles` 里仍写包名；改完源码用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次即可重挂（见「开发」）。同一个包可以装进多个 profile，各自独立配置。
-
 
 ### 安装/升级卡住或报 EPERM 怎么办
 
@@ -161,7 +167,7 @@ node -e "console.log(require('C:/Users/<你>/.dsh/profiles/desktop/node_modules/
 ### 安装后确认
 
 1. 左侧菜单出现 **「SKILL技能&MCP连接器」**；
-2. 「技能市场」「MCP 连接器」两个页签都能出卡片，顶部来源筛选可用：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `modelscope`；列表底部「加载更多」能翻到新条目；
+2. 「技能市场」「MCP 连接器」两个页签都能出卡片，顶部来源筛选可用：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub` / `skillhub` / `modelscope`；MCP 页签可按 `registry` / `lobehub` 切换；列表底部分页导航可翻到新条目；
 3. 让模型调 `market_get_settings`，应返回两个目录、provider 挂载状态、官方包解析结果、可用来源；
 4. 12 个 `market_*` / `skill_market_*` / `mcp_market_*` 工具都在。
 
@@ -216,11 +222,11 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 |---|---|
 | `market_get_settings` | 看两个目录、provider 挂载状态、官方包解析结果、可用来源 |
 | `market_set_paths` | 改技能/MCP 目录（支持 `~`、`$DSH_HOME`、`%ENV%`），即时重挂 provider 与 MCP |
-| `skill_market_search` | 搜技能（全部实时源）：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `modelscope`，`all` 聚合；支持 `page` 翻页 |
-| `skill_market_install` | 装技能：`github`（可带 `@ref`）/ `skills.sh`（页面 URL 或裸 `owner/repo`）/ `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `url` / `local` / `zip` |
+| `skill_market_search` | 搜技能（全部实时源）：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub` / `skillhub` / `modelscope`，`all` 聚合；支持 `page` 翻页 |
+| `skill_market_install` | 装技能：`github`（可带 `@ref`）/ `skills.sh`（页面 URL 或裸 `owner/repo`，走 `npx -y skills add`）/ `clawhub`（`npx -y clawhub install --dir`）/ `skillsmp`（GitHub 直下）/ `trusttools`（`npx -y trusttools add -g`）/ `browse.sh`（`npx -y browse skills add`）/ `lobehub`（`npx -y @lobehub/market-cli skills install`）/ `skillhub`（`npx -y skillhub install --target-dir`）/ `modelscope`（官方 ZIP 端点 + GitHub 直下回退）/ `url` / `local` / `zip` |
 | `skill_market_list` | 列已装技能（含 `SKILL.md` 路径） |
-| `skill_market_uninstall` | 卸载（移到 `market/trash/`） |
-| `mcp_market_search` | 搜 MCP：`source: "registry"`（官方注册表，默认）或 `"lobehub"`（LobeHub 市场）；可选 `category` / `sort`（`installCount`·`ratingAverage`·`createdAt`）/ `page`；目录不可达时返回降级列表与 `catalogHint` |
+| `skill_market_uninstall` | 卸载（移到 `market/trash/`），同时扫描 `$AGENTS_HOME/skills/` 回退目录并移除对应 junction/文件 |
+| `mcp_market_search` | 搜 MCP：`source: "registry"`（官方注册表，默认，cursor 分页 + `estimatedTotal`）或 `"lobehub"`（LobeHub 市场，服务端 `page` 共 12 万+ 条）；可选 `category` / `sort`（lobehub 支持 `installCount`·`ratingAverage`·`createdAt`）/ `page` / `size`；目录不可达时返回降级列表与 `catalogHint` |
 | `mcp_market_install` | 装 MCP：`slug`（官方注册表名称，如 `io.github.Async23/chrome-devtools-mcp`）/ 手工定义 / `importJson`（Claude·Cursor 的 `mcpServers`），装完立即探活 |
 | `mcp_market_list` | 列已装 MCP（transport、enabled、mounted、已发布工具名） |
 | `mcp_market_set_enabled` | 启停（断开即撤销工具，启用即重连） |
@@ -231,28 +237,40 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 
 | 源 | 说明 |
 |---|---|
-| **MCP 官方注册表** | `registry.modelcontextprotocol.io`，免费、实时的 MCP 目录，自带真实启动方式（npm / streamable-http） |
+| **MCP 官方注册表** | `registry.modelcontextprotocol.io`，免费、实时的 MCP 目录，自带真实启动方式（npm / streamable-http）。cursor 分页，无总页数，面板显示「共约 N 个」 |
 | **LobeHub MCP 市场** | `market.lobehub.com`，第二个 MCP 市场（面板里单独一档）。搜索走官方 `@lobehub/market-cli`，首次自动注册客户端；卡片带作者/分类/安装次数；安装取其公开 manifest 的真实启动方式 |
-| `skills.sh` | 技能索引，支持页面 URL 与裸 `owner/repo`；搜索接口要求 ≥2 字符，空搜索回退到首页推荐 |
-| `skillsmp` | 带反爬（Cloudflare），走 python→curl→fetch 三级取数 |
-| `browse.sh` | 启动预热 + 内存缓存，冷启动超时不缓存空结果 |
-| `trusttools` | `ai.trusttools.cn/api/skills/search`（POST）；该站会丢弃本进程的 TLS 握手，走 python → curl → fetch 三级通道 |
-| `clawhub` / `lobehub-agent` / `skillhub` | 其余实时技能源 |
-| `modelscope` | `modelscope.cn/api/v1/dolphin/skills`（PUT，`PageNumber/PageSize`，约 8.8 万条） |
+| `skills.sh` | 技能索引，支持页面 URL 与裸 `owner/repo`；搜索接口要求 ≥2 字符，空搜索回退到首页推荐。安装走 `npx -y skills add` CLI |
+| `skillsmp` | 带反爬（Cloudflare），走 python→curl→fetch 三级取数；安装走 GitHub 直下（API 的 `githubUrl` 字段） |
+| `browse.sh` | 启动预热 + 内存缓存，冷启动超时不缓存空结果。安装走 `npx -y browse skills add` CLI |
+| `trusttools` | `ai.trusttools.cn/api/skills/search`（POST）；该站会丢弃本进程的 TLS 握手，走 python → curl → fetch 三级通道。安装走 `npx -y trusttools add -g` CLI |
+| `clawhub` / `lobehub` / `skillhub` | 其余实时技能源。`clawhub` 走 `npx -y clawhub install --dir`；`lobehub` 走 `npx -y @lobehub/market-cli skills install`；`skillhub` 走 `npx -y skillhub install --target-dir` |
+| `modelscope` | `modelscope.cn/api/v1/dolphin/skills`（PUT，`PageNumber/PageSize`，约 8.8 万条）。安装走官方 ZIP 端点 `modelscope.cn/skills/@owner/name/archive/zip/master`，GitHub 直下回退 |
+| `github` | 直接给仓库或 `@ref`；jsDelivr 列树失败时回退 GitHub contents API 与 codeload tarball |
 
 **翻页**：每个源都实现了真正的 `page`——有服务端分页的直接传页（`skillsmp` / `trusttools` /
 `skillhub` / `modelscope`），没有的把整份目录抓一次缓存下来再本地切片（`skills.sh` 走
 `sitemap-skills-*.xml` 约 2 万条、`clawhub` 顺 `nextCursor` 累积、`browse.sh` 约 480 条、
-`lobehub-agent` 约 505 个）。所以第 2 页起拿到的一定是新条目。
+`lobehub` 走 `@lobehub/market-cli skills search --page` 服务端分页）。所以第 2 页起拿到的一定是新条目。
 
-MCP 两个市场同样能翻页：`lobehub` 是服务端 `page`（共 12 万个连接器），官方注册表是 cursor 分页
-（按「版本行」翻页，所以先累积去重目录再切片，每页 24 条）；注册表没有总页数，按钮显示
-`加载更多（第 n 页）`。
+MCP 两个市场同样能翻页：`lobehub` 是服务端 `page`（共 12 万+ 个连接器，每页 40 条），
+官方注册表是 cursor 分页（按「版本行」翻页，先累积去重目录再切片，每页默认 24 条）；
+注册表没有总页数，面板显示「共约 N 个连接器 · 第 X 页（可继续加载）」。
 
-**分页导航（0.5.15）**：面板底部不再是单个「加载更多」按钮，而是上一页/下一页 + 页码
-（中间省略号折叠，点「…」向后跳 5 页）+ 每页条数选择器（12/24/48），两个页签统一；
-总页数未知的源（官方注册表）退化为「上一页 / 第 n 页 / 下一页」。
-| `github` | 直接给仓库或 `@ref`；jsDelivr 列树失败时回退 GitHub contents API 与 codeload tarball |
+**分页导航**：面板底部分页导航器为 上一页/下一页 + 当前页前后各 5 页页码（初始显示 1–10）+ 「跳至」输入框 + 每页条数选择器（12/24/48），两个页签统一；
+总页数未知的源（官方注册表）页码窗口不钳制上界，跳至输入框无 `max` 限制。
+
+**技能安装方式**：各源优先走官方 CLI（无需认证、`npx -y` 自动下载），安装到 `<目标目录>/<技能名>/`：
+
+| 源 | CLI 命令 | 回退 |
+|---|---|---|
+| `skills.sh` | `npx -y skills add <ref> -g -y` | GitHub 直下 |
+| `clawhub` | `npx -y clawhub install <ref> --dir <target> --no-input` | — |
+| `lobehub` | `npx -y @lobehub/market-cli skills install <identifier> --dir <target>` | — |
+| `skillhub` | `npx -y skillhub install <ref> --target-dir <target>` | GitHub 直下 |
+| `browse.sh` | `npx -y browse skills add <ref>` | — |
+| `trusttools` | `npx -y trusttools add <ref> -g` | — |
+| `modelscope` | 官方 ZIP 端点 fetch | GitHub 直下 |
+| `github` / `url` / `local` / `zip` | 直下 / 复制 | — |
 
 ## 目录结构
 
@@ -268,13 +286,19 @@ dsh-skill-mcp-market/
 │  ├─ http.js            # python→curl→fetch 三级取数（绕 TLS 指纹 / 系统代理）
 │  ├─ frontmatter.js     # SKILL.md frontmatter 解析（无依赖）
 │  ├─ github.js          # jsDelivr 列树 + raw/CDN 取文件，失败回退 contents API / tarball
-│  ├─ extra-sources.js   # skillsmp 等额外源
+│  ├─ extra-sources.js   # skillsmp / modelscope / lobehub 等额外源
 │  ├─ mcp-registry.js    # MCP 官方注册表适配 + 内置兜底条目
 │  ├─ skillhub.js        # SkillHub 公共 API 适配
 │  ├─ skills.js          # 搜索聚合 / 安装 / 列出 / 卸载
 │  ├─ sources.js         # 各源适配与缓存
 │  ├─ mcp.js             # MCP 定义扫描、动态挂载、启停、探活
-│  └─ ...
+│  ├─ cli-install.js     # 各源官方 CLI 安装（npx -y）
+│  ├─ lobehub-market.js  # LobeHub MCP 市场 CLI 适配
+│  ├─ zip.js             # ZIP 解压 / 读入
+│  ├─ env.js             # 环境变量占位解析
+│  ├─ verify.js          # 安装结果校验
+│  ├─ enrich.js          # 描述补全
+│  └─ provider.js        # 技能 provider 挂载
 ├─ locale/{en,zh}.json   # 插件管理器里的标题与描述
 └─ icon.svg
 ```
@@ -287,7 +311,7 @@ dsh-skill-mcp-market/
 - 市场不伪造下载量/热度：上游没给就显示 0。
 - 两个 MCP 市场**各自独立**，面板一次只看一个（和技能页签一样，不做合并）：官方注册表偏结构化启动方式，LobeHub 偏卡片信息与分类。
 - LobeHub 需要注册一次市场客户端（`npx -y @lobehub/market-cli register --base-url https://market.lobehub.com --name "DSH Market" --source dsh`），插件首次使用会自动完成。
-- LobeHub 页签支持分类、排序、分页（每页 40 条）；官方注册表页签支持按名称排序，分页由上游游标控制，面板暂只展示第一页。
+- LobeHub 页签支持分类、排序（安装最多/评分最高/最近创建）、分页（每页 40 条）；官方注册表页签支持按名称排序，cursor 分页，面板显示「共约 N 个」。
 - MCP 目录不可达时按「上次缓存 → 内置条目」降级，并在面板上提示可直接按名称安装。
 
 ## 开发

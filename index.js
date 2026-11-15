@@ -688,13 +688,13 @@ export async function apply(ctx, config = {}) {
   defineTool(ctx, {
     name: "skill_market_install",
     description:
-      "Install a SKILL skill into the configured skill directory and make it live immediately (no restart). `github` takes `owner/repo` or `owner/repo@ref` or `owner/repo/sub/path` or a GitHub URL; `skills.sh` takes either a skills.sh page URL or a bare `owner/repo`; `url` takes a raw SKILL.md URL; `local` copies a directory from disk; `skillhub` takes an upstream URL.",
+      "Install a SKILL skill into the configured skill directory and make it live immediately (no restart). `github` takes `owner/repo` or `owner/repo@ref` or `owner/repo/sub/path` or a GitHub URL; `skills.sh` takes either a skills.sh page URL or a bare `owner/repo`; `url` takes a raw SKILL.md URL; `local` copies a directory from disk; `skillhub` takes an upstream URL. Other sources (`clawhub`, `trusttools`, `browse.sh`, `lobehub`, `modelscope`) use their official CLI or ZIP endpoints — see README for details.",
     parameters: {
       type: "object",
       properties: {
         source: {
           type: "string",
-          enum: ["github", "skills.sh", "clawhub", "skillsmp", "trusttools", "browse.sh", "lobehub", "skillhub", "url", "local", "zip"],
+          enum: ["github", "skills.sh", "clawhub", "skillsmp", "trusttools", "browse.sh", "lobehub", "skillhub", "modelscope", "url", "local", "zip"],
           description: "Market source; defaults to github.",
         },
         reference: {
