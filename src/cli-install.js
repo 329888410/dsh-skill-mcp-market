@@ -5,7 +5,7 @@
 //   skills.sh / skillssh  → `npx -y skills add <repo> --skill <slug> -g`
 //   clawhub               → `npx -y clawhub install <owner/slug> --dir <targetRoot>` (official CLI)
 //   browse.sh             → `npx -y browse skills add <slug>`
-//   trusttools            → `npx -y trusttools install <reference>`
+//   trusttools            → `npx -y trusttools add <reference> -g`
 //   lobehub-agent         → already has npx CLI path in lobehub-market.js
 //
 // Each fast path returns { ok: true, ... } on success, or throws to signal
@@ -172,7 +172,10 @@ export async function installViaClawHubCli({ slug, reference, targetRoot, dir, n
 export async function installViaSkillHubCli({ slug, reference, targetRoot, dir, name, force, skillDirs }) {
   if (!slug) throw new Error("skillhub install requires a skill-id");
   // reference is the canonicalName (e.g. "facebook/react/test") or the slug from the SkillHub API.
-  const ref = reference || slug;
+  // Strip a possible "skillhub:" prefix (item.id fallback in client.js).
+  let ref = (reference || slug).trim();
+  if (ref.startsWith("skillhub:")) ref = ref.slice("skillhub:".length);
+  if (!ref) throw new Error("skillhub install: empty skill-id after prefix strip");
   await npxRun("skillhub", ["install", ref, "--target-dir", targetRoot], {
     timeoutMs: 180000,
   });
@@ -267,11 +270,12 @@ export async function installViaBrowseShCli({ slug, targetRoot, dir, name, force
 
 /**
  * Install a skill from trusttools via the official `trusttools` CLI.
- * `npx -y trusttools install <reference>` auto-detects the agent environment.
+ * `npx -y trusttools add <reference> -g` — the CLI's install command is `add`, not `install`.
+ * reference is `owner/repo`, a URL, or a local path; `-g` installs globally.
  */
 export async function installViaTrustToolsCli({ reference, targetRoot, dir, name, force, skillDirs }) {
   if (!reference) throw new Error("trusttools install requires a reference");
-  await npxRun("trusttools", ["install", reference], {
+  await npxRun("trusttools", ["add", reference, "-g"], {
     timeoutMs: 120000,
   });
   // trusttools installs into agent skill dirs; search common locations

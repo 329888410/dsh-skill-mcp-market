@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.33
+
+- **修复 trusttools CLI 命令名**：`trusttools` CLI 的安装命令是 `add` 而非 `install`（`trusttools add <source> -g`），0.5.30 的 `installViaTrustToolsCli` 使用了不存在的 `trusttools install` 子命令，会导致 CLI 安装路径永远失败并回退 GitHub。修正为 `npx -y trusttools add <reference> -g`。
+- **修复 skillhub 安装 reference 映射**：`client.js` `doInstallSkill` 中 skillhub 条目的 `reference` 之前走 `item.upstreamUrl || item.id` 默认分支，当 `upstream_url` 为空时 `item.id`（`skillhub:facebook/react/test`）带前缀传给 `npx skillhub install` 会失败。修正为 `item.reference || item.upstreamUrl || item.id`，优先使用 `skillhub.js` 新增的 `reference` 字段（canonicalName，无 `skillhub:` 前缀）。
+- **`installViaSkillHubCli` 防御性 strip 前缀**：即使传入带 `skillhub:` 前缀的 skill-id，也会自动 strip，确保 CLI 调用成功。
+
 ## 0.5.32
 
 - **skillhub 安装改用官方 `skillhub` CLI**（用户 m14629 确认 skillhub CLI 无需注册登录即可搜索和安装）：

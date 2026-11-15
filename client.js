@@ -728,7 +728,9 @@ window.__ModuleLoader__.load({
                     ? item.slug
                     : item.source === 'browse.sh'
                       ? item.reference
-                      : item.upstreamUrl || item.id,
+                      : item.source === 'skillhub'
+                        ? item.reference || item.upstreamUrl || item.id
+                        : item.upstreamUrl || item.id,
             skillDir: item.skillDir || '',
             ref: item.ref || '',
             name: item.slug,
