@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.32
+
+- **skillhub 安装改用官方 `skillhub` CLI**（用户 m14629 确认 skillhub CLI 无需注册登录即可搜索和安装）：
+  - `src/cli-install.js` 新增 `installViaSkillHubCli`：`npx -y skillhub install <skill-id> --target-dir <targetRoot>`，自动下载 CLI（无需预装、无需认证）；安装到 `<targetRoot>/<skill-name>/`；timeout 180s；失败时回退 GitHub。
+  - `src/skillhub.js` 条目 `installable` 不再依赖 `upstream_url`，改为 `Boolean(canonical || raw.slug)`；新增 `reference: canonical || raw.slug` 字段供 CLI 安装使用。
+  - `src/skills.js` skillhub 分支由 GitHub 直下改为调用 `installViaSkillHubCli`，CLI 失败仍回退 GitHub（`upstream_url` 存在时）。
+  - 官方 CLI 接受 `owner/slug` 格式的 skill-id（如 `facebook/react/test`），与 SkillHub API 的 `namespace.canonicalName` 直接匹配。
+
 ## 0.5.31
 
 - **clawhub 安装改用官方 `clawhub` CLI**（用户 m14469 反馈「clawhub 有官方 CLI，为什么选择 HTTP API 下载 ZIP？」）：

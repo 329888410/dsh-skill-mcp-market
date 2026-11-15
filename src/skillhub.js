@@ -37,8 +37,9 @@ function toItem(raw) {
     stars,
     verified: Boolean(raw.verified),
     version: raw.version || "",
-    installable: Boolean(raw.upstream_url),
+    installable: Boolean(canonical || raw.slug),
     namespace: canonical,
+    reference: canonical || raw.slug || "",
   };
 }
 

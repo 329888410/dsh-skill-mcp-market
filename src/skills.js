@@ -15,6 +15,7 @@ import { ensureDir, expandPath } from "./home.js";
 import {
   installViaSkillsShCli,
   installViaClawHubCli,
+  installViaSkillHubCli,
   installViaBrowseShCli,
   installViaTrustToolsCli,
 } from "./cli-install.js";
@@ -168,9 +169,21 @@ export async function installSkill({ source = "github", reference = "", skillDir
   }
 
   if (source === "skillhub") {
+    // Fast path: install via the official `skillhub` CLI (npx auto-downloads it).
+    const skillId = String(reference || "").trim();
+    if (skillId) {
+      try {
+        return await installViaSkillHubCli({ slug: skillId, reference: skillId, targetRoot, dir, name, force, skillDirs });
+      } catch (cliError) {
+        console.log(`[dsh-market] skillhub CLI install failed, falling back to GitHub: ${cliError.message}`);
+      }
+    }
+    // Fallback: if the CLI failed or there's no reference, try the old GitHub path.
     const upstream = String(reference || "");
-    if (!upstream) throw new Error("this SkillHub entry has no upstream_url, so its files cannot be downloaded");
-    return installSkill({ source: "github", reference: upstream, skillDir, dir: targetRoot, name, force, skillDirs });
+    if (upstream) {
+      return installSkill({ source: "github", reference: upstream, skillDir, dir: targetRoot, name, force, skillDirs });
+    }
+    throw new Error("this SkillHub entry has no install reference");
   }
 
   if (source === "github") {

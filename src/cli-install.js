@@ -164,6 +164,40 @@ export async function installViaClawHubCli({ slug, reference, targetRoot, dir, n
 }
 
 /**
+ * Install a skill from skillhub via the official `skillhub` CLI.
+ * `npx -y skillhub install <skill-id> --target-dir <targetRoot>` — npx auto-downloads the CLI.
+ * skill-id is the canonicalName from the SkillHub API (e.g. "facebook/react/test").
+ * No authentication required: search and install work anonymously.
+ */
+export async function installViaSkillHubCli({ slug, reference, targetRoot, dir, name, force, skillDirs }) {
+  if (!slug) throw new Error("skillhub install requires a skill-id");
+  // reference is the canonicalName (e.g. "facebook/react/test") or the slug from the SkillHub API.
+  const ref = reference || slug;
+  await npxRun("skillhub", ["install", ref, "--target-dir", targetRoot], {
+    timeoutMs: 180000,
+  });
+  // The CLI installs to <targetRoot>/<skill-name>/.
+  // skill-name is the last segment of the canonicalName (e.g. "facebook/react/test" → "test").
+  const bareName = ref.includes("/") ? ref.split("/").pop() : ref;
+  const cliSkillDir = join(targetRoot, bareName);
+  if (!existsSync(cliSkillDir)) {
+    throw new Error(`skillhub CLI did not produce a skill directory at ${cliSkillDir}`);
+  }
+  const skillText = await readFile(join(cliSkillDir, "SKILL.md"), "utf8");
+  const meta = skillMetaFromText(skillText, kebab(bareName) || bareName);
+  if (!meta.name || !meta.description) {
+    throw new Error("skillhub SKILL.md 缺少 name 或 description frontmatter");
+  }
+  await writeJson(join(cliSkillDir, ".market-install.json"), {
+    slug: bareName,
+    name: meta.name,
+    origin: { source: "skillhub", reference: ref, cliInstall: true },
+    installedAt: new Date().toISOString(),
+  });
+  return { ok: true, slug: bareName, name: meta.name, description: meta.description, dir: cliSkillDir, files: 1 };
+}
+
+/**
  * Install a skill from browse.sh via the official `browse` CLI.
  * `npx -y browse skills add <slug>` — npx auto-downloads the CLI if not installed.
  * slug is the raw slug from the browse.sh catalogue (e.g. "alltrails.com" or
