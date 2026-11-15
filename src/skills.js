@@ -14,7 +14,7 @@ import { clawhubResolve, lobehubAgentSkill } from "./extra-sources.js";
 import { ensureDir, expandPath } from "./home.js";
 import {
   installViaSkillsShCli,
-  installViaClawHubApi,
+  installViaClawHubCli,
   installViaBrowseShCli,
   installViaTrustToolsCli,
 } from "./cli-install.js";
@@ -358,14 +358,13 @@ export async function installSkill({ source = "github", reference = "", skillDir
   }
 
   if (source === "clawhub") {
-    // Fast path: download directly from clawhub's API zip endpoint,
-    // avoiding the slow GitHub API + tarball path.
+    // Fast path: install via the official `clawhub` CLI (npx auto-downloads it).
     const clawSlug = String(reference || "").trim();
     if (clawSlug) {
       try {
-        return await installViaClawHubApi({ slug: clawSlug, reference: clawSlug, targetRoot, dir, name, force, skillDirs });
-      } catch (apiError) {
-        console.log(`[dsh-market] clawhub API install failed, falling back to GitHub: ${apiError.message}`);
+        return await installViaClawHubCli({ slug: clawSlug, reference: clawSlug, targetRoot, dir, name, force, skillDirs });
+      } catch (cliError) {
+        console.log(`[dsh-market] clawhub CLI install failed, falling back to GitHub: ${cliError.message}`);
       }
     }
     const target = await clawhubResolve(reference);

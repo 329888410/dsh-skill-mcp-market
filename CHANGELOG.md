@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.31
+
+- **clawhub 安装改用官方 `clawhub` CLI**（用户 m14469 反馈「clawhub 有官方 CLI，为什么选择 HTTP API 下载 ZIP？」）：
+  - `src/cli-install.js` 新增 `installViaClawHubCli`：`npx -y clawhub install <owner/slug> --dir <targetRoot> --no-input`，自动下载 CLI（无需预装），安装到 `<targetRoot>/@<owner>/<slug>/`；timeout 180s；失败时回退 GitHub。
+  - `src/skills.js` clawhub 分支由 `installViaClawHubApi`（HTTP API 下载 ZIP）改为 `installViaClawHubCli`（官方 CLI）。
+  - 官方 CLI 支持 `owner/slug` 格式输入，与 dsh-market clawhub 条目的 `reference` 字段直接匹配。
+
 ## 0.5.30
 
 - **browse.sh 安装路径修复**（用户反馈 browse.sh 条目显示「无可用下载地址」，但实际可通过官方 `browse` CLI 安装）：

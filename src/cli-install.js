@@ -3,7 +3,7 @@
 //
 // Strategy per source:
 //   skills.sh / skillssh  → `npx -y skills add <repo> --skill <slug> -g`
-//   clawhub               → direct download from clawhub.ai API (zip), or `npx clawhub install <slug>`
+//   clawhub               → `npx -y clawhub install <owner/slug> --dir <targetRoot>` (official CLI)
 //   browse.sh             → `npx -y browse skills add <slug>`
 //   trusttools            → `npx -y trusttools install <reference>`
 //   lobehub-agent         → already has npx CLI path in lobehub-market.js
@@ -131,62 +131,36 @@ export async function installViaSkillsShCli({ repo, slug, targetRoot, dir, name,
 }
 
 /**
- * Install a skill from clawhub via the official API (zip download).
- * clawhub.ai serves skill bundles as zip at /api/v1/download?slug=<slug>.
- * This avoids the slow GitHub API + tarball path entirely.
+ * Install a skill from clawhub via the official `clawhub` CLI.
+ * `npx -y clawhub install <owner/slug> --dir <targetRoot>` — npx auto-downloads the CLI if not installed.
+ * The CLI installs into <targetRoot>/@<owner>/<slug>/.
+ * Falls back to the generic GitHub path on failure.
  */
-export async function installViaClawHubApi({ slug, reference, targetRoot, dir, name, force, skillDirs }) {
+export async function installViaClawHubCli({ slug, reference, targetRoot, dir, name, force, skillDirs }) {
   if (!slug) throw new Error("clawhub install requires a slug");
-  // The clawhub download API expects the bare skill slug (e.g. "concept-design"),
-  // not the owner-qualified reference (e.g. "agenticweb4/concept-design").
-  // Strip the owner prefix if present.
-  const bareSlug = slug.includes("/") ? slug.split("/").pop() : slug;
-  // Download the zip directly from clawhub's API
-  const url = `https://clawhub.ai/api/v1/download?slug=${encodeURIComponent(bareSlug)}`;
-  const tmp = await mkdtemp(join(tmpdir(), "dsh-market-clawhub-"));
-  try {
-    const target = join(tmp, `${bareSlug}.zip`);
-    await downloadFile(url, target, 90000);
-    const buffer = await readFile(target);
-    const { files: raw, skipped } = readZip(buffer);
-    if (Object.keys(raw).length === 0) {
-      throw new Error(`clawhub ZIP 没有可解析的文本文件（${skipped.length} 项被跳过）`);
-    }
-    const flat = stripCommonPrefix(raw);
-    const root = locateSkillRoot(flat);
-    if (root === null) throw new Error("ZIP 里没有找到 SKILL.md");
-    const prefix = root ? `${root}/` : "";
-    const files = {};
-    for (const [entry, content] of Object.entries(flat)) {
-      if (prefix && !entry.startsWith(prefix)) continue;
-      files[entry.slice(prefix.length)] = content;
-    }
-    const skillText = files["SKILL.md"] || "";
-    if (!skillText) throw new Error("clawhub ZIP 解压后缺少 SKILL.md");
-    // Validate frontmatter before writing
-    const meta = skillMetaFromText(skillText, kebab(bareSlug) || bareSlug);
-    if (!meta.name || !meta.description) {
-      throw new Error("clawhub SKILL.md 缺少 name 或 description frontmatter");
-    }
-    // Write the skill into the target root
-    const finalSlug = kebab(bareSlug) || bareSlug;
-    const targetDir = join(targetRoot, finalSlug);
-    await ensureDir(targetDir);
-    for (const [relative, content] of Object.entries(files)) {
-      const target = join(targetDir, relative);
-      await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, content, "utf8");
-    }
-    await writeJson(join(targetDir, ".market-install.json"), {
-      slug: finalSlug,
-      name: meta.name,
-      origin: { source: "clawhub", reference: reference || slug, apiDownload: true },
-      installedAt: new Date().toISOString(),
-    });
-    return { ok: true, slug: finalSlug, name: meta.name, description: meta.description, dir: targetDir, files: Object.keys(files).length };
-  } finally {
-    await rm(tmp, { recursive: true, force: true });
+  // reference is "owner/slug" (e.g. "agenticweb4/concept-design") which matches the CLI's input format.
+  const ref = reference || slug;
+  await npxRun("clawhub", ["install", ref, "--dir", targetRoot, "--no-input"], {
+    timeoutMs: 180000,
+  });
+  // The CLI creates <targetRoot>/@<owner>/<slug>/. Find the installed SKILL.md.
+  const [owner, bareSlug] = ref.includes("/") ? ref.split("/") : ["", ref];
+  const cliSkillDir = owner ? join(targetRoot, `@${owner}`, bareSlug) : join(targetRoot, bareSlug);
+  if (!existsSync(cliSkillDir)) {
+    throw new Error(`clawhub CLI did not produce a skill directory at ${cliSkillDir}`);
   }
+  const skillText = await readFile(join(cliSkillDir, "SKILL.md"), "utf8");
+  const meta = skillMetaFromText(skillText, kebab(bareSlug) || bareSlug);
+  if (!meta.name || !meta.description) {
+    throw new Error("clawhub SKILL.md 缺少 name 或 description frontmatter");
+  }
+  await writeJson(join(cliSkillDir, ".market-install.json"), {
+    slug: bareSlug,
+    name: meta.name,
+    origin: { source: "clawhub", reference: ref, cliInstall: true },
+    installedAt: new Date().toISOString(),
+  });
+  return { ok: true, slug: bareSlug, name: meta.name, description: meta.description, dir: cliSkillDir, files: 1 };
 }
 
 /**
