@@ -247,7 +247,9 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const args = ["skills", "search"];
   if (q) args.push("--q", q);
   args.push("--page", String(p), "--page-size", String(size), "--output", "json");
-  const stdout = await npxRun("@lobehub/market-cli", args, { timeoutMs: 60000 });
+  // First npx run auto-downloads the CLI (~30 s); subsequent runs are cached.
+  // 180 s covers the worst-case cold start without hanging the UI.
+  const stdout = await npxRun("@lobehub/market-cli", args, { timeoutMs: 180000 });
   let parsed;
   try {
     parsed = JSON.parse(stdout);
