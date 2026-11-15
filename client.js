@@ -488,7 +488,7 @@ window.__ModuleLoader__.load({
         try {
           const d = await call('skills.preview', {
             source: item.source,
-            reference: item.source === 'skills.sh' ? item.homepage : item.source === 'clawhub' ? item.installRef : item.source === 'lobehub-agent' ? item.reference || item.slug : item.source === 'browse.sh' ? item.reference : item.source === 'skillhub' ? item.reference || item.upstreamUrl || item.id : item.source === 'modelscope' ? item.modelScopeIdent || item.id.replace(/^modelscope:/, '') : item.upstreamUrl || item.id,
+            reference: item.source === 'skills.sh' ? item.homepage : item.source === 'clawhub' ? item.installRef : item.source === 'lobehub' ? item.reference || item.slug : item.source === 'browse.sh' ? item.reference : item.source === 'skillhub' ? item.reference || item.upstreamUrl || item.id : item.source === 'modelscope' ? item.modelScopeIdent || item.id.replace(/^modelscope:/, '') : item.upstreamUrl || item.id,
             upstreamUrl: item.source === 'modelscope' ? (item.upstreamUrl || '') : '',
             skillDir: item.skillDir || '',
             ref: item.ref || '',
@@ -510,8 +510,8 @@ window.__ModuleLoader__.load({
       };
 
       const detailUrlFor = (item) => {
-        // skills.sh / clawhub / browse.sh / lobehub-agent 不设「详情」按钮
-        if (item.source === 'skills.sh' || item.source === 'clawhub' || item.source === 'browse.sh' || item.source === 'lobehub-agent') {
+        // skills.sh / clawhub / browse.sh / lobehub 不设「详情」按钮
+        if (item.source === 'skills.sh' || item.source === 'clawhub' || item.source === 'browse.sh' || item.source === 'lobehub') {
           return '';
         }
         // lawhub.ai 不设「详情」按钮（通过 homepage 域名或 source 识别）
@@ -725,7 +725,7 @@ window.__ModuleLoader__.load({
                 ? item.homepage
                 : item.source === 'clawhub'
                   ? item.installRef
-                  : item.source === 'lobehub-agent'
+                  : item.source === 'lobehub'
                     ? item.reference || item.slug
                     : item.source === 'browse.sh'
                       ? item.reference
@@ -1053,7 +1053,7 @@ window.__ModuleLoader__.load({
             (tab === 'skills' || tab === 'mcp')
               ? h('div', { style: S.row },
                   tab === 'skills'
-                    ? ['skills.sh', 'clawhub', 'skillsmp', 'trusttools', 'browse.sh', 'lobehub-agent', 'skillhub', 'modelscope'].map((key) =>
+                    ? ['skills.sh', 'clawhub', 'skillsmp', 'trusttools', 'browse.sh', 'lobehub', 'skillhub', 'modelscope'].map((key) =>
                         h('button', {
                           key,
                           style: S.chip(source === key),

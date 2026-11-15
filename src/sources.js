@@ -457,7 +457,7 @@ export const ALL_SOURCES = [
   "skillsmp",
   "trusttools",
   "browse.sh",
-  "lobehub-agent",
+  "lobehub",
   "skillhub",
   "modelscope",
 ];
@@ -471,7 +471,7 @@ const SOURCE_HANDLERS = {
   skillsmp: searchSkillsMp,
   trusttools: searchTrustTools,
   "browse.sh": searchBrowseSh,
-  "lobehub-agent": searchLobeHubSkills,
+  "lobehub": searchLobeHubSkills,
   skillhub: searchSkillHub,
   modelscope: searchModelScope,
 };

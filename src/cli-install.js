@@ -6,7 +6,7 @@
 //   clawhub               → `npx -y clawhub install <owner/slug> --dir <targetRoot>` (official CLI)
 //   browse.sh             → `npx -y browse skills add <slug>`
 //   trusttools            → `npx -y trusttools add <reference> -g`
-//   lobehub-agent         → already has npx CLI path in lobehub-market.js
+//   lobehub                 → npx @lobehub/market-cli skills install (extra-sources.js)
 //
 // Each fast path returns { ok: true, ... } on success, or throws to signal
 // the caller should fall back to the generic GitHub path.

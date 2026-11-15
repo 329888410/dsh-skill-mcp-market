@@ -238,10 +238,15 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const size = Math.max(1, Number(pageSize) || 24);
   const cacheKey = `lobehub_skills_search:${query.trim()}:${p}:${size}`;
   const cached = cache ? await cache.get(cacheKey, 30 * 60 * 1000) : undefined;
-  if (cached) return { source: "lobehub-agent", ...cached };
+  if (cached) return { source: "lobehub", ...cached };
 
   const { npxRun } = await import("./cli-install.js");
-  const args = ["skills", "search", "--q", query.trim(), "--page", String(p), "--page-size", String(size), "--output", "json"];
+  // Empty query: omit --q entirely (the CLI treats an empty-string arg as a
+  // positional and rejects it: "too many arguments for 'search'").
+  const q = String(query || "").trim();
+  const args = ["skills", "search"];
+  if (q) args.push("--q", q);
+  args.push("--page", String(p), "--page-size", String(size), "--output", "json");
   const stdout = await npxRun("@lobehub/market-cli", args, { timeoutMs: 60000 });
   let parsed;
   try {
@@ -251,11 +256,11 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   }
   const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
   const items = rawItems.map((raw) => ({
-    id: `lobehub-agent:${raw.identifier || ""}`,
+    id: `lobehub:${raw.identifier || ""}`,
     slug: raw.name || raw.identifier || "",
     name: raw.name || raw.identifier || "",
     description: raw.description || "",
-    source: "lobehub-agent",
+    source: "lobehub",
     sourceLabel: "LobeHub 技能市场",
     owner: raw.author || "",
     homepage: raw.homepage || "",
@@ -270,7 +275,7 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   }));
   const total = Number(parsed.totalCount || 0);
   const result = {
-    source: "lobehub-agent",
+    source: "lobehub",
     items,
     total,
     hasMore: total ? p * size < total : items.length >= size,

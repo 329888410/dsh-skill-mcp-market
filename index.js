@@ -639,7 +639,7 @@ export async function apply(ctx, config = {}) {
   defineTool(ctx, {
     name: "skill_market_search",
     description:
-      "Search the SKILL market across its live sources (skills.sh / clawhub / skillsmp / trusttools / browse.sh / lobehub-agent / skillhub / modelscope) or `all`. Returns installable entries with the identifier each installer needs. Paging is real: pass page=2 to get the next, different batch.",
+      "Search the SKILL market across its live sources (skills.sh / clawhub / skillsmp / trusttools / browse.sh / lobehub / skillhub / modelscope) or `all`. Returns installable entries with the identifier each installer needs. Paging is real: pass page=2 to get the next, different batch.",
     parameters: {
       type: "object",
       properties: {
@@ -653,7 +653,7 @@ export async function apply(ctx, config = {}) {
             "skillsmp",
             "trusttools",
             "browse.sh",
-            "lobehub-agent",
+            "lobehub",
             "skillhub",
             "modelscope",
           ],
@@ -693,7 +693,7 @@ export async function apply(ctx, config = {}) {
       properties: {
         source: {
           type: "string",
-          enum: ["github", "skills.sh", "clawhub", "skillsmp", "trusttools", "browse.sh", "lobehub-agent", "skillhub", "url", "local", "zip"],
+          enum: ["github", "skills.sh", "clawhub", "skillsmp", "trusttools", "browse.sh", "lobehub", "skillhub", "url", "local", "zip"],
           description: "Market source; defaults to github.",
         },
         reference: {

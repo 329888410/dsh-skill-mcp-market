@@ -384,7 +384,7 @@ export async function installSkill({ source = "github", reference = "", skillDir
     return installSkill({ source: "github", reference: target.repo, skillDir: target.skillDir, name: name || "", dir: targetRoot, force, skillDirs });
   }
 
-  if (source === "lobehub-agent") {
+  if (source === "lobehub") {
     const bundle = await lobehubAgentSkill(reference);
     const scan = scanSkillBundle({ files: bundle.files, skillText: bundle.files["SKILL.md"] });
     if (!scan.allowed && !force) {
@@ -394,7 +394,7 @@ export async function installSkill({ source = "github", reference = "", skillDir
       slug: name || bundle.name || reference,
       files: bundle.files,
       skillText: bundle.files["SKILL.md"],
-      origin: { source: "lobehub-agent", identifier: reference },
+      origin: { source: "lobehub", identifier: reference },
     });
   }
 
