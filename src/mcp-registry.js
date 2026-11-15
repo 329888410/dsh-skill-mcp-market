@@ -262,7 +262,11 @@ export async function searchMcpRegistryPage({ query = "", page = 1, pageSize = R
   // An empty page means the walk could not reach it (or the catalogue ended): report "no
   // more" so the panel stops offering a button that would keep returning nothing.
   const hasMore = items.length > 0 ? (start + size < state.items.length || !state.done) : false;
-  return { items, page: wanted, pageSize: size, nextCursor: state.done ? "" : state.cursor, hasMore };
+  // The registry is cursor-based and has no total. Report estimatedTotal = accumulated
+  // deduped catalogue length; it grows as the user pages deeper and converges to the real
+  // total only when the walk finishes (state.done).
+  const estimatedTotal = state.done ? state.items.length : state.items.length + size;
+  return { items, page: wanted, pageSize: size, nextCursor: state.done ? "" : state.cursor, hasMore, estimatedTotal };
 }
 
 /** Resolve one registry server name to an installable definition (exact match wins). */

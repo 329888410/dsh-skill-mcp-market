@@ -224,6 +224,7 @@ async function loadMcpCatalog(cache, query = "", source = "registry", options = 
         source: "registry",
         page: result.page,
         hasMore: result.hasMore,
+        estimatedTotal: result.estimatedTotal,
       };
     }
   } catch (error) {
@@ -1334,7 +1335,7 @@ export async function apply(ctx, config = {}) {
           source: wanted,
           page: catalog.page || 1,
           totalPages: catalog.totalPages || 0,
-          total: catalog.total || catalog.items.length,
+          total: catalog.estimatedTotal || catalog.total || catalog.items.length,
           // The registry has no published total; it walks cursors, so only `hasMore` can
           // answer "is there another page" — the panel must not guess from totalPages.
           canLoadMore: catalog.hasMore !== undefined

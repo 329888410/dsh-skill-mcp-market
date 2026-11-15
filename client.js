@@ -1129,9 +1129,7 @@ window.__ModuleLoader__.load({
               ? h('div', { style: S.status },
                   mcpSource === 'lobehub'
                     ? `LobeHub · 共 ${mcpTotal.toLocaleString()} 个连接器 · 第 ${mcpPage}/${mcpTotalPages} 页`
-                    : (mcpTotalPages > 0
-                        ? `MCP 官方注册表 · 第 ${mcpPage}/${mcpTotalPages} 页`
-                        : `MCP 官方注册表 · 已显示 ${mcps.length} 个${mcpHasMore ? '（可继续加载）' : ''}`))
+                    : `MCP 官方注册表 · 共约 ${mcpTotal.toLocaleString()} 个连接器 · 第 ${mcpPage} 页${mcpHasMore ? '（可继续加载）' : ''}`)
               : null,
             error ? h('div', { style: S.err }, error) : null,
             notice ? h('div', { style: S.status }, notice) : null,
