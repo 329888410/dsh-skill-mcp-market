@@ -509,8 +509,8 @@ window.__ModuleLoader__.load({
       };
 
       const detailUrlFor = (item) => {
-        // skills.sh / clawhub / browse.sh 不设「详情」按钮
-        if (item.source === 'skills.sh' || item.source === 'clawhub' || item.source === 'browse.sh') {
+        // skills.sh / clawhub / browse.sh / lobehub-agent 不设「详情」按钮
+        if (item.source === 'skills.sh' || item.source === 'clawhub' || item.source === 'browse.sh' || item.source === 'lobehub-agent') {
           return '';
         }
         // lawhub.ai 不设「详情」按钮（通过 homepage 域名或 source 识别）
@@ -725,7 +725,7 @@ window.__ModuleLoader__.load({
                 : item.source === 'clawhub'
                   ? item.installRef
                   : item.source === 'lobehub-agent'
-                    ? item.slug
+                    ? item.reference || item.slug
                     : item.source === 'browse.sh'
                       ? item.reference
                       : item.source === 'skillhub'

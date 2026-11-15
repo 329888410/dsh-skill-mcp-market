@@ -1,13 +1,18 @@
 // Four more live sources, each following the reference implementation's own endpoint:
 //   clawhub   — clawhub.ai/api/v1  (browse honours limit; search answers 10 rows per page)
 //   trusttools— ai.trusttools.cn/api/skills/search (POST, item carries repo_url/repo_path)
-//   LobeHub   — chat-agents.lobehub.com/index.json (agent index, installable as a SKILL)
+//   LobeHub   — @lobehub/market-cli skills search/install (official CLI, 33万+ skills)
 //   skillsmp  — skillsmp.com/api/skills (paged search; Cloudflare-fronted, needs the curl
 //               transport because this process's own TLS fingerprint is refused)
 //   modelscope— modelscope.cn/api/v1/dolphin/skills (PUT, PageNumber/PageSize + TotalCount)
 // Every source here answers a real `page`: either the upstream pages, or a whole catalogue
 // is fetched once and sliced locally. That is what makes「加载更多」actually extend the list.
 import { getJsonEscalating, postJsonEscalating } from "./http.js";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { skillMetaFromText } from "./frontmatter.js";
 
 const UA = { "User-Agent": "dsh-skill-mcp-market/0.9", accept: "application/json" };
 
@@ -222,66 +227,97 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
   };
 }
 
-// ---------------------------------------------------------------- LobeHub agents (skills)
+// ---------------------------------------------------------------- LobeHub Skills Marketplace
+// LobeHub's Skills Marketplace (33万+ skills) is accessed via the official CLI:
+//   search:  npx -y @lobehub/market-cli skills search --q "<query>" --page <n> --page-size <n> --output json
+//   install: npx -y @lobehub/market-cli skills install <identifier> --dir <path>
+// The CLI auto-downloads via npx; no pre-install or authentication required.
+// `view` requires a token and is not used.
 export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24, cache }) {
-  let agents = await cache.get("lobehub_agents", 6 * 3600 * 1000);
-  if (!agents) {
-    const data = await getJson("https://chat-agents.lobehub.com/index.json", 25000);
-    agents = Array.isArray(data.agents) ? data.agents : [];
-    await cache.put("lobehub_agents", agents);
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Number(pageSize) || 24);
+  const cacheKey = `lobehub_skills_search:${query.trim()}:${p}:${size}`;
+  const cached = cache ? await cache.get(cacheKey, 30 * 60 * 1000) : undefined;
+  if (cached) return { source: "lobehub-agent", ...cached };
+
+  const { npxRun } = await import("./cli-install.js");
+  const args = ["skills", "search", "--q", query.trim(), "--page", String(p), "--page-size", String(size), "--output", "json"];
+  const stdout = await npxRun("@lobehub/market-cli", args, { timeoutMs: 60000 });
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error("lobehub search: CLI returned non-JSON output");
   }
-  const q = query.trim().toLowerCase();
-  const matched = [];
-  for (const raw of agents) {
-    const meta = raw.meta || {};
-    const hay = `${raw.identifier} ${meta.title || ""} ${meta.description || ""} ${(meta.tags || []).join(" ")}`.toLowerCase();
-    if (q && !hay.includes(q)) continue;
-    matched.push(raw);
-  }
-  const { rows } = slice(matched, page, pageSize);
-  const items = rows.map((raw) => {
-    const meta = raw.meta || {};
-    return {
-      id: `lobehub-agent:${raw.identifier}`,
-      slug: raw.identifier,
-      name: meta.title || raw.identifier,
-      description: meta.description || "",
-      source: "lobehub-agent",
-      sourceLabel: "LobeHub 智能体",
-      owner: raw.author || "",
-      homepage: `https://lobehub.com/agent/${raw.identifier}`,
-      upstreamUrl: "",
-      category: (Array.isArray(meta.tags) && String(meta.tags[0] || "")) || "",
-      tags: Array.isArray(meta.tags) ? meta.tags : [],
-      installable: true,
-      note: "安装时会把该智能体的设定写成 SKILL.md",
-    };
-  });
-  return { source: "lobehub-agent", items, total: matched.length, hasMore: (Number(page) || 1) * pageSize < matched.length };
+  const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+  const items = rawItems.map((raw) => ({
+    id: `lobehub-agent:${raw.identifier || ""}`,
+    slug: raw.name || raw.identifier || "",
+    name: raw.name || raw.identifier || "",
+    description: raw.description || "",
+    source: "lobehub-agent",
+    sourceLabel: "LobeHub 技能市场",
+    owner: raw.author || "",
+    homepage: raw.homepage || "",
+    upstreamUrl: "",
+    reference: raw.identifier || "",
+    category: raw.category || "",
+    tags: [],
+    installCount: Number(raw.installCount || 0),
+    rating: Number(raw.ratingAverage || 0),
+    installable: Boolean(raw.identifier),
+    note: "通过官方 CLI 安装 LobeHub 技能",
+  }));
+  const total = Number(parsed.totalCount || 0);
+  const result = {
+    source: "lobehub-agent",
+    items,
+    total,
+    hasMore: total ? p * size < total : items.length >= size,
+  };
+  if (cache) await cache.put(cacheKey, result);
+  return result;
 }
 
-/** Turn a LobeHub agent document into a SKILL.md bundle. */
+/**
+ * Install a LobeHub skill via the official CLI.
+ * `npx -y @lobehub/market-cli skills install <identifier> --dir <tmpDir>`
+ * The CLI extracts the skill into <tmpDir>/<identifier>/ (SKILL.md + references/).
+ * Returns { name, description, files } in the same shape the old agent-JSON path produced,
+ * so callers in skills.js can use it unchanged.
+ */
 export async function lobehubAgentSkill(identifier) {
-  const doc = await getJson(`https://chat-agents.lobehub.com/${encodeURIComponent(identifier)}.json`, 20000);
-  const meta = doc.meta || {};
-  const name = String(meta.title || doc.identifier || identifier).trim();
-  const description = String(doc.summary || meta.description || "").trim();
-  if (!description) throw new Error("该智能体没有提供描述，无法生成技能");
-  const body = [
-    `# ${name}`,
-    "",
-    `> 来源：LobeHub 智能体 \`${identifier}\``,
-    "",
-    String(doc.config?.systemRole || doc.openingMessage || "").trim(),
-  ].join("\n");
-  const frontmatter = [
-    "---",
-    `name: ${JSON.stringify(identifier)}`,
-    `description: ${JSON.stringify(description)}`,
-    "---",
-    "",
-  ].join("\n");
-  return { name, description, files: { "SKILL.md": frontmatter + body } };
+  if (!identifier) throw new Error("lobehub skill install requires an identifier");
+  const { npxRun } = await import("./cli-install.js");
+  const tmpRoot = await mkdtemp(join(tmpdir(), "dsh-lobehub-"));
+  const targetDir = join(tmpRoot, identifier);
+  try {
+    await npxRun("@lobehub/market-cli", ["skills", "install", identifier, "--dir", tmpRoot], {
+      timeoutMs: 120000,
+    });
+    if (!existsSync(targetDir)) {
+      throw new Error(`lobehub CLI did not produce a skill directory at ${targetDir}`);
+    }
+    // Walk the installed directory and collect all files.
+    const files = {};
+    const walk = async (current, prefix) => {
+      for (const entry of await readdir(current, { withFileTypes: true })) {
+        const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+        const full = join(current, entry.name);
+        if (entry.isDirectory()) await walk(full, relative);
+        else files[relative] = await readFile(full, "utf8");
+      }
+    };
+    await walk(targetDir, "");
+    const skillText = files["SKILL.md"] || "";
+    const meta = skillMetaFromText(skillText, identifier);
+    if (!meta.name || !meta.description) {
+      throw new Error("lobehub skill SKILL.md 缺少 name 或 description frontmatter");
+    }
+    return { name: meta.name, description: meta.description, files };
+  } finally {
+    await rm(tmpRoot, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------- skillsmp

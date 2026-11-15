@@ -532,8 +532,8 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
 
 /**
  * Warm the catalogues that are expensive on a cold start (browse.sh ships ~480 entries,
- * skills.sh needs the ~2 MB sitemap, LobeHub's index is ~500 agents, skillsmp is a paged
- * upstream). Runs in the background so the first panel open is already populated.
+ * skills.sh needs the ~2 MB sitemap, LobeHub's CLI search is a 30 s npx round-trip,
+ * skillsmp is a paged upstream). Runs in the background so the first panel open is already populated.
  */
 export async function warmMarketCache(cache = fallbackCache) {
   const results = await Promise.allSettled([

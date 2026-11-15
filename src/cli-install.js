@@ -23,7 +23,7 @@ import { readZip, stripCommonPrefix, locateSkillRoot } from "./zip.js";
 const isWindows = process.platform === "win32";
 
 /** Run a command via npx (Windows-safe: wraps .cmd shims through cmd.exe). */
-function npxRun(pkg, args, { timeoutMs = 90000, env = {} } = {}) {
+export function npxRun(pkg, args, { timeoutMs = 90000, env = {} } = {}) {
   const file = isWindows ? process.env.ComSpec || "cmd.exe" : "npx";
   const argv = isWindows
     ? ["/d", "/s", "/c", ["npx", "-y", pkg, ...args].map(quoteForCmd).join(" ")]
