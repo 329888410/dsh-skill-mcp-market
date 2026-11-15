@@ -427,10 +427,66 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24 } =
       skillDir,
       downloads: Number(raw.DownloadCount || 0),
       tags: Array.isArray(raw.Tags) ? raw.Tags : [],
-      installable: Boolean(repo),
+      installable: true,
+      modelScopeIdent: ident,
     };
   });
   return { source: "modelscope", items, total: total || p * size + (rows.length >= size ? 1 : 0), hasMore: total ? p * size < total : rows.length >= size };
+}
+
+/**
+ * Download a ModelScope skill via the official ZIP endpoint:
+ *   https://modelscope.cn/skills/<owner>/<name>/archive/zip/master
+ * The ZIP contains a single top-level directory (e.g. `skills-owner.name-master-<sha>/`)
+ * with SKILL.md inside. Returns { name, description, files } in the same shape as
+ * lobehubAgentSkill, so callers in skills.js can use it unchanged.
+ */
+export async function modelScopeSkill(ident) {
+  if (!ident) throw new Error("modelscope skill install requires an ident (owner/name)");
+  const { readZip, stripCommonPrefix, locateSkillRoot } = await import("./zip.js");
+  const { pythonDownload } = await import("./http.js");
+  const url = `https://modelscope.cn/skills/${encodeURIComponent(ident)}/archive/zip/master`;
+  let buffer;
+  try {
+    const response = await fetch(url, {
+      headers: { ...UA, accept: "application/zip, application/octet-stream" },
+      signal: AbortSignal.timeout(60000),
+      redirect: "follow",
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    buffer = Buffer.from(await response.arrayBuffer());
+  } catch {
+    // Fall back to the Python transport (honours the system proxy):
+    const { mkdtemp } = await import("node:fs/promises");
+    const { join: jp } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const tmp = await mkdtemp(jp(tmpdir(), "dsh-ms-zip-"));
+    const target = jp(tmp, "skill.zip");
+    try {
+      await pythonDownload(url, target, { timeoutMs: 60000 });
+      const { readFile: rf } = await import("node:fs/promises");
+      buffer = await rf(target);
+    } finally {
+      const { rm } = await import("node:fs/promises");
+      await rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+  const { files: raw } = readZip(buffer);
+  const flat = stripCommonPrefix(raw);
+  const root = locateSkillRoot(flat);
+  if (root === null) throw new Error("ModelScope ZIP 里没有找到 SKILL.md");
+  const prefix = root ? `${root}/` : "";
+  const files = {};
+  for (const [entry, content] of Object.entries(flat)) {
+    if (prefix && !entry.startsWith(prefix)) continue;
+    files[entry.slice(prefix.length)] = content;
+  }
+  const skillText = files["SKILL.md"] || "";
+  const meta = skillMetaFromText(skillText, ident);
+  if (!meta.name || !meta.description) {
+    throw new Error("ModelScope skill SKILL.md 缺少 name 或 description frontmatter");
+  }
+  return { name: meta.name, description: meta.description, files };
 }
 
 /**

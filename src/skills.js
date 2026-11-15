@@ -10,7 +10,7 @@ import { resolveSkillsShInstall } from "./sources.js";
 import { describeFindings, scanSkillBundle } from "./verify.js";
 import { writeJson } from "./home.js";
 import { locateSkillRoot, readZip, stripCommonPrefix } from "./zip.js";
-import { clawhubResolve, lobehubAgentSkill } from "./extra-sources.js";
+import { clawhubResolve, lobehubAgentSkill, modelScopeSkill } from "./extra-sources.js";
 import { ensureDir, expandPath } from "./home.js";
 import {
   installViaSkillsShCli,
@@ -395,6 +395,20 @@ export async function installSkill({ source = "github", reference = "", skillDir
       files: bundle.files,
       skillText: bundle.files["SKILL.md"],
       origin: { source: "lobehub-agent", identifier: reference },
+    });
+  }
+
+  if (source === "modelscope") {
+    const bundle = await modelScopeSkill(reference);
+    const scan = scanSkillBundle({ files: bundle.files, skillText: bundle.files["SKILL.md"] });
+    if (!scan.allowed && !force) {
+      throw new Error(`安全检查未通过：${describeFindings(scan.findings.filter((f) => f.severity === "high"))}`);
+    }
+    return writeSkill({
+      slug: name || bundle.name || reference,
+      files: bundle.files,
+      skillText: bundle.files["SKILL.md"],
+      origin: { source: "modelscope", ident: reference },
     });
   }
 

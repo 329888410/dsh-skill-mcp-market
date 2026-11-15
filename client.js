@@ -488,7 +488,7 @@ window.__ModuleLoader__.load({
         try {
           const d = await call('skills.preview', {
             source: item.source,
-            reference: item.source === 'skills.sh' ? item.homepage : item.source === 'clawhub' ? item.installRef : item.source === 'lobehub-agent' ? item.slug : item.upstreamUrl || item.id,
+            reference: item.source === 'skills.sh' ? item.homepage : item.source === 'clawhub' ? item.installRef : item.source === 'lobehub-agent' ? item.reference || item.slug : item.source === 'browse.sh' ? item.reference : item.source === 'skillhub' ? item.reference || item.upstreamUrl || item.id : item.source === 'modelscope' ? item.modelScopeIdent || item.id.replace(/^modelscope:/, '') : item.upstreamUrl || item.id,
             skillDir: item.skillDir || '',
             ref: item.ref || '',
             name: item.slug,
@@ -730,7 +730,9 @@ window.__ModuleLoader__.load({
                       ? item.reference
                       : item.source === 'skillhub'
                         ? item.reference || item.upstreamUrl || item.id
-                        : item.upstreamUrl || item.id,
+                        : item.source === 'modelscope'
+                          ? item.modelScopeIdent || item.id.replace(/^modelscope:/, '')
+                          : item.upstreamUrl || item.id,
             skillDir: item.skillDir || '',
             ref: item.ref || '',
             name: item.slug,
@@ -1049,7 +1051,7 @@ window.__ModuleLoader__.load({
             (tab === 'skills' || tab === 'mcp')
               ? h('div', { style: S.row },
                   tab === 'skills'
-                    ? ['skills.sh', 'clawhub', 'skillsmp', 'trusttools', 'browse.sh', 'lobehub-agent', 'skillhub'].map((key) =>
+                    ? ['skills.sh', 'clawhub', 'skillsmp', 'trusttools', 'browse.sh', 'lobehub-agent', 'skillhub', 'modelscope'].map((key) =>
                         h('button', {
                           key,
                           style: S.chip(source === key),
