@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ op, ...(payload || {}) }),
         cache: 'no-store',
-        signal: AbortSignal.timeout(90000),
+        signal: AbortSignal.timeout(300000),
       });
       let data = null;
       try {
@@ -353,8 +353,9 @@ window.__ModuleLoader__.load({
         const nextCategory = opts.category !== undefined ? opts.category : mcpCategory;
         const nextSort = opts.sort !== undefined ? opts.sort : mcpSort;
         const nextPage = opts.page || 1;
+        const nextSize = opts.size !== undefined ? opts.size : size;
         // 首屏查询（非 append）命中缓存时立即渲染旧结果，后台再刷新，避免切源白屏
-        const cacheKey = opts.append ? '' : `mc|${nextSource}|${nextCategory === 'all' ? '' : nextCategory}|${nextSort === 'default' ? '' : nextSort}|${String(text || '')}|${nextPage}`;
+        const cacheKey = opts.append ? '' : `mc|${nextSource}|${nextCategory === 'all' ? '' : nextCategory}|${nextSort === 'default' ? '' : nextSort}|${String(text || '')}|${nextPage}|${nextSize}`;
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
         if (cached) {
           setMcps(cached.items || []);
@@ -370,6 +371,7 @@ window.__ModuleLoader__.load({
             category: nextCategory === 'all' ? '' : nextCategory,
             sort: nextSort === 'default' ? '' : nextSort,
             page: nextPage,
+            size: nextSize,
           });
           const rows = d.items || [];
           if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [] };
@@ -408,7 +410,7 @@ window.__ModuleLoader__.load({
         loadSettings().catch((e) => setError(String(e.message || e)));
         loadInstalled().catch((e) => setError(String(e.message || e)));
         if (tab === 'skills') searchSkills('', { source, size });
-        else searchMcps('');
+        else searchMcps('', { size });
       }, [tab, loadSettings, loadInstalled, searchSkills, searchMcps]);
 
       const openSkillDetail = async (slug) => {
