@@ -490,6 +490,55 @@ export async function modelScopeSkill(ident) {
 }
 
 /**
+ * Download a ModelScope skill via its GitHub upstream (when the search API
+ * returned an `upstreamUrl` such as `owner/repo@branch` + `skillDir`).
+ * Uses the shared `downloadSkillDir` from github.js — the same fast path
+ * skills.sh and skillsmp use. Returns { name, description, files } in
+ * the same shape as modelScopeSkill, so callers in skills.js are unchanged.
+ *
+ * Throws when the GitHub download fails so the caller can fall back to
+ * the official ZIP endpoint (modelScopeSkill).
+ */
+export async function modelScopeGitHubSkill(upstreamUrl, skillDir, ident) {
+  if (!upstreamUrl) throw new Error("modelscope GitHub fast path requires an upstreamUrl (owner/repo@branch)");
+  const { downloadSkillDir, parseRepoRef } = await import("./github.js");
+  const { mkdir, rm, mkdtemp, readdir } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join: jp } = await import("node:path");
+
+  const parsed = parseRepoRef(upstreamUrl);
+  const repo = parsed.repo;
+  const ref = parsed.ref || "main";
+
+  const tmp = await mkdtemp(jp(tmpdir(), "dsh-ms-gh-"));
+  try {
+    await mkdir(jp(tmp, "skill"), { recursive: true });
+    const { files: written, skillText, skipped } = await downloadSkillDir({
+      repo,
+      ref,
+      skillDir: skillDir || "",
+      destDir: jp(tmp, "skill"),
+    });
+    if (!written.length || !skillText) {
+      throw new Error(`ModelScope GitHub download produced no files for ${repo}@${ref}${skillDir ? "/" + skillDir : ""}`);
+    }
+    // Collect the in-memory file map so skills.js can use the same writeSkill path.
+    const files = {};
+    for (const rel of written) {
+      const { readFile: rf } = await import("node:fs/promises");
+      files[rel] = await rf(jp(tmp, "skill", rel), "utf8");
+    }
+    const meta = skillMetaFromText(files["SKILL.md"] || "", ident);
+    if (!meta.name || !meta.description) {
+      throw new Error("ModelScope skill SKILL.md 缺少 name 或 description frontmatter");
+    }
+    return { name: meta.name, description: meta.description, files };
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
  * Resolve a clawhub reference (`owner/slug`) to its GitHub-backed skill directory.
  *
  * Two strategies, tried in order:

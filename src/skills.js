@@ -10,7 +10,7 @@ import { resolveSkillsShInstall } from "./sources.js";
 import { describeFindings, scanSkillBundle } from "./verify.js";
 import { writeJson } from "./home.js";
 import { locateSkillRoot, readZip, stripCommonPrefix } from "./zip.js";
-import { clawhubResolve, lobehubAgentSkill, modelScopeSkill } from "./extra-sources.js";
+import { clawhubResolve, lobehubAgentSkill, modelScopeSkill, modelScopeGitHubSkill } from "./extra-sources.js";
 import { ensureDir, expandPath } from "./home.js";
 import {
   installViaSkillsShCli,
@@ -100,7 +100,7 @@ async function existingSlugs(dirs) {
  * Install a skill into the first configured skill directory.
  * Supported sources: `github` (owner/repo[/sub/path]), `url` (a SKILL.md or raw file URL), `skillhub` (needs upstream_url), `local` (a directory on disk).
  */
-export async function installSkill({ source = "github", reference = "", skillDir = "", dir = "", name = "", ref = "", force = false, skillDirs, cache } = {}) {
+export async function installSkill({ source = "github", reference = "", skillDir = "", dir = "", name = "", ref = "", force = false, skillDirs, cache, upstreamUrl = "" } = {}) {
   const roots = skillDirs && skillDirs.length > 0 ? skillDirs : [];
   if (roots.length === 0) throw new Error("no skill directories are configured");
   const targetRoot = dir ? expandPath(dir) : roots[0];
@@ -399,7 +399,24 @@ export async function installSkill({ source = "github", reference = "", skillDir
   }
 
   if (source === "modelscope") {
-    const bundle = await modelScopeSkill(reference);
+    // Fast path: when the search result carries an upstreamUrl (owner/repo@branch)
+    // and a skillDir, download directly from GitHub — the same proven path used
+    // by skills.sh and skillsmp. 1.4–3.0 s in testing.
+    // Fallback: official ModelScope ZIP endpoint — covers the ~10 % of skills
+    // that have no GitHub upstream. 3.7–4.9 s in testing.
+    let bundle;
+    if (upstreamUrl) {
+      try {
+        bundle = await modelScopeGitHubSkill(upstreamUrl, skillDir || "", reference);
+        console.log(`[dsh-market] modelscope via GitHub upstream ${upstreamUrl}${skillDir ? "/" + skillDir : ""} succeeded`);
+      } catch (ghErr) {
+        console.log(`[dsh-market] modelscope GitHub upstream failed, falling back to ZIP: ${ghErr.message}`);
+        bundle = null;
+      }
+    }
+    if (!bundle) {
+      bundle = await modelScopeSkill(reference);
+    }
     const scan = scanSkillBundle({ files: bundle.files, skillText: bundle.files["SKILL.md"] });
     if (!scan.allowed && !force) {
       throw new Error(`安全检查未通过：${describeFindings(scan.findings.filter((f) => f.severity === "high"))}`);
@@ -408,7 +425,7 @@ export async function installSkill({ source = "github", reference = "", skillDir
       slug: name || bundle.name || reference,
       files: bundle.files,
       skillText: bundle.files["SKILL.md"],
-      origin: { source: "modelscope", ident: reference },
+      origin: { source: "modelscope", ident: reference, upstreamUrl: upstreamUrl || "" },
     });
   }
 

@@ -489,6 +489,7 @@ window.__ModuleLoader__.load({
           const d = await call('skills.preview', {
             source: item.source,
             reference: item.source === 'skills.sh' ? item.homepage : item.source === 'clawhub' ? item.installRef : item.source === 'lobehub-agent' ? item.reference || item.slug : item.source === 'browse.sh' ? item.reference : item.source === 'skillhub' ? item.reference || item.upstreamUrl || item.id : item.source === 'modelscope' ? item.modelScopeIdent || item.id.replace(/^modelscope:/, '') : item.upstreamUrl || item.id,
+            upstreamUrl: item.source === 'modelscope' ? (item.upstreamUrl || '') : '',
             skillDir: item.skillDir || '',
             ref: item.ref || '',
             name: item.slug,
@@ -733,6 +734,7 @@ window.__ModuleLoader__.load({
                         : item.source === 'modelscope'
                           ? item.modelScopeIdent || item.id.replace(/^modelscope:/, '')
                           : item.upstreamUrl || item.id,
+            upstreamUrl: item.source === 'modelscope' ? (item.upstreamUrl || '') : '',
             skillDir: item.skillDir || '',
             ref: item.ref || '',
             name: item.slug,

@@ -1045,6 +1045,7 @@ export async function apply(ctx, config = {}) {
         const installed = await installSkill({
           source: body.source || "github",
           reference: body.reference,
+          upstreamUrl: body.upstreamUrl || "",
           skillDir: body.skillDir || "",
           name: body.name || "",
           ref: body.ref || "",
@@ -1205,6 +1206,7 @@ export async function apply(ctx, config = {}) {
             const installed = await installSkill({
               source: body.source,
               reference: body.reference,
+              upstreamUrl: body.upstreamUrl || "",
               skillDir: body.skillDir || "",
               name: body.name || "",
               ref: body.ref || "",
@@ -1242,6 +1244,7 @@ export async function apply(ctx, config = {}) {
           const installed = await installSkill({
             source: body.source || "github",
             reference: body.reference,
+            upstreamUrl: body.upstreamUrl || "",
             skillDir: body.skillDir || "",
             name: body.name || "",
             ref: body.ref || "",
