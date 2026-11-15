@@ -175,6 +175,8 @@ window.__ModuleLoader__.load({
       const [sort, setSort] = useState('default');
       const [category, setCategory] = useState('all');
       const [preview, setPreview] = useState(null);
+      const [pageJump, setPageJump] = useState('');
+      const [mcpPageJump, setMcpPageJump] = useState('');
       const [installedFilter, setInstalledFilter] = useState('');
       // 最近一次的查询结果缓存（按 tab+source+category+sort+query 作 key），
       // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
@@ -219,7 +221,7 @@ window.__ModuleLoader__.load({
         else searchMcps(query, { page: p });
       };
 
-      const pager = (page, totalPages, hasMore, label) => {
+      const pager = (page, totalPages, hasMore, label, jumpState, setJumpState) => {
         const unknown = !totalPages; // 注册表按 cursor 走，没有可数的总页数
         const n = unknown ? 0 : Math.max(1, Math.trunc(totalPages) || 1);
         const shown = Math.min(page, n || page);
@@ -253,7 +255,32 @@ window.__ModuleLoader__.load({
             h('span', { style: S.status },
               unknown
                 ? `${label} · 第 ${page} 页（${hasMore ? '可继续加载' : '已是最后一页'}）`
-                : `${label} 第 ${page} / ${n} 页`)));
+                : `${label} 第 ${page} / ${n} 页`),
+            h('span', { style: { fontSize: 12, opacity: 0.6, marginLeft: 8 } }, '跳至'),
+            h('input', {
+              style: { ...S.input, width: 56, height: 26, textAlign: 'center' },
+              type: 'number',
+              min: 1,
+              max: unknown ? '' : n,
+              value: jumpState,
+              placeholder: String(page),
+              onChange: (e) => setJumpState(e.target.value),
+              onKeyDown: (e) => {
+                if (e.key === 'Enter') {
+                  const p = Math.max(1, Math.trunc(Number(jumpState) || page));
+                  if (!unknown && p > n) return;
+                  setJumpState('');
+                  gotoPage(p);
+                }
+              },
+              onBlur: () => {
+                if (jumpState) {
+                  const p = Math.max(1, Math.trunc(Number(jumpState) || page));
+                  setJumpState('');
+                  gotoPage(p);
+                }
+              },
+            })));
       };
 
       const loadInstalled = useCallback(async () => {
@@ -852,6 +879,7 @@ window.__ModuleLoader__.load({
             item.owner ? h('span', null, `· ${item.owner}`) : null,
             item.category ? h('span', null, `· ${item.category}`) : null,
             item.installs ? h('span', null, `· ${item.installs.toLocaleString()} 次安装`) : null,
+            item.stars ? h('span', null, `· ★ ${Number(item.stars).toLocaleString()}`) : null,
             item.describedBy === 'page-meta' ? null : null,
             item.installable === false ? h('span', null, '· 仅可浏览') : null),
           h('div', { style: S.row },
@@ -891,6 +919,7 @@ window.__ModuleLoader__.load({
             item.owner ? h('span', null, `· ${item.owner}`) : null,
             item.category ? h('span', null, `· ${item.category}`) : null,
             item.installs ? h('span', null, `· ${Number(item.installs).toLocaleString()} 次安装`) : null,
+            item.stars ? h('span', null, `· ★ ${Number(item.stars).toLocaleString()}`) : null,
             (item.envRequired || []).length ? h('span', null, `· 需要 ${item.envRequired.join(', ')}`) : null),
           // "name" is the registry identifier users may need to copy into a manual install.
           h('div', { style: S.meta }, h('span', null, item.slug)),
@@ -1089,7 +1118,7 @@ window.__ModuleLoader__.load({
                           searchMcps(query, { sort: next, page: 1 });
                         },
                       },
-                        h('option', { value: 'default' }, '默认顺序'),
+                        h('option', { value: 'default' }, '按安装数'),
                         mcpSource === 'lobehub'
                           ? h('option', { value: 'installCount' }, '安装最多')
                           : h('option', { value: 'name' }, '按名称'),
@@ -1099,7 +1128,7 @@ window.__ModuleLoader__.load({
                         value: sort,
                         onChange: (e) => setSort(e.target.value),
                       },
-                        h('option', { value: 'default' }, '默认顺序'),
+                        h('option', { value: 'default' }, '按安装数'),
                         h('option', { value: 'name' }, '按名称')),
 )
               : null,
@@ -1255,7 +1284,9 @@ window.__ModuleLoader__.load({
                       tab === 'skills' ? skillsPage : mcpPage,
                       tab === 'skills' ? skillsTotalPages : mcpTotalPages,
                       tab === 'skills' ? skillsHasMore : mcpHasMore,
-                      tab === 'skills' ? '共约' : (mcpSource === 'lobehub' ? '共约' : '')))))
+                      tab === 'skills' ? '共约' : (mcpSource === 'lobehub' ? '共约' : ''),
+                       tab === 'skills' ? pageJump : mcpPageJump,
+                       tab === 'skills' ? setPageJump : setMcpPageJump))))
               : null,
             tab === 'installed' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, flex: 1, width: '100%', alignItems: 'stretch' } },
               // 上传技能：拖拽文件夹或点按钮选文件夹。宿主 @deepseek-ai 包没有 showOpenDialog
