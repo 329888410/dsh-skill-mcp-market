@@ -188,32 +188,6 @@ window.__ModuleLoader__.load({
       const [skillsTotal, setSkillsTotal] = useState(0);
       const [skillsHasMore, setSkillsHasMore] = useState(false);
 
-/**
-       * 分页导航：上一页/下一页 + 页码（中间省略号折叠）+ 每页条数选择器。
-       * 页码序列 1…5,7,8,20 → [1,2,3,4,5,'…',7,8,20]：当前页前后各留 2 个、首尾常显、
-       * 间隔大于 1 处折叠成一个「…」（点「…」向后跳 5 页，再点继续 +5，直到接近末页）。
-       * 总页数未知（注册表按 cursor 翻页）时退化为「上一页 / 第 n 页 / 下一页」。
-       */
-      const pageItems = (current, totalPages) => {
-        const n = Math.max(1, Math.trunc(totalPages) || 1);
-        current = Math.min(Math.max(1, Math.trunc(current) || 1), n);
-        if (n <= 9) {
-          const all = [];
-          for (let i = 1; i <= n; i += 1) all.push({ kind: 'num', at: i });
-          return all;
-        }
-        const keep = new Set([1, 2, n - 1, n, current - 1, current, current + 1]);
-        for (let i = Math.max(3, current - 2); i <= Math.min(n - 2, current + 2); i += 1) keep.add(i);
-        const nums = [...keep].filter((p) => p >= 1 && p <= n).sort((a, b) => a - b);
-        const out = [];
-        let prev = 0;
-        for (const p of nums) {
-          if (p - prev > 1) out.push({ kind: 'gap', at: p });
-          out.push({ kind: 'num', at: p });
-          prev = p;
-        }
-        return out;
-      };
 
       const gotoPage = (p) => {
         p = Math.max(1, Math.min(p, 1 << 30));
@@ -225,7 +199,19 @@ window.__ModuleLoader__.load({
         const unknown = !totalPages; // 注册表按 cursor 走，没有可数的总页数
         const n = unknown ? 0 : Math.max(1, Math.trunc(totalPages) || 1);
         const shown = Math.min(page, n || page);
-        const items = pageItems(shown, n || 1);
+        // 页码窗口：固定显示当前页前后各 5 页（初始显示 1–10；已知总数时下界钳制到 1）
+        const pageWin = (function () {
+          const out = [];
+          for (let i = Math.max(1, shown - 5); i <= shown + 5; i += 1) out.push(i);
+          return out;
+        })();
+        const pageButtons = pageWin.map((p) =>
+          h('button', {
+            key: `pg${p}`,
+            style: S.btn(p === page ? 'primary' : undefined),
+            disabled: busy !== '' || p === page,
+            onClick: () => gotoPage(p),
+          }, String(p)));
         return h('div', { style: { ...S.row, justifyContent: 'space-between', padding: '4px 2px' } },
           h('div', { style: S.row },
             h('button', {
@@ -233,19 +219,7 @@ window.__ModuleLoader__.load({
               disabled: page <= 1 || busy !== '',
               onClick: () => gotoPage(page - 1),
             }, '‹ 上一页'),
-            items.map((it, i) => it.kind === 'gap'
-              ? h('button', {
-                  key: `g${i}`,
-                  style: { ...S.btn(), minWidth: 44, opacity: 0.7 },
-                  title: '向后跳 5 页',
-                  onClick: () => gotoPage(unknown ? page + 5 : Math.min(it.at + 5, n)),
-                }, '…')
-              : h('button', {
-                  key: it.at,
-                  style: S.btn(it.at === page ? 'primary' : undefined),
-                  disabled: busy !== '' || it.at === page,
-                  onClick: () => gotoPage(it.at),
-                }, String(it.at))),
+            pageButtons,
             h('button', {
               style: S.btn(),
               disabled: (unknown ? !hasMore : page >= n) || busy !== '',
