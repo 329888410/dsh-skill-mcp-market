@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.66
+
+- **市场面板滚动条加粗加深**：`S.body` 的右侧滚动条从系统默认（~6px 半透明灰）改为 12px、拇指 `#444`、轨道 `#f3f4f6`，WebKit `::-webkit-scrollbar` 与 Firefox `scrollbar-width` 双轨。
+- **搜索栏与 Tab 标签栏在向下滚动时固定**：面板 DOM 结构本身已经是 `head`（Tab 栏）+ `body`（搜索栏 + 内容）分离，只有 body 会滚动；实测向下滚 500px 后搜索框与 Tab 标签 y 坐标完全不变（268 / 10 → 268 / 10），无需改动，仅记录验证结果。
+
 ## 0.5.65
 
 - **修复 0.5.64 的致命回归**：删除 `installedGroups` 状态时漏删了 `loadInstalled` 里的 `setInstalledGroups(s.groups || [])` 调用，导致面板任何一次渲染都抛 `setInstalledGroups is not defined`（用户三个 tab 全部红字）。已删除该调用；实测同端口 GUI 四个 tab 均无报错，「已安装」tab 正确渲染可折叠分组标题（▾ 用户目录 rank 200 · 1 个 / ▾ 插件提供 rank 500 · 1 个）与新卡片文案（禁用模型调用 / 打开文件夹 / 卸载）。

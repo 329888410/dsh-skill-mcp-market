@@ -81,7 +81,26 @@ window.__ModuleLoader__.load({
         cursor: 'pointer',
         color: 'inherit',
       }),
-      body: { flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'stretch' },
+      body: {
+        flex: 1,
+        overflow: 'auto',
+        padding: '12px 18px 12px 12px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        alignItems: 'stretch',
+        // 更粗、更深的竖直滚动条（WebKit）
+        scrollbarWidth: 'thin',
+        scrollbarColor: '#5a636e #eef1f4',
+        '&::-webkit-scrollbar': { width: '12px' },
+        '&::-webkit-scrollbar-track': { background: '#f0f2f4' },
+        '&::-webkit-scrollbar-thumb': {
+          background: '#5a636e',
+          borderRadius: 6,
+          border: '2px solid #f0f2f4',
+        },
+        '&::-webkit-scrollbar-thumb:hover': { background: '#3d444d' },
+      },
       row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
       grid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignContent: 'start', alignItems: 'start' },
       chip: (active) => ({
@@ -1023,7 +1042,17 @@ window.__ModuleLoader__.load({
               },
             }, '卸载'))));
 
-      return h('div', { style: S.page, 'data-dsh-market-root': '' },
+      return h('div', {
+          style: S.page,
+          'data-dsh-market-root': '',
+        },
+        // 全局滚动条样式（粗 12px、深色 #444 拇指、#1e1e1e 轨道）
+        h('style', null,
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar { width: 12px; }' +
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-track { background: #f3f4f6; }' +
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb { background: #444; border-radius: 6px; border: 2px solid #f3f4f6; }' +
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb:hover { background: #222; }' +
+          '[data-dsh-market-root] [data-dsh-market-body] { scrollbar-width: thin; scrollbar-color: #444 #f3f4f6; }'),
         h('div', { style: S.panel },
           h('div', { style: S.head },
             h('button', { style: S.tab(tab === 'skills'), onClick: () => setTab('skills') }, 'SKILL 技能'),
@@ -1032,7 +1061,7 @@ window.__ModuleLoader__.load({
             h('button', { style: S.tab(tab === 'settings'), onClick: () => setTab('settings') }, '路径'),
             h('div', { style: { flex: 1 } }),
             h('span', { style: S.status }, busy ? `处理中：${busy}` : '')),
-          h('div', { style: S.body },
+          h('div', { style: S.body, 'data-dsh-market-body': '' },
             (tab === 'skills' || tab === 'mcp')
               ? h('div', { style: S.row },
                   h('input', {
