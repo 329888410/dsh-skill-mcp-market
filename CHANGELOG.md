@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.63
+
+- **修复「插件入口反复消失」的真因（右侧栏 tab 注册的 effect 泄漏）**：
+  - `ctx.effect(() => { ctx.sidebarRightTabs.register(...) })` **丢掉了 `register()` 返回的 disposer**。客户端模块热重载时，上一次注册仍在注册表里，第二次 `register()` 抛
+    `sidebarRight: tab type id "..." is already registered`；异常冒到 cordis，**整个插件被卸载**，表现为左侧栏「SKILL技能&MCP连接器」消失。
+  - 修法：effect 回调把 disposer 原样返回（下次重载会正确注销），并把注册包进 `try/catch`——tab 注册失败只丢右侧栏 tab，**绝不连累市场面板本身**。
+  - 实测证据：修复后同端口复现该 warning
+    `[dsh-skill-mcp-market] 右侧栏 tab 注册失败（不影响市场面板）: sidebarRight: tab type id "dsh-skill-mcp-market" is already registered`，
+    而入口 **仍在**（ref 69）、面板四个 tab 正常、详情按钮 24 个——证明异常已被隔离。
+  - 说明：0.5.60 的 slot id 去重（`dsh-market` → `dsh-skill-mcp-market`）是另一件事，解决的是与第三方 `dshmarket` 的标识冲突，二者都需要。
+
 ## 0.5.62
 
 - **已装技能按来源层级浏览**（方案 2），不再把五层目录拍平成一个列表：

@@ -1695,23 +1695,33 @@ window.__ModuleLoader__.load({
             },
             Market,
           ));
+        // tab 类型的注册必须把 disposer 交回 effect：不返回它，客户端热重载时
+        // 上一次的 id/kind 仍在注册表里，第二次 register() 会抛「already registered」，
+        // 异常冒到 cordis 就会把整个插件卸载（表现为侧边栏入口消失）。
         ctx.effect(() => {
           const tabs = ctx.sidebarRightTabs;
           if (!tabs || typeof tabs.register !== 'function') return;
-          tabs.register({
-            id: 'dsh-skill-mcp-market',
-            kind: 'dsh-skill-mcp-market',
-            multiple: false,
-            priority: 'extension',
-            title: () => '技能市场',
-            guide: [{
-              id: 'new',
-              order: 50,
+          try {
+            const dispose = tabs.register({
+              id: 'dsh-skill-mcp-market',
+              kind: 'dsh-skill-mcp-market',
+              multiple: false,
+              priority: 'extension',
               title: () => '技能市场',
-              description: () => '浏览、搜索、安装 SKILL 技能与 MCP 连接器',
-            }],
-          });
-        }, 'dsh-market.tab-type');
+              guide: [{
+                id: 'new',
+                order: 50,
+                title: () => '技能市场',
+                description: () => '浏览、搜索、安装 SKILL 技能与 MCP 连接器',
+              }],
+            });
+            return typeof dispose === 'function' ? dispose : undefined;
+          } catch (e) {
+            // 注册失败绝不能连累市场面板本身
+            console.warn('[dsh-skill-mcp-market] 右侧栏 tab 注册失败（不影响市场面板）:', e && e.message);
+            return undefined;
+          }
+        }, 'dsh-skill-mcp-market.tab-type');
       },
     };
   },
