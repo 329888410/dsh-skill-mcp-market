@@ -28,6 +28,7 @@ import { makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./s
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 import { inspectSessionLog, repairSessionLog } from "./src/session-repair.js";
+import { readZip } from "./src/zip.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -1101,6 +1102,50 @@ export async function apply(ctx, config = {}) {
           force: Boolean(body.force),
           skillDirs: settings.skillDirs,
         });
+      }
+      case "skills.importZip": {
+        const b64 = String(body.dataBase64 || "");
+        if (!b64) throw new Error("请提供 .zip 文件内容（dataBase64）");
+        const label = String(body.fileName || "upload.zip");
+        let buffer;
+        try {
+          buffer = Buffer.from(b64, "base64");
+        } catch {
+          throw new Error(".zip 内容不是合法 base64");
+        }
+        if (buffer.length > 4 * 1024 * 1024) {
+          throw new Error(`压缩包 ${(buffer.length / 1024 / 1024).toFixed(1)}MB 超过 4MB 上限`);
+        }
+        if (!(buffer[0] === 0x50 && buffer[1] === 0x4b)) throw new Error("不是有效的 ZIP（缺少 PK 头）");
+        const zipRead = readZip(buffer);
+        if (zipRead.skipped.length > 0 && Object.keys(zipRead.files).length === 0) {
+          throw new Error(`压缩包内没有可用文件：${zipRead.skipped.map((s) => `${s.name}（${s.reason}）`).join("；")}`);
+        }
+        const entries = Object.keys(zipRead.files);
+        if (entries.length > 512) throw new Error(`压缩包条目数 ${entries.length} 超过 512 上限`);
+        const skillMd = entries.find((name) => name === "SKILL.md" || name.endsWith("/SKILL.md"));
+        if (!skillMd) throw new Error("压缩包里没有 SKILL.md");
+        const skillBytes = Buffer.byteLength(zipRead.files[skillMd], "utf8");
+        if (skillBytes > 64 * 1024) throw new Error(`SKILL.md ${skillBytes} 字节超过 64KB 上限`);
+        let totalBytes = 0;
+        for (const name of entries) totalBytes += Buffer.byteLength(zipRead.files[name], "utf8");
+        if (totalBytes > 4 * 1024 * 1024) throw new Error(`解压后 ${(totalBytes / 1024 / 1024).toFixed(1)}MB 超过 4MB 上限`);
+        const tempPath = join(tmpdir(), `dsh-market-${Date.now()}-${Math.random().toString(16).slice(2)}.zip`);
+        await writeFile(tempPath, buffer);
+        try {
+          const installed = await installSkill({
+            source: "zip",
+            reference: tempPath,
+            name: body.name || "",
+            force: Boolean(body.force),
+            dir: body.dir || "",
+            skillDirs: settings.skillDirs,
+          });
+          await registerInstalledSkillToCatalog(installed, log);
+          return { ...installed, fileName: label, entries: entries.length, skipped: zipRead.skipped };
+        } finally {
+          await rm(tempPath, { force: true }).catch(() => {});
+        }
       }
       case "skills.upload": {
         // 面板「上传技能」按钮弹系统文件夹选择器，选中路径回传到这里。

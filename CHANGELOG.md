@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.59
+
+- **新增 .zip 导入**（方案 3）：
+  - 新 RPC `skills.importZip { dataBase64, fileName, name?, force? }`：浏览器读 `.zip` → base64 → 服务端解码落临时文件 → 复用 `installSkill({source:"zip"})` 的**暂存+原子提交**管道（与 0.5.56 同一套零残留逻辑）。
+  - 硬性上限（对齐 explorer 安全约束）：压缩包 ≤ 4MB、条目 ≤ 512、单个 SKILL.md ≤ 64KB、解压文本总量 ≤ 4MB、必须是合法 PK 头、必须有 SKILL.md；越界/不支持的条目由 `readZip` 点名跳过并在返回体里带 `skipped`。
+  - 只新建不覆盖：沿用 `existingSlugs` + `uniqueSlug`，非 `force` 时同名自动加后缀。
+  - 客户端「已安装」tab 上传区新增「导入 .zip」按钮；分块 base64 编码避免大文件爆栈。
+  - 实测：316 字节的 zip（`zip-skill/SKILL.md` + `zip-skill/extra.md`）→ 安装成功、落盘 `SKILL.md`/`extra.md`/`.market-install.json`、**零暂存残留**。
+
 ## 0.5.58
 
 - **补齐回收站管理面**（方案 5 第 4 部分）：删除本来就是 `rename` 进 `.trash`，但一直没有恢复入口。现在：

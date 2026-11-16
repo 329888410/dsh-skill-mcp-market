@@ -1236,6 +1236,43 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, '浏览文件夹'),
+                h('button', {
+                  style: S.btn(),
+                  disabled: busy === 'uploadZip',
+                  onClick: async () => {
+                    setBusy('uploadZip');
+                    setError('');
+                    setNotice('');
+                    try {
+                      const input = document.createElement('input');
+                      input.type = 'file';
+                      input.accept = '.zip,application/zip';
+                      input.style.display = 'none';
+                      document.body.appendChild(input);
+                      const picked = await new Promise((resolve) => {
+                        input.onchange = () => resolve(input.files && input.files[0] ? input.files[0] : null);
+                        input.click();
+                      });
+                      document.body.removeChild(input);
+                      if (!picked) return;
+                      if (picked.size > 4 * 1024 * 1024) throw new Error(`压缩包 ${(picked.size / 1024 / 1024).toFixed(1)}MB 超过 4MB 上限`);
+                      const buf = await picked.arrayBuffer();
+                      let binary = '';
+                      const bytes = new Uint8Array(buf);
+                      const CHUNK = 0x8000;
+                      for (let offset = 0; offset < bytes.length; offset += CHUNK) {
+                        binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + CHUNK));
+                      }
+                      const d = await call('skills.importZip', { dataBase64: btoa(binary), fileName: picked.name });
+                      setNotice(`已从 ${d.fileName} 导入 ${d.slug}（${d.files} 个文件，压缩包内 ${d.entries} 项）${d.skipped && d.skipped.length ? `；跳过 ${d.skipped.length} 项` : ''}`);
+                      await loadInstalled();
+                    } catch (e) {
+                      setError(`导入 .zip 失败：${e.message || e}`);
+                    } finally {
+                      setBusy('');
+                    }
+                  },
+                }, busy === 'uploadZip' ? '导入中…' : '导入 .zip'),
                 h('div', {
                   style: {
                     flex: 1,
