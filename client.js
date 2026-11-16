@@ -268,7 +268,6 @@ window.__ModuleLoader__.load({
       const loadInstalled = useCallback(async () => {
         const [s, m] = await Promise.all([call('skills.list'), call('mcp.list')]);
         setInstalled(s.items || []);
-        setInstalledGroups(s.groups || []);
         setMounted(m.items || []);
         return { s, m };
       }, []);
