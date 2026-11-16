@@ -535,7 +535,11 @@ window.__ModuleLoader__.load({
           return ident ? `https://modelscope.cn/skills/${ident}` : '';
         }
         if (source === 'skillsmp') {
-          if (item.upstreamUrl) return `https://github.com/${item.upstreamUrl}`;
+          // upstreamUrl 格式为 owner/repo@branch，取 @ 前的部分拼 GitHub URL
+          if (item.upstreamUrl) {
+            const repo = String(item.upstreamUrl).split('@')[0];
+            return repo ? `https://github.com/${repo}` : '';
+          }
           if (item.homepage) return item.homepage;
           return '';
         }
