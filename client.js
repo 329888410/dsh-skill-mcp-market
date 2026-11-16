@@ -1637,13 +1637,13 @@ window.__ModuleLoader__.load({
         // Left sidebar entry: the sidebar renders the button and reads the label from here.
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register(
-            { name: 'sidebar.panellist', id: 'dsh-market', order: 20, label: () => 'SKILL技能&MCP连接器' },
+            { name: 'sidebar.panellist', id: 'dsh-skill-mcp-market', order: 20, label: () => 'SKILL技能&MCP连接器' },
             MarketIcon,
           ));
         // Central panel addressed by that same sidebar id.
         ctx.slots.inject('main', () =>
           ctx.slots.register(
-            { name: 'main', key: 'dsh-market', inject: () => ({ sidebarRight: ctx.sidebarRight, layout: ctx.layout }) },
+            { name: 'main', key: 'dsh-skill-mcp-market', inject: () => ({ sidebarRight: ctx.sidebarRight, layout: ctx.layout }) },
             Market,
           ));
         // Composer toolbar: 技能 / MCP quick buttons on the input row (left group).
@@ -1659,7 +1659,7 @@ window.__ModuleLoader__.load({
                 openMarketPanel: () => {
                   try {
                     const layout = ctx.layout;
-                    if (layout && typeof layout.selectPanel === 'function') layout.selectPanel('dsh-market');
+                    if (layout && typeof layout.selectPanel === 'function') layout.selectPanel('dsh-skill-mcp-market');
                   } catch { /* layout service unavailable; ignore */ }
                 },
               }),
@@ -1673,7 +1673,7 @@ window.__ModuleLoader__.load({
           ctx.slots.register(
             {
               name: 'sidebar.right.pane.tab',
-              key: 'dsh-market',
+              key: 'dsh-skill-mcp-market',
               inject: () => ({ sidebarRight: ctx.sidebarRight, layout: ctx.layout }),
             },
             Market,
@@ -1682,8 +1682,8 @@ window.__ModuleLoader__.load({
           const tabs = ctx.sidebarRightTabs;
           if (!tabs || typeof tabs.register !== 'function') return;
           tabs.register({
-            id: 'dsh-market',
-            kind: 'dsh-market',
+            id: 'dsh-skill-mcp-market',
+            kind: 'dsh-skill-mcp-market',
             multiple: false,
             priority: 'extension',
             title: () => '技能市场',

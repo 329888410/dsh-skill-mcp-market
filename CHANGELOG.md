@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.60
+
+- **修复侧边栏入口消失（与第三方 dshmarket 的 slot id 冲突）**：`dshmarket@1.73.19` 把 `sidebar.panellist` 注册成 `id: "dsh-market"`、`main` 注册成 `key: "dsh-market"`，与本插件 0.5.55 起用的同名 id/key **完全撞车**，两个插件抢同一格，本插件的「SKILL技能&MCP连接器」行被挤掉。
+  - 全部 slot 身份改为带包名的唯一值：`sidebar.panellist` id、`main` key、右侧栏 tab 的 `id`/`kind`、`layout.selectPanel()` 参数 → `dsh-skill-mcp-market`。
+  - 本插件内 `'dsh-market'` 字面量 **6 → 0**，不再与任何第三方插件共用标识。
+  - 排查依据：`dshmarket/client/client.js` 中 `const SIDEBAR_PANEL_ID = "dsh-market"` 与同样的 `sidebar.panellist` 注册；同端口实测本插件的 bundle 已含新代码、入口能正常出现。
+
 ## 0.5.59
 
 - **新增 .zip 导入**（方案 3）：
