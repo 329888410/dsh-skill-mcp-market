@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.56
+
+- **安装改为「暂存 + 原子提交」**：先在 `<root>/.staging-<slug>-<ts>` 写全部文件与 `.market-install.json`，核对无误后 `rename` 到正式目录（同卷原子）；任何一步失败只清暂存，**正式目录零残留**。跨卷 `EXDEV` 降级 `copy + rm`，失败同样只清暂存。
+- **安全扫描改为报告制（不拒装）**：`scanSkillBundle` 仍执行，高危命中不再抛错，改为随安装结果返回 `findings` 与 `scanStats`，由界面提示用户自行确认。
+- 移除 `lobehub` / `modelscope` 分支里重复的预扫描拒绝逻辑（统一由 `writeSkill` 报告）。
+- `uploadSkillFromFolder` 的 `copyOne` 同步改为暂存 + 原子提交 + 报告制。
+- 新增同名保护：非 `force` 安装时若正式目录已存在，明确报错而不是静默覆盖。
+- 清理未使用的 `describeFindings` 导入。
+
 ## 0.5.54
 
 - **移除「预览」功能**：详情按钮已覆盖"看介绍"需求（内置浏览器 tab 打开来源站完整详情页，比 tarball 下载快且信息更全），预览按钮与预览弹层（`skills.preview` 客户端调用路径、`preview`/`previewModal` state、卡片「预览」按钮、预览模态）全部移除。

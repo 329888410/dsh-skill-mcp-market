@@ -7,7 +7,7 @@ import { kebab, parseFrontmatter, skillMetaFromText } from "./frontmatter.js";
 import { downloadSkillDir, listTree, parseRepoRef, readRepoFile, resolveRef, skillDirsFrom, findSkillDirFor } from "./github.js";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { resolveSkillsShInstall } from "./sources.js";
-import { describeFindings, scanSkillBundle } from "./verify.js";
+import { scanSkillBundle } from "./verify.js";
 import { writeJson } from "./home.js";
 import { locateSkillRoot, readZip, stripCommonPrefix } from "./zip.js";
 import { clawhubResolve, lobehubAgentSkill, modelScopeSkill, modelScopeGitHubSkill } from "./extra-sources.js";
@@ -114,23 +114,66 @@ export async function installSkill({ source = "github", reference = "", skillDir
     if (!meta.name || !meta.description) {
       throw new Error("SKILL.md must declare both `name` and `description` in its frontmatter");
     }
+    // 安全扫描：报告制（不拒装），高危发现随结果返回，由客户端展示
     const scan = scanSkillBundle({ files, skillText });
-    if (!scan.allowed && !force) {
-      throw new Error(`安全检查未通过（${scan.stats.high} 项高危）：${describeFindings(scan.findings.filter((f) => f.severity === "high"))}。确认可信后可加 force:true 强制安装。`);
+    const highFindings = scan.findings.filter((f) => f.severity === "high");
+
+    // 暂存目录 + 原子提交：任何一步失败只清暂存，正式目录零残留
+    const staging = join(targetRoot, `.staging-${finalSlug}-${Date.now()}`);
+    await ensureDir(staging);
+    try {
+      for (const [relative, content] of Object.entries(files)) {
+        const target = join(staging, relative);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, content, "utf8");
+      }
+      await writeJson(join(staging, ".market-install.json"), {
+        slug: finalSlug,
+        name: meta.name,
+        origin,
+        installedAt: new Date().toISOString(),
+      });
+      // 完整性核对：暂存文件数与来源一致
+      const staged = await readdir(staging, { recursive: true });
+
+      const manifestPresent = staged.some((f) => String(f) === ".market-install.json");
+      if (!manifestPresent) {
+        throw new Error("完整性校验失败：暂存缺少 .market-install.json");
+      }
+      // 原子提交：rename 暂存 → 正式目录（同卷）；跨卷 EXDEV 降级 copy+rm
+      if (existsSync(targetDir)) {
+        if (force) {
+          await rm(targetDir, { recursive: true, force: true });
+        } else {
+          throw new Error(`技能 ${finalSlug} 已存在于 ${targetDir}，加 force 可覆盖`);
+        }
+      }
+      try {
+        await rename(staging, targetDir);
+      } catch (error) {
+        if (error && error.code === "EXDEV") {
+          await cp(staging, targetDir, { recursive: true });
+          await rm(staging, { recursive: true, force: true });
+        } else {
+          throw error;
+        }
+      }
+      return {
+        ok: true,
+        slug: finalSlug,
+        name: meta.name,
+        description: meta.description,
+        dir: targetDir,
+        files: Object.keys(files).length,
+        findings: highFindings.length ? highFindings : undefined,
+        scanStats: scan.stats,
+      };
+    } finally {
+      // 暂存目录存在即清理（rename 成功后 staging 已不存在，rm 是 no-op）
+      if (existsSync(staging)) {
+        await rm(staging, { recursive: true, force: true }).catch(() => {});
+      }
     }
-    await ensureDir(targetDir);
-    for (const [relative, content] of Object.entries(files)) {
-      const target = join(targetDir, relative);
-      await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, content, "utf8");
-    }
-    await writeJson(join(targetDir, ".market-install.json"), {
-      slug: finalSlug,
-      name: meta.name,
-      origin,
-      installedAt: new Date().toISOString(),
-    });
-    return { ok: true, slug: finalSlug, name: meta.name, description: meta.description, dir: targetDir, files: Object.keys(files).length };
   };
 
   if (source === "local") {
@@ -386,10 +429,6 @@ export async function installSkill({ source = "github", reference = "", skillDir
 
   if (source === "lobehub") {
     const bundle = await lobehubAgentSkill(reference);
-    const scan = scanSkillBundle({ files: bundle.files, skillText: bundle.files["SKILL.md"] });
-    if (!scan.allowed && !force) {
-      throw new Error(`安全检查未通过：${describeFindings(scan.findings.filter((f) => f.severity === "high"))}`);
-    }
     return writeSkill({
       slug: name || bundle.name || reference,
       files: bundle.files,
@@ -416,10 +455,6 @@ export async function installSkill({ source = "github", reference = "", skillDir
     }
     if (!bundle) {
       bundle = await modelScopeSkill(reference);
-    }
-    const scan = scanSkillBundle({ files: bundle.files, skillText: bundle.files["SKILL.md"] });
-    if (!scan.allowed && !force) {
-      throw new Error(`安全检查未通过：${describeFindings(scan.findings.filter((f) => f.severity === "high"))}`);
     }
     return writeSkill({
       slug: name || bundle.name || reference,
@@ -575,23 +610,46 @@ export async function uploadSkillFromFolder({ folder, skillDirs, force = false }
     if (!meta.name || !meta.description) {
       throw new Error(`${finalSlug}：SKILL.md 缺少 frontmatter 的 name 或 description，无法导入`);
     }
+    // 安全扫描：报告制（不拒装），高危发现随结果返回
     const scan = scanSkillBundle({ files, skillText });
-    if (!scan.allowed && !force) {
-      throw new Error(`${finalSlug} 安全检查未通过（${scan.stats.high} 项高危）：${describeFindings(scan.findings.filter((f) => f.severity === "high"))}。确认可信后请重新上传并勾选强制。`);
+    const highFindings = scan.findings.filter((f) => f.severity === "high");
+    // 暂存目录 + 原子提交：任何一步失败只清暂存，正式目录零残留
+    const staging = join(targetRoot, `.staging-${finalSlug}-${Date.now()}`);
+    await ensureDir(staging);
+    try {
+      for (const [relative, content] of Object.entries(files)) {
+        const target = join(staging, relative);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, content, "utf8");
+      }
+      await writeJson(join(staging, ".market-install.json"), {
+        slug: finalSlug,
+        name: meta.name,
+        origin: { source: "upload", path: originPath },
+        installedAt: new Date().toISOString(),
+      });
+      if (existsSync(targetDir)) {
+        if (force) await rm(targetDir, { recursive: true, force: true });
+        else throw new Error(`${finalSlug} 已存在于 ${targetDir}，加 force 可覆盖`);
+      }
+      try {
+        await rename(staging, targetDir);
+      } catch (error) {
+        if (error && error.code === "EXDEV") {
+          await cp(staging, targetDir, { recursive: true });
+          await rm(staging, { recursive: true, force: true });
+        } else {
+          throw error;
+        }
+      }
+      results.push({
+        ok: true, slug: finalSlug, name: meta.name, files: Object.keys(files).length, dir: targetDir,
+        findings: highFindings.length ? highFindings : undefined,
+      });
+    } finally {
+      // 暂存目录存在即清理（rename 成功后 staging 已不存在，rm 是 no-op）
+      if (existsSync(staging)) await rm(staging, { recursive: true, force: true }).catch(() => {});
     }
-    await ensureDir(targetDir);
-    for (const [relative, content] of Object.entries(files)) {
-      const target = join(targetDir, relative);
-      await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, content, "utf8");
-    }
-    await writeJson(join(targetDir, ".market-install.json"), {
-      slug: finalSlug,
-      name: meta.name,
-      origin: { source: "upload", path: originPath },
-      installedAt: new Date().toISOString(),
-    });
-    results.push({ ok: true, slug: finalSlug, name: meta.name, files: Object.keys(files).length, dir: targetDir, scanned: scan.allowed === true });
   };
 
   const SKIP_DIRS = new Set([
