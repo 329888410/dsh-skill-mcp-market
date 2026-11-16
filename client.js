@@ -175,6 +175,7 @@ window.__ModuleLoader__.load({
       const [sort, setSort] = useState('default');
       const [category, setCategory] = useState('all');
       const [preview, setPreview] = useState(null);
+      const [previewModal, setPreviewModal] = useState(false);
       const [pageJump, setPageJump] = useState('');
       const [mcpPageJump, setMcpPageJump] = useState('');
       const [installedFilter, setInstalledFilter] = useState('');
@@ -505,6 +506,7 @@ window.__ModuleLoader__.load({
             openUrl: d.openUrl || '',
             previewError: d.previewError || '',
           });
+          setPreviewModal(true);
         } catch (e) {
           setError(`预览失败：${e.message || e}`);
         } finally {
@@ -521,6 +523,32 @@ window.__ModuleLoader__.load({
         if (item.source === 'lawhub' || (item.homepage && /lawhub\.ai$/i.test(item.homepage))) {
           return '';
         }
+        // 各源详情页 URL 推导（API 可能不返回 homepage/upstreamUrl）
+        const slug = String(item.slug || '').toLowerCase();
+        const source = item.source;
+        if (source === 'skillhub') {
+          // SkillHub 详情页：https://www.skillhub.cn/skills/<slug>
+          return slug ? `https://www.skillhub.cn/skills/${slug}` : '';
+        }
+        if (source === 'trusttools') {
+          // TrustTools：homepage = https://github.com/<owner>/<repo>
+          if (item.homepage) return item.homepage;
+          if (item.upstreamUrl) return `https://github.com/${item.upstreamUrl}`;
+          return '';
+        }
+        if (source === 'modelscope') {
+          // ModelScope 详情页：https://modelscope.cn/skills/@owner/name
+          if (item.homepage) return item.homepage;
+          const ident = item.modelScopeIdent || '';
+          return ident ? `https://modelscope.cn/skills/${ident}` : '';
+        }
+        if (source === 'skillsmp') {
+          // SkillsMP：GitHub 仓库
+          if (item.upstreamUrl) return `https://github.com/${item.upstreamUrl}`;
+          if (item.homepage) return item.homepage;
+          return '';
+        }
+        // 兜底
         if (item.homepage) return item.homepage;
         if (item.upstreamUrl) return item.upstreamUrl;
         return '';
@@ -1102,7 +1130,7 @@ window.__ModuleLoader__.load({
                         value: sort,
                         onChange: (e) => setSort(e.target.value),
                       },
-                        h('option', { value: 'default' }, ['skillsmp', 'browse.sh', 'all'].includes(source) ? '默认顺序' : '按安装数'),
+                        h('option', { value: 'default' }, ['skillsmp', 'browse.sh'].includes(source) ? '默认顺序' : '按安装数'),
                         h('option', { value: 'name' }, '按名称')),
 )
               : null,
@@ -1221,20 +1249,29 @@ window.__ModuleLoader__.load({
                         ? h('button', { style: S.btn('primary'), disabled: busy === 'save:skill', onClick: saveSkillEdit }, '保存')
                         : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, '保存并重连'))))
               : null,
-            preview
-              ? h('div', { style: S.card },
-                  h('div', { style: S.title }, `预览：${preview.name}（${preview.files} 个文件，未安装）`),
-                  preview.previewError
-                    ? h('div', { style: { ...S.status, color: '#b26a00' } }, `在线预览不可用：${preview.previewError}`)
-                    : null,
-                  h('pre', { style: { fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto', margin: 0 } }, preview.content || (preview.previewError ? '' : '(没有正文)')),
-                  h('div', { style: S.row },
-                    h('button', { style: S.btn(), onClick: () => setPreview(null) }, '关闭预览'),
-                    preview.openUrl ? h('button', {
-                      style: { ...S.btn('primary'), padding: '0 8px' },
-                      title: `在 DSH 客户端内查看详情 ${preview.openUrl}`,
-                      onClick: () => { openDetail({ homepage: preview.openUrl }); setPreview(null); },
-                    }, '在 DSH 客户端内查看详情') : null))
+            preview && previewModal
+              ? h('div', {
+                  style: { position: 'fixed', inset: 0, zIndex: 20, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+                  onClick: (e) => { if (e.target === e.currentTarget) setPreviewModal(false); },
+                },
+                  h('div', {
+                    style: { background: '#fff', borderRadius: 12, width: 'min(680px, 92vw)', maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 8px 40px rgba(0,0,0,0.18)' },
+                  },
+                    h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #eaeef2' } },
+                      h('div', { style: { fontSize: 14, fontWeight: 600 } }, `预览：${preview.name}（${preview.files} 个文件，未安装）`),
+                      h('button', { style: { ...S.btn(), padding: '2px 10px' }, onClick: () => setPreviewModal(false) }, '关闭')),
+                    h('div', { style: { flex: 1, overflow: 'auto', padding: '12px 16px' } },
+                      preview.previewError
+                        ? h('div', { style: { ...S.status, color: '#b26a00' } }, `在线预览不可用：${preview.previewError}`)
+                        : null,
+                      h('pre', { style: { fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 480, overflow: 'auto', margin: 0 } }, preview.content || (preview.previewError ? '' : '(没有正文)'))),
+                    h('div', { style: { display: 'flex', gap: 8, padding: '10px 16px', borderTop: '1px solid #eaeef2', justifyContent: 'flex-end' } },
+                      preview.openUrl ? h('button', {
+                        style: { ...S.btn('primary'), padding: '0 12px' },
+                        title: `在 DSH 客户端内查看详情 ${preview.openUrl}`,
+                        onClick: () => { openDetail({ homepage: preview.openUrl }); setPreviewModal(false); },
+                      }, '在 DSH 客户端内查看详情') : null,
+                      h('button', { style: S.btn(), onClick: () => { setPreview(null); setPreviewModal(false); } }, '关闭预览'))))
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,
