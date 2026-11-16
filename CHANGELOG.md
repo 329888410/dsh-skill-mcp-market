@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.61
+
+- **启用/禁用改为双轨**（方案 4），消除"停用了但模型仍在调用"的误导：
+  - **文件级（主）**：改写技能自己 SKILL.md 的 `disable-model-invocation`，原子写回（`tmp`+`rename`），随后失效宿主 catalog，**模型真的收不到该技能**。
+  - **面板级（辅）**：仍写 `settings.disabledSkills`，只对本面板隐藏，宿主注册表照旧加载——用于插件提供或符号链接接入的技能。
+  - `auto` 策略：SKILL.md 可写且**未通过符号链接接入**时走文件级，否则回落面板级（写穿链接会越出技能根，明确拒绝）。
+  - `skills.toggle` 扩展 `{ slug, enabled, scope: 'file'|'panel'|'auto' }`，返回体新增 `scope` / `path` / `effect`，界面按实际生效层提示。
+  - 新增 `src/frontmatter.js` 的 `setFrontmatterFlag(text, key, value)`：纯函数、字节级保留其余 frontmatter、幂等、支持新增/覆盖/删除 key。
+  - 新增 `src/skills.js` 的 `toggleSkillFile` / `skillFileToggleable`。
+  - 未采用独立的 `provider-toggles.json`：其能力与既有 `disabledSkills` 完全重合，再加一份存储只会让"到底哪个状态生效"更难判断（YAGNI）。
+  - 实测：目录型技能 disable→`disable-model-invocation: true`、enable→`false`、重复 enable 幂等、单文件技能（根下 `.md`）同样生效、无 `tmp` 残留。
+
 ## 0.5.60
 
 - **修复侧边栏入口消失（与第三方 dshmarket 的 slot id 冲突）**：`dshmarket@1.73.19` 把 `sidebar.panellist` 注册成 `id: "dsh-market"`、`main` 注册成 `key: "dsh-market"`，与本插件 0.5.55 起用的同名 id/key **完全撞车**，两个插件抢同一格，本插件的「SKILL技能&MCP连接器」行被挤掉。

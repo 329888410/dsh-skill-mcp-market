@@ -112,3 +112,34 @@ export function kebab(input) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
+
+/**
+ * Set one boolean flag in a SKILL.md frontmatter block, preserving everything else
+ * byte for byte. Creates the key when absent; appends a frontmatter block when the
+ * document has none. Pure: returns the new text.
+ * @param {string} text - current SKILL.md content.
+ * @param {string} key - frontmatter key, e.g. "disable-model-invocation".
+ * @param {boolean|undefined} value - true/false to write, undefined to remove the key.
+ * @returns {string} the rewritten document.
+ */
+export function setFrontmatterFlag(text, key, value) {
+  const src = String(text ?? "");
+  const line = `${key}: ${value === true ? "true" : "false"}`;
+  if (!src.startsWith("---")) {
+    return value === undefined ? src : `---\n${line}\n---\n\n${src}`;
+  }
+  const end = src.indexOf("\n---", 3);
+  if (end < 0) return value === undefined ? src : `---\n${line}\n---\n\n${src}`;
+  const head = src.slice(0, end);           // "---\n...frontmatter..."
+  const tail = src.slice(end);              // "\n---\n body..."
+  const lines = head.split(/\r?\n/);
+  const existing = lines.findIndex((l) => new RegExp(`^\\s*${key}\\s*:`).test(l));
+  if (value === undefined) {
+    if (existing < 0) return src;
+    lines.splice(existing, 1);
+    return lines.join("\n") + tail;
+  }
+  if (existing >= 0) lines[existing] = line;
+  else lines.push(line);
+  return lines.join("\n") + tail;
+}

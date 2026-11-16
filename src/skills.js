@@ -1,9 +1,9 @@
 // Skill install / list / remove, plus the curated catalog shipped with this bundle.
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { kebab, parseFrontmatter, skillMetaFromText } from "./frontmatter.js";
+import { kebab, parseFrontmatter, setFrontmatterFlag, skillMetaFromText } from "./frontmatter.js";
 import { downloadSkillDir, listTree, parseRepoRef, readRepoFile, resolveRef, skillDirsFrom, findSkillDirFor } from "./github.js";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { resolveSkillsShInstall } from "./sources.js";
@@ -839,4 +839,49 @@ export async function emptyTrash({ trashDir, dirs } = {}) {
     }
   }
   return { ok: true, removed };
+}
+
+/** Locate a resolvable skill file and whether it is reached through a symlink. */
+function resolveSkillFile(dirs, slug) {
+  const key = kebab(slug);
+  for (const dir of dirs || []) {
+    const candidates = [join(dir, key, "SKILL.md"), join(dir, `${key}.md`)];
+    for (const candidate of candidates) {
+      if (!existsSync(candidate)) continue;
+      let link = false;
+      try {
+        link = lstatSync(candidate).isSymbolicLink() || lstatSync(join(dir, key)).isSymbolicLink();
+      } catch {
+        link = false;
+      }
+      return { path: candidate, dir, link };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Toggle the model-invocation flag in a skill's own SKILL.md (file level).
+ * Refuses symlinked skills: writing through a link would escape the skill root.
+ * @param {{ dirs: string[], slug: string, enabled: boolean }} options
+ * @returns {Promise<{ ok: boolean, scope: 'file', path: string, enabled: boolean }>}
+ */
+export async function toggleSkillFile({ dirs, slug, enabled }) {
+  const found = resolveSkillFile(dirs, slug);
+  if (!found) throw new Error(`没有找到技能 ${slug} 的 SKILL.md，无法做文件级开关`);
+  if (found.link) throw new Error(`技能 ${slug} 通过符号链接接入，改写会越出技能根，请改用面板级开关`);
+  const text = await readFile(found.path, "utf8");
+  const next = setFrontmatterFlag(text, "disable-model-invocation", enabled ? false : true);
+  if (next !== text) {
+    const tmp = join(dirname(found.path), `.toggle-tmp-${Date.now()}`);
+    await writeFile(tmp, next, "utf8");
+    await rename(tmp, found.path);
+  }
+  return { ok: true, scope: "file", path: found.path, enabled: Boolean(enabled) };
+}
+
+/** Whether a skill can be toggled at file level (exists and is not symlinked). */
+export function skillFileToggleable(dirs, slug) {
+  const found = resolveSkillFile(dirs, slug);
+  return Boolean(found && !found.link);
 }

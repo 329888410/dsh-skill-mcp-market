@@ -18,7 +18,7 @@ import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, set
 import { importShipped, pluginFrom, resolveShipped, SHIPPED } from "./src/shipped.js";
 import { readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { emptyTrash, installSkill, listInstalledSkills, listTrash, restoreFromTrash, uninstallSkill, updateSkill } from "./src/skills.js";
+import { emptyTrash, installSkill, listInstalledSkills, listTrash, restoreFromTrash, skillFileToggleable, toggleSkillFile, uninstallSkill, updateSkill } from "./src/skills.js";
 import { fetchSkillMd, parseRepoRef } from "./src/github.js";
 import { skillMetaFromText, kebab } from "./src/frontmatter.js";
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
@@ -449,11 +449,36 @@ export async function apply(ctx, config = {}) {
     }
   }, "dsh-market.lifecycle");
 
-  /** Enable/disable a skill by writing settings.disabledSkills: the name stays on disk but
-   *  leaves the catalog, then the prompt cache is invalidated. */
-  async function setSkillEnabled(slug, enabled) {
+  /**
+   * Enable/disable a skill on one of two tracks.
+   *  - file  : rewrite `disable-model-invocation` in the skill's own SKILL.md (the model stops
+   *            receiving it after the catalog refreshes) — the primary track.
+   *  - panel : keep the name on disk and hide it from this panel's catalog via
+   *            settings.disabledSkills — the fallback for plugin-provided or symlinked skills.
+   * `auto` picks file when the SKILL.md is writable and not reached through a symlink.
+   */
+  async function setSkillEnabled(slug, enabled, scope = "auto") {
     const key = String(slug || "").trim().toLowerCase();
     if (!key) throw new Error("slug 不能为空");
+    const wanted = scope === "file" || scope === "panel" ? scope : "auto";
+    const fileDirs = [...settings.skillDirs, join(agentsHome(), "skills")];
+    const canFile = wanted !== "panel" && skillFileToggleable(fileDirs, key);
+    if (wanted === "file" || canFile) {
+      const result = await toggleSkillFile({ dirs: fileDirs, slug: key, enabled });
+      try {
+        invalidateSkills?.();
+      } catch {
+        /* ignore */
+      }
+      return {
+        ok: true,
+        slug: key,
+        enabled: Boolean(enabled),
+        scope: "file",
+        path: result.path,
+        effect: enabled ? "文件级：已移除禁用标记，模型可再次调用" : "文件级：已写入禁用标记，模型不再调用",
+      };
+    }
     const disabled = new Set(settings.disabledSkills || []);
     if (enabled) disabled.delete(key);
     else disabled.add(key);
@@ -463,7 +488,14 @@ export async function apply(ctx, config = {}) {
     } catch {
       /* ignore */
     }
-    return { ok: true, slug: key, enabled: Boolean(enabled), disabledSkills: settings.disabledSkills };
+    return {
+      ok: true,
+      slug: key,
+      enabled: Boolean(enabled),
+      scope: "panel",
+      disabledSkills: settings.disabledSkills,
+      effect: "面板级：仅本面板隐藏，宿主注册表仍会加载该技能",
+    };
   }
 
   // 计算 DSH 原生扫描的技能目录：market 的 settings.skillDirs 是用户自定义的"安装目录"，
@@ -1338,7 +1370,7 @@ export async function apply(ctx, config = {}) {
         }
       }
       case "skills.toggle":
-        return setSkillEnabled(body.slug, body.enabled);
+        return setSkillEnabled(body.slug, body.enabled, body.scope);
       case "skills.detail": {
         const detail = await readSkillBody(settings.skillDirs, body.slug);
         if (!detail) throw new Error(`未找到技能 ${body.slug}`);

@@ -626,8 +626,11 @@ window.__ModuleLoader__.load({
         setBusy(`toggle:${slug}`);
         setError('');
         try {
-          const d = await call('skills.toggle', { slug, enabled });
-          setNotice(`${enabled ? '已启用' : '已停用'} ${slug}（写入 disabledSkills，即时生效）`);
+          const d = await call('skills.toggle', { slug, enabled, scope: 'auto' });
+          const scopeText = d && d.scope === 'file'
+            ? (enabled ? '文件级：已移除禁用标记，模型可再次调用' : '文件级：已写入禁用标记，模型不再调用')
+            : '面板级：仅本面板隐藏，宿主注册表仍会加载该技能';
+          setNotice(`${enabled ? '已启用' : '已停用'} ${slug}（${scopeText}）`);
           await loadSettings();
           setSettings((prev) => (prev ? { ...prev, settings: { ...prev.settings } } : prev));
           await loadInstalled();
