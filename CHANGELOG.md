@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.69
+
+- **修复「向下滚动后搜索栏与 Tab 标签栏消失」的真正根因**：
+  - 真因：`S.panel` 上的 `overflow: 'hidden'` 把 sticky 的滚动上下文切断了——宿主面板容器才是滚动容器，`overflow:hidden` 让浏览器把 `S.panel` 当成"无滚动"的层，`position:sticky; top:0` 在该层里**没有可吸附的滚动祖先**，标签栏随内容一起滚走。
+  - 修法：删除 `S.panel` 的 `overflow:'hidden'`。标签栏的 `position:sticky; top:0; z-index:3` 现在能正确吸附到宿主面板容器，搜索栏（已提至 body 外、与标签栏同级）同步固定。
+  - 实测：向下滚 2000px 后标签栏 y=10、搜索栏 y=60 不变；内容卡片随滚移动；无 `overflow:hidden` 副作用（body 自身 `overflow:auto` 仍管住内容溢出）。
+
 ## 0.5.68
 
 - **修复「选中源后搜索结果显示的是聚合结果」与 trusttools 搜索慢**：

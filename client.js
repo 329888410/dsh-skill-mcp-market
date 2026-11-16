@@ -56,7 +56,6 @@ window.__ModuleLoader__.load({
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
       },
       pane: {
         width: '100%',
