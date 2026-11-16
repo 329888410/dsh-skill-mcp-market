@@ -2,7 +2,7 @@
 // 全程在 mkdtemp 临时目录里跑，不触碰用户的技能目录、回收站与会话日志。
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, readdir, readFile, writeFile, mkdir } from "node:fs/promises";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { deflateRawSync } from "node:zlib";
 
@@ -14,6 +14,8 @@ import { scanSkillBundle } from "../src/verify.js";
 import { readZip } from "../src/zip.js";
 import { decodeSessionLog, findCorruption, inspectSessionLog, repairSessionLog, scanZstdFrames, encodeEvents } from "../src/session-repair.js";
 import { zstdCompressSync } from "node:zlib";
+import { autoRepairSessions } from "../src/auto-repair.js";
+import { installToolCallGuard } from "../src/toolcall-guard.js";
 
 let pass = 0;
 const failures = [];
@@ -211,6 +213,67 @@ function makeZip(entries) {
 
   const noop = await repairSessionLog(join(root, "session.v4.jsonl.zstd"), { dryRun: true });
   check("会话：干净日志无需修复", noop.corruption === null);
+}
+
+// ---------------------------------------------------------------- 空 tool-call 自动修复（B）
+{
+  const { mkdtemp } = await import("node:fs/promises");
+  const home = await mkdtemp(join(tmpdir(), "dsh-autorepair-"));
+  const sessionsDir = join(home, "sessions", "ws1");
+  await mkdir(join(sessionsDir, "bad"), { recursive: true });
+  await mkdir(join(sessionsDir, "good"), { recursive: true });
+  const enc = (events) => zstdCompressSync(Buffer.from(events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8"));
+  const healthy = [{ type: "session", version: 4 }, { type: "assistant/message", seq: 1, data: { message: { content: [{ type: "tool-call", id: "call_1", name: "run_code" }] } } }];
+  const broken = { type: "assistant/message", seq: 2, data: { message: { content: [{ type: "tool-call", id: "", name: "" }] } } };
+  const badFile = join(sessionsDir, "bad", "session.v4.jsonl.zstd");
+  const goodFile = join(sessionsDir, "good", "session.v4.jsonl.zstd");
+  await writeFile(badFile, Buffer.concat([enc(healthy), enc([broken])]));
+  await writeFile(goodFile, enc(healthy));
+  const old = new Date(Date.now() - 600000);
+  utimesSync(badFile, old, old);
+  utimesSync(goodFile, old, old);
+
+  const first = await autoRepairSessions({ dshHome: home, quietMs: 120000, log: () => {} });
+  check("自愈：坏会话被自动修复", first.repaired.some((r) => r.file === badFile), `repaired=${first.repaired.length}`);
+  check("自愈：正常会话不被触碰", !first.repaired.some((r) => r.file === goodFile));
+  const markerPath = join(home, "dsh-market", "session-repairs.json");
+  const marker = JSON.parse(await readFile(markerPath, "utf8"));
+  check("自愈：写入修复标记", marker.length === 1 && marker[0].by === "dsh-market/auto", marker[0] && `seq ${marker[0].seq}`);
+  check("自愈：修复前留备份", Boolean(marker[0] && existsSync(marker[0].backup)));
+  const second = await autoRepairSessions({ dshHome: home, quietMs: 120000, log: () => {} });
+  check("自愈：第二次运行是空操作", second.repaired.length === 0 && second.corrupt === 0);
+  rmSync(join(sessionsDir, "bad"), { recursive: true, force: true });
+  await mkdir(join(sessionsDir, "bad"), { recursive: true });
+  await writeFile(badFile, Buffer.concat([enc(healthy), enc([broken])]));
+  const third = await autoRepairSessions({ dshHome: home, quietMs: 120000, log: () => {} });
+  check("自愈：仍在写入的日志不动", third.repaired.length === 0 && third.skipped.some((s) => /仍在写入/.test(s.reason)));
+  await rm(home, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------- 空 tool-call 写入前哨（A）
+// 需要宿主 Electron 的 asar 解析能力；纯 node 下跳过而不是失败。
+{
+  const result = installToolCallGuard({ resourcesPath: process.resourcesPath || "", log: () => {} });
+  if (!result.ok) {
+    console.log(`SKIP 写入前哨：${result.reason}（需在宿主 Electron 进程内运行）`);
+  } else {
+    const { createRequire } = await import("node:module");
+    const req = createRequire(join(process.resourcesPath, "app.asar", "dsh", "package.json"));
+    const { BlockAssembler } = req("@deepseek-ai/dsh-llm");
+    const a = new BlockAssembler();
+    a.push({ type: "text-delta", index: 0, text: "hi" });
+    a.push({ type: "tool-call-delta", index: 1, id: "", name: "", argumentsDelta: "{}" });
+    const outA = a.assembled();
+    check("哨兵：空 tool-call 被丢弃", outA.blocks.every((b) => b.type !== "tool-call"), `blocks=${outA.blocks.length}`);
+    check("哨兵：同流的文本块保留", outA.blocks.some((b) => b.type === "text"));
+    const b = new BlockAssembler();
+    b.push({ type: "tool-call-delta", index: 0, id: "call_1", name: "run_code", argumentsDelta: "{}" });
+    const outB = b.assembled();
+    check("哨兵：正常 tool-call 原样通过", outB.blocks.length === 1 && outB.blocks[0].id === "call_1" && outB.blocks[0].name === "run_code");
+    const c = new BlockAssembler();
+    c.push({ type: "tool-call-delta", index: 0, id: "call_2", name: "", argumentsDelta: "{}" });
+    check("哨兵：只有 id 没有 name 也丢弃", c.assembled().blocks.length === 0);
+  }
 }
 
 await rm(root, { recursive: true, force: true });

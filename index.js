@@ -28,6 +28,8 @@ import { makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./s
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 import { inspectSessionLog, repairSessionLog } from "./src/session-repair.js";
+import { autoRepairSessions } from "./src/auto-repair.js";
+import { installToolCallGuard } from "./src/toolcall-guard.js";
 import { readZip } from "./src/zip.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -420,6 +422,43 @@ export async function apply(ctx, config = {}) {
   }
 
   mountSkillProvider();
+
+  // ------------------------------------------------- 空 tool-call 防护（A + B）
+  // A：包装宿主 @deepseek-ai/dsh-llm 的 BlockAssembler，让 id/name 为空的 tool-call 根本进不了会话日志。
+  // B：启动后安静地扫一遍历史会话，只修复已经静止的那些损坏日志，并写入修复标记。
+  let guardStatus = { ok: false, reason: "未执行" };
+  try {
+    guardStatus = installToolCallGuard({
+      resourcesPath: typeof process.resourcesPath === "string" ? process.resourcesPath : "",
+      log,
+    });
+    if (guardStatus.ok) log("info", "dsh-market: 空 tool-call 写入前哨已安装");
+    else log("warn", `dsh-market: 写入前哨未安装 — ${guardStatus.reason}`);
+  } catch (error) {
+    guardStatus = { ok: false, reason: String((error && error.message) || error) };
+    log("warn", `dsh-market: 写入前哨安装异常 — ${guardStatus.reason}`);
+  }
+
+  let autoRepairStatus = { ran: false };
+  try {
+    // 延迟启动，别和宿主的开机写入抢磁盘
+    const timer = setTimeout(() => {
+      void autoRepairSessions({ dshHome: dshHome(), quietMs: 120000, log })
+        .then((result) => {
+          autoRepairStatus = { ran: true, ...result };
+          if (result.repaired.length > 0) {
+            log("info", `dsh-market: 自动修复 ${result.repaired.length} 个会话日志`);
+          }
+        })
+        .catch((error) => {
+          autoRepairStatus = { ran: true, error: String((error && error.message) || error) };
+          log("warn", `dsh-market: 自动修复失败 — ${autoRepairStatus.error}`);
+        });
+    }, 15000);
+    if (timer && typeof timer.unref === "function") timer.unref();
+  } catch (error) {
+    autoRepairStatus = { ran: false, error: String((error && error.message) || error) };
+  }
 
   // ---------------------------------------------------------------- MCP manager
   let mcp = createMcpManager({

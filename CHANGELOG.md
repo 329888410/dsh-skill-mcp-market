@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.67
+
+- **空 tool-call 防护 A：写入前哨**（新增 `src/toolcall-guard.js`）
+  - 缺陷本体在宿主 `@deepseek-ai/dsh-llm` 的 `BlockAssembler`：`tool-call-delta` 里 `partial.toolCallId = chunk.id` 无条件覆盖，provider 发 `id:""` 时就把 id 写成空串；`assemble()` 的 `?? `call-${index}`` 对空串无效（空串不是 nullish），`name` 同理变空。于是空 tool-call 被写进会话日志，该会话之后无法追加。
+  - 插件运行在宿主主进程内，通过 `createRequire(<resources>/app.asar/dsh/package.json)` 解析到的是宿主**同一个模块实例**，因此包装原型方法即可对整个宿主生效。
+  - `push` 不再让空 id 覆盖已有 id；`assembled()` 在交回结果前丢弃 **id 或 name 为空**的 tool-call 并记一行 warn 日志，正常 tool-call 原样通过。
+  - 实测（宿主真实类）：空 tool-call → 丢弃、同流文本块保留；`id=call_1/name=run_code` → 原样通过；只有 id 没有 name → 丢弃；计数器 `__dshMarketGuardState.dropped` 累加。
+- **空 tool-call 防护 B：启动自愈**（新增 `src/auto-repair.js`）
+  - 插件启动 15s 后（`unref` 定时器，不阻塞退出）扫一遍 `$DSH_HOME/sessions`，只修「已确认那一类」损坏，且**只动 mtime 静止 ≥120s 的日志**——正在写入的会话绝不碰。
+  - 修复走既有前缀截断 + 原子写回 + 自动备份，并把每次修复写入 `$DSH_HOME/dsh-market/session-repairs.json`（`{at,file,seq,reason,keepEvents,dropped,backup,by:"dsh-market/auto"}`，保留最近 200 条）。
+  - 实测：坏会话被修复、正常会话零改动、修复标记与备份到位、二次运行空操作、仍在更新的损坏日志被跳过。
+- **修复搜索栏与标签栏没有真正固定**（用户反馈）
+  - 真因：面板 body 的 `overflow:auto` 拿不到受限高度（宿主容器才是滚动容器），因此 body 自身不滚，其内部的 sticky 完全失效——搜索栏随整页滚走。
+  - 修法：把搜索栏从 body **提到与标签栏同级**（新增 `S.searchBar`），标签栏加 `position:sticky; top:0`。二者都位于滚动容器之外，滚动时不再移位。
+  - 实测：向下滚 700px，卡片 y 168→-437（内容确实滚动），标签栏 y=10、搜索栏 y=60 分毫不动。
+- 测试：新增 6 项（自愈 5 项 + 前哨 3 项，纯 node 下前哨自动 SKIP），两套合计 **29 + 43 = 72 项全通过**。
+
 ## 0.5.66
 
 - **市场面板滚动条加粗加深**：`S.body` 的右侧滚动条从系统默认（~6px 半透明灰）改为 12px、拇指 `#444`、轨道 `#f3f4f6`，WebKit `::-webkit-scrollbar` 与 Firefox `scrollbar-width` 双轨。

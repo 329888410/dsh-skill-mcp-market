@@ -71,7 +71,18 @@ window.__ModuleLoader__.load({
         fontSize: 14,
         textAlign: 'center',
       },
-      head: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: '1px solid var(--dsh-border, #eaeef2)' },
+      head: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '10px 12px',
+        borderBottom: '1px solid var(--dsh-border, #eaeef2)',
+        // 宿主面板容器才是真正的滚动容器时，只有 sticky 能让标签栏留在视口里
+        position: 'sticky',
+        top: 0,
+        zIndex: 3,
+        background: 'var(--dsh-surface, #ffffff)',
+      },
       tab: (active) => ({
         padding: '6px 12px',
         borderRadius: 8,
@@ -102,6 +113,24 @@ window.__ModuleLoader__.load({
         '&::-webkit-scrollbar-thumb:hover': { background: '#3d444d' },
       },
       row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+      // 搜索行吸顶：吸附在标签栏（约 48px）之下
+      // 搜索栏固定：它和标签栏一样在滚动容器之外，滚动时永不移位
+
+      searchBar: {
+
+        display: 'flex',
+
+        gap: 8,
+
+        alignItems: 'center',
+
+        padding: '8px 18px 8px 12px',
+
+        borderBottom: '1px solid var(--dsh-border, #eaeef2)',
+
+        background: 'var(--dsh-surface, #ffffff)',
+
+      },
       grid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignContent: 'start', alignItems: 'start' },
       chip: (active) => ({
         padding: '4px 10px',
@@ -1042,6 +1071,35 @@ window.__ModuleLoader__.load({
               },
             }, '卸载'))));
 
+      // 搜索栏提到 body 之外，成为与标签栏同级的固定行
+
+      const searchBar = (tab === 'skills' || tab === 'mcp')
+
+        ? h('div', { style: S.searchBar },
+
+            h('input', {
+
+              style: S.input,
+
+              placeholder: tab === 'skills' ? '搜索技能，回车查询' : '搜索 MCP 连接器',
+
+              value: query,
+
+              onChange: (e) => setQuery(e.target.value),
+
+              onKeyDown: (e) => {
+
+                if (e.key === 'Enter') (tab === 'skills' ? searchSkills : searchMcps)(query);
+
+              },
+
+            }),
+
+            h('button', { style: S.btn(), onClick: () => (tab === 'skills' ? searchSkills : searchMcps)(query) }, '搜索'))
+
+        : null;
+
+
       return h('div', {
           style: S.page,
           'data-dsh-market-root': '',
@@ -1061,23 +1119,8 @@ window.__ModuleLoader__.load({
             h('button', { style: S.tab(tab === 'settings'), onClick: () => setTab('settings') }, '路径'),
             h('div', { style: { flex: 1 } }),
             h('span', { style: S.status }, busy ? `处理中：${busy}` : '')),
+          searchBar,
           h('div', { style: S.body, 'data-dsh-market-body': '' },
-            (tab === 'skills' || tab === 'mcp')
-              ? h('div', { style: S.row },
-                  h('input', {
-                    style: S.input,
-                    placeholder: tab === 'skills' ? '搜索技能，回车查询' : '搜索 MCP 连接器',
-                    value: query,
-                    onChange: (e) => setQuery(e.target.value),
-                    onKeyDown: (e) => {
-                      if (e.key === 'Enter') (tab === 'skills' ? searchSkills : searchMcps)(query);
-                    },
-                  }),
-                  h('button', {
-                    style: S.btn(),
-                    onClick: () => (tab === 'skills' ? searchSkills : searchMcps)(query),
-                  }, '搜索'))
-              : null,
             (tab === 'skills' || tab === 'mcp')
               ? h('div', { style: S.row },
                   tab === 'skills'
