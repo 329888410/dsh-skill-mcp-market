@@ -18,7 +18,7 @@ import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, set
 import { importShipped, pluginFrom, resolveShipped, SHIPPED } from "./src/shipped.js";
 import { readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "./src/skills.js";
+import { emptyTrash, installSkill, listInstalledSkills, listTrash, restoreFromTrash, uninstallSkill, updateSkill } from "./src/skills.js";
 import { fetchSkillMd, parseRepoRef } from "./src/github.js";
 import { skillMetaFromText, kebab } from "./src/frontmatter.js";
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
@@ -1064,6 +1064,30 @@ export async function apply(ctx, config = {}) {
         return { dirs: await collectDshNativeSkillDirs(), items: await listInstalledSkills(await collectDshNativeSkillDirs()) };
       case "skills.uninstall":
         return uninstallSkill({ slug: body.slug, dirs: settings.skillDirs, trashDir, agentsHomeSkillsDir: join(agentsHome(), "skills") });
+      case "skills.trash": {
+        return listTrash({ trashDir, dirs: settings.skillDirs });
+      }
+      case "skills.restore": {
+        const entry = expandPath(String(body.path || ""));
+        if (!entry) throw new Error("请提供回收站条目路径");
+        const restored = await restoreFromTrash({ path: entry, dirs: settings.skillDirs, trashDir });
+        try {
+          invalidateSkills?.();
+        } catch {
+          /* ignore */
+        }
+        return restored;
+      }
+      case "skills.trashEmpty": {
+        if (body.confirm !== true) throw new Error("清空回收站需要二次确认（confirm:true）");
+        const cleared = await emptyTrash({ trashDir, dirs: settings.skillDirs });
+        try {
+          invalidateSkills?.();
+        } catch {
+          /* ignore */
+        }
+        return cleared;
+      }
       case "skills.import": {
         const target = expandPath(body.path || "");
         if (!target) throw new Error("请提供本地目录或 .zip 路径");

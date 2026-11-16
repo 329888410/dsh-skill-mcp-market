@@ -174,6 +174,9 @@ window.__ModuleLoader__.load({
       // 会话日志体检：检测并修复「空 tool-call」导致的会话永久损坏
       const [sessionScan, setSessionScan] = useState(null);
       const [sessionBusy, setSessionBusy] = useState('');
+      // 回收站：列出/恢复/清空（删除是移入 .trash，不是真删）
+      const [trashList, setTrashList] = useState(null);
+      const [trashBusy, setTrashBusy] = useState('');
       // 最近一次的查询结果缓存（按 tab+source+category+sort+query 作 key），
       // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
       const resultCacheRef = useRef({});
@@ -676,6 +679,52 @@ window.__ModuleLoader__.load({
           setError(String(e.message || e));
         } finally {
           setBusy('');
+        }
+      };
+
+      // 回收站：skills.trash / skills.restore / skills.trashEmpty
+      const loadTrash = async () => {
+        setTrashBusy('list');
+        setError('');
+        try {
+          const d = await call('skills.trash', {});
+          setTrashList(d);
+          setNotice(`回收站共 ${d.items.length} 项`);
+        } catch (e) {
+          setError(`读取回收站失败：${e.message || e}`);
+        } finally {
+          setTrashBusy('');
+        }
+      };
+
+      const restoreTrashEntry = async (entry) => {
+        setTrashBusy(`restore:${entry.path}`);
+        setError('');
+        setNotice('');
+        try {
+          const r = await call('skills.restore', { path: entry.path });
+          setNotice(`已恢复 ${r.slug} → ${r.restoredTo}`);
+          await loadTrash();
+          await loadInstalled();
+        } catch (e) {
+          setError(`恢复失败：${e.message || e}`);
+        } finally {
+          setTrashBusy('');
+        }
+      };
+
+      const emptyTrashAll = async () => {
+        setTrashBusy('empty');
+        setError('');
+        setNotice('');
+        try {
+          const r = await call('skills.trashEmpty', { confirm: true });
+          setNotice(`已清空回收站，删除 ${r.removed} 项（不可恢复）`);
+          setTrashList({ items: [] });
+        } catch (e) {
+          setError(`清空失败：${e.message || e}`);
+        } finally {
+          setTrashBusy('');
         }
       };
 
@@ -1310,6 +1359,21 @@ window.__ModuleLoader__.load({
                   },
                 }, '打开目录')),
               h('div', { style: S.grid }, installedMcps),
+              h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
+                `回收站（${trashList ? trashList.items.length : '?'}）`,
+                h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: trashBusy === 'list', onClick: loadTrash }, trashBusy === 'list' ? '读取中…' : '读取回收站'),
+                trashList && trashList.items.length > 0
+                  ? h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: trashBusy === 'empty', onClick: emptyTrashAll }, trashBusy === 'empty' ? '清空中…' : '清空回收站')
+                  : null,
+                h('span', { style: { ...S.status, fontSize: 12 } }, '删除即移入 .trash，可随时恢复')),
+              trashList && trashList.items.length > 0
+                ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 240, overflow: 'auto', width: '100%' } },
+                    trashList.items.map((item) => h('div', { key: item.path, style: { ...S.row, fontSize: 11, gap: 8 } },
+                      h('span', { style: { fontWeight: 600, minWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.slug),
+                      h('span', { style: { opacity: 0.7 } }, item.kind === 'file' ? '单文件' : '目录'),
+                      h('span', { style: { flex: '1', opacity: 0.6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.stamp || item.name),
+                      h('button', { style: { ...S.btn(), padding: '0 6px', height: 22, fontSize: 11 }, disabled: trashBusy === `restore:${item.path}`, onClick: () => restoreTrashEntry(item) }, trashBusy === `restore:${item.path}` ? '恢复中…' : '恢复'))))
+                : (trashList ? h('div', { style: S.status }, '回收站是空的。') : null),
             )) : null,
             tab === 'settings' && settings
               ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },

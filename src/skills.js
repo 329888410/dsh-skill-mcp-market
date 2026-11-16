@@ -492,6 +492,17 @@ export async function uninstallSkill({ slug, dirs, trashDir, agentsHomeSkillsDir
           throw error;
         }
       }
+      try {
+        await writeJson(`${dest}.trash-entry.json`, {
+          slug: key,
+          originalPath: candidate,
+          originalDir: dir,
+          kind: candidate.endsWith(".md") ? "file" : "directory",
+          deletedAt: new Date().toISOString(),
+        });
+      } catch {
+        /* a sidecar failure must not fail the delete */
+      }
       removed.push(candidate);
     }
   }
@@ -689,4 +700,143 @@ export async function uploadSkillFromFolder({ folder, skillDirs, force = false }
     }
   }
   return { ok: true, count: results.length, target: targetRoot, items: results };
+}
+
+/** Trash entry name pattern: `<slug>-<ISO stamp>` with an optional `.md` suffix. */
+const TRASH_NAME = /^(.*)-(\d{4}-\d{2}-\d{2}T[0-9-]+Z)(\.md)?$/;
+
+/**
+ * List the market trash without touching it.
+ * @param {{ trashDir?: string, dirs?: string[] }} options - configured trash root and skill roots.
+ * @returns {Promise<{ trashDir: string, items: object[] }>}
+ */
+export async function listTrash({ trashDir, dirs } = {}) {
+  const roots = [];
+  if (trashDir) roots.push(trashDir);
+  for (const dir of dirs || []) roots.push(join(dir, ".trash"));
+  const seen = new Set();
+  const items = [];
+  for (const root of roots) {
+    if (!root || seen.has(root) || !existsSync(root)) continue;
+    seen.add(root);
+    let entries = [];
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name.endsWith(".trash-entry.json")) continue;
+      const full = join(root, entry.name);
+      const match = TRASH_NAME.exec(entry.name);
+      let sidecar = null;
+      try {
+        sidecar = JSON.parse(await readFile(`${full}.trash-entry.json`, "utf8"));
+      } catch {
+        sidecar = null;
+      }
+      let bytes = 0;
+      try {
+        const info = await stat(full);
+        bytes = info.size;
+        if (info.isDirectory()) bytes = 0;
+      } catch {
+        bytes = 0;
+      }
+      items.push({
+        name: entry.name,
+        path: full,
+        trashRoot: root,
+        slug: sidecar && sidecar.slug ? sidecar.slug : (match ? match[1] : entry.name.replace(/\.md$/, "")),
+        stamp: match ? match[2] : "",
+        kind: entry.isDirectory() ? "directory" : "file",
+        bytes,
+        originalPath: sidecar && sidecar.originalPath ? sidecar.originalPath : "",
+        originalDir: sidecar && sidecar.originalDir ? sidecar.originalDir : "",
+        deletedAt: sidecar && sidecar.deletedAt ? sidecar.deletedAt : "",
+        restorable: Boolean(sidecar && sidecar.originalPath) || roots.length > 0,
+      });
+    }
+  }
+  items.sort((a, b) => String(b.stamp).localeCompare(String(a.stamp)));
+  return { trashDir: trashDir || "", items };
+}
+
+/**
+ * Move one trash entry back to where it came from.
+ * A sidecar records the exact original path; without one, the slug is restored
+ * into the first configured skill root. A live name collision picks a unique suffix.
+ * @param {{ path: string, dirs?: string[], trashDir?: string }} options
+ */
+export async function restoreFromTrash({ path: entryPath, dirs, trashDir } = {}) {
+  if (!entryPath || !existsSync(entryPath)) throw new Error("回收站条目不存在");
+  let sidecar = null;
+  try {
+    sidecar = JSON.parse(await readFile(`${entryPath}.trash-entry.json`, "utf8"));
+  } catch {
+    sidecar = null;
+  }
+  const root = sidecar && sidecar.originalDir
+    ? sidecar.originalDir
+    : (dirs && dirs.length > 0 ? dirs[0] : "");
+  if (!root) throw new Error("无法确定恢复目标目录");
+  await ensureDir(root);
+  const rawName = basename(entryPath);
+  const nameMatch = TRASH_NAME.exec(rawName);
+  const nameIsFile = /\.md$/i.test(rawName);
+  const slugFromName = nameMatch ? nameMatch[1] : rawName.replace(/\.md$/i, "");
+  const baseName = sidecar && sidecar.slug
+    ? `${sidecar.slug}${sidecar.kind === "file" ? ".md" : ""}`
+    : `${slugFromName}${nameIsFile ? ".md" : ""}`;
+  let target = join(root, baseName);
+  if (existsSync(target)) {
+    for (let index = 2; index < 1000; index += 1) {
+      const candidate = sidecar && sidecar.kind === "file"
+        ? join(root, `${sidecar.slug}-${index}.md`)
+        : join(root, `${baseName}-${index}`);
+      if (!existsSync(candidate)) {
+        target = candidate;
+        break;
+      }
+    }
+  }
+  try {
+    await rename(entryPath, target);
+  } catch (error) {
+    if (error && error.code === "EXDEV") {
+      await cp(entryPath, target, { recursive: true });
+      await rm(entryPath, { recursive: true, force: true });
+    } else {
+      throw error;
+    }
+  }
+  await rm(`${entryPath}.trash-entry.json`, { force: true }).catch(() => {});
+  return { ok: true, restoredTo: target, slug: sidecar && sidecar.slug ? sidecar.slug : baseName };
+}
+
+/**
+ * Permanently drop every trash entry under the configured roots.
+ * @param {{ trashDir?: string, dirs?: string[] }} options
+ */
+export async function emptyTrash({ trashDir, dirs } = {}) {
+  const roots = [];
+  if (trashDir) roots.push(trashDir);
+  for (const dir of dirs || []) roots.push(join(dir, ".trash"));
+  let removed = 0;
+  const seen = new Set();
+  for (const root of roots) {
+    if (!root || seen.has(root) || !existsSync(root)) continue;
+    seen.add(root);
+    let entries = [];
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      await rm(join(root, entry.name), { recursive: true, force: true }).catch(() => {});
+      removed += 1;
+    }
+  }
+  return { ok: true, removed };
 }

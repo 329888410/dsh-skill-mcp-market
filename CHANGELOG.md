@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.58
+
+- **补齐回收站管理面**（方案 5 第 4 部分）：删除本来就是 `rename` 进 `.trash`，但一直没有恢复入口。现在：
+  - `uninstallSkill` 删除时写一条 `<条目>.trash-entry.json` 边车，记录 `slug / originalPath / originalDir / kind / deletedAt`，恢复时回到**原位置**。
+  - 新增 `listTrash({trashDir, dirs})`：同时扫 `settings/trash` 与各技能根的 `.trash`，解析 `<slug>-<ISO时间戳>[.md]`，边车缺失时按文件名还原 slug（兼容历史条目）。
+  - 新增 `restoreFromTrash({path, dirs})`：优先边车记录的原始路径，缺失则回落到第一个技能根；同名冲突自动加 `-2/-3` 后缀；`EXDEV` 降级 `copy+rm`；恢复后删边车。
+  - 新增 `emptyTrash({trashDir, dirs})`：永久清空，RPC 层要求 `confirm:true` 二次确认。
+  - 新增 RPC：`skills.trash` / `skills.restore` / `skills.trashEmpty`。
+  - 客户端「已安装」tab 底部新增「回收站」区块：列出条目（slug / 类型 / 时间戳）、逐个「恢复」、整站「清空回收站」。
+  - 实测：边车恢复→原路径、无边车恢复→`legacy.md`（保留 .md）、同名冲突→`demo-2`、`emptyTrash` 清空归零；21 条历史回收站条目全部可正常列出。
+
 ## 0.5.57
 
 - **新增「会话日志体检」**（路径 tab）：检测并一键修复 `session.v4.jsonl.zstd` 的「空 tool-call」永久损坏。
