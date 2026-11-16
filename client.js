@@ -554,11 +554,18 @@ window.__ModuleLoader__.load({
         if (!url) return;
         const sr = props && props.sidebarRight;
         if (sr && typeof sr.openTab === 'function') {
-          sr.openTab('browser', { params: { url } });
-          return;
+          try {
+            sr.openTab('browser', { params: { url } });
+            return;
+          } catch (e) {
+            // sidebarRight 无挂载 session surface（全局面板显示时）→ 回退系统浏览器
+            console.warn('[dsh-market] sidebarRight.openTab failed, falling back to window.open:', e && e.message);
+          }
         }
         // 回退：系统浏览器
-        window.open(url, '_blank', 'noopener,noreferrer');
+        if (typeof window !== 'undefined' && window.open) {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        }
       };
 
       const doInstallSkill = async (item) => {
