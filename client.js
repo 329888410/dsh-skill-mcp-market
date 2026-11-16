@@ -773,12 +773,18 @@ window.__ModuleLoader__.load({
           // "name" is the registry identifier users may need to copy into a manual install.
           h('div', { style: S.meta }, h('span', null, item.slug)),
           item.note ? h('div', { style: S.status }, item.note) : null,
-          h('div', { style: S.row },
-            h('button', {
-              style: S.btn('primary'),
-              disabled: item.installable === false || busy === `install:${item.slug}`,
-              onClick: () => doInstallMcp(item),
-            }, busy === `install:${item.slug}` ? '安装中…' : '安装'))));
+           h('div', { style: S.row },
+             detailUrlFor(item) ? h('button', {
+               style: { ...S.btn(), padding: '0 6px' },
+               title: detailUrlFor(item) ? '在 DSH 内置浏览器中查看详情' : '该条目没有可打开的详情页',
+               disabled: !detailUrlFor(item),
+               onClick: () => openDetail(item),
+             }, '详情') : null,
+             h('button', {
+               style: S.btn('primary'),
+               disabled: item.installable === false || busy === `install:${item.slug}`,
+               onClick: () => doInstallMcp(item),
+              }, busy === `install:${item.slug}` ? '安装中…' : '安装'))));
 
       const CATEGORY_LABELS = {
         developer: '开发者',
