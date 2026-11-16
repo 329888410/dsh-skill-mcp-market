@@ -1472,7 +1472,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'layout', 'sidebarRight'],
+      inject: ['slots', 'layout', 'sidebarRight', 'sidebarRightTabs'],
       apply(ctx) {
         // Left sidebar entry: the sidebar renders the button and reads the label from here.
         ctx.slots.inject('sidebar.panellist', () =>
@@ -1506,6 +1506,35 @@ window.__ModuleLoader__.load({
             },
             ComposerButtons,
           ));
+        // 右侧栏 tab 类型：把市场面板注册为 sidebar-right 的页面 tab。
+        // 在 tab 上下文中 sidebarRight 可用（tab 自身就是会话面），
+        // openDetail 无需 selectPanel(null) 回会话，直接开内置浏览器 tab。
+        ctx.slots.inject('sidebar.right.pane.tab', () =>
+          ctx.slots.register(
+            {
+              name: 'sidebar.right.pane.tab',
+              key: 'dsh-market',
+              inject: () => ({ sidebarRight: ctx.sidebarRight, layout: ctx.layout }),
+            },
+            Market,
+          ));
+        ctx.effect(() => {
+          const tabs = ctx.sidebarRightTabs;
+          if (!tabs || typeof tabs.register !== 'function') return;
+          tabs.register({
+            id: 'dsh-market',
+            kind: 'dsh-market',
+            multiple: false,
+            priority: 'extension',
+            title: () => '技能市场',
+            guide: [{
+              id: 'new',
+              order: 50,
+              title: () => '技能市场',
+              description: () => '浏览、搜索、安装 SKILL 技能与 MCP 连接器',
+            }],
+          });
+        }, 'dsh-market.tab-type');
       },
     };
   },
