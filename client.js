@@ -514,6 +514,49 @@ window.__ModuleLoader__.load({
         }
       };
 
+      // 各源详情页 URL 推导（通过 DSH 内置 sidebar-right browser tab 打开）
+      const detailUrlFor = (item) => {
+        const source = item.source;
+        if (source === 'skills.sh' || source === 'clawhub' || source === 'browse.sh' || source === 'lobehub') {
+          return '';
+        }
+        const slug = String(item.slug || '').toLowerCase();
+        if (source === 'skillhub') {
+          return slug ? `https://www.skillhub.cn/skills/${slug}` : '';
+        }
+        if (source === 'trusttools') {
+          if (item.homepage) return item.homepage;
+          if (item.upstreamUrl) return `https://github.com/${item.upstreamUrl}`;
+          return '';
+        }
+        if (source === 'modelscope') {
+          if (item.homepage) return item.homepage;
+          const ident = item.modelScopeIdent || '';
+          return ident ? `https://modelscope.cn/skills/${ident}` : '';
+        }
+        if (source === 'skillsmp') {
+          if (item.upstreamUrl) return `https://github.com/${item.upstreamUrl}`;
+          if (item.homepage) return item.homepage;
+          return '';
+        }
+        if (item.homepage) return item.homepage;
+        if (item.upstreamUrl) return item.upstreamUrl;
+        return '';
+      };
+
+      // 通过 DSH 内置 sidebar-right browser tab 打开详情页
+      const openDetail = (item) => {
+        const url = detailUrlFor(item);
+        if (!url) return;
+        const sr = props && props.sidebarRight;
+        if (sr && typeof sr.openTab === 'function') {
+          sr.openTab('browser', { params: { url } });
+          return;
+        }
+        // 回退：系统浏览器
+        window.open(url, '_blank', 'noopener,noreferrer');
+      };
+
       const doInstallSkill = async (item) => {
         setBusy(`install:${item.slug}`);
         setError('');
@@ -660,6 +703,11 @@ window.__ModuleLoader__.load({
               disabled: busy === `preview:${item.slug}`,
               onClick: () => openPreview(item),
             }, busy === `preview:${item.slug}` ? '下载中…' : '预览'),
+            detailUrlFor(item) ? h('button', {
+              style: { ...S.btn(), padding: '0 6px' },
+              title: '在 DSH 内置浏览器中查看详情',
+              onClick: () => openDetail(item),
+            }, '详情') : null,
             installed.some((x) => x.slug === item.slug)
               ? h('span', { style: S.status }, '✓ 已安装')
               : item.installable === false
@@ -1031,6 +1079,11 @@ window.__ModuleLoader__.load({
                         : null,
                       h('pre', { style: { fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 480, overflow: 'auto', margin: 0 } }, preview.content || (preview.previewError ? '' : '(没有正文)'))),
                     h('div', { style: { display: 'flex', gap: 8, padding: '10px 16px', borderTop: '1px solid #eaeef2', justifyContent: 'flex-end' } },
+                      preview.openUrl ? h('button', {
+                        style: { ...S.btn('primary'), padding: '0 12px' },
+                        title: `在 DSH 内置浏览器中查看详情 ${preview.openUrl}`,
+                        onClick: () => { openDetail({ homepage: preview.openUrl }); setPreviewModal(false); },
+                      }, '在 DSH 内置浏览器中查看详情') : null,
                       h('button', { style: S.btn(), onClick: () => { setPreview(null); setPreviewModal(false); } }, '关闭预览'))))
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
