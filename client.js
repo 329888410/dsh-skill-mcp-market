@@ -203,6 +203,9 @@ window.__ModuleLoader__.load({
       // { kind: 'skill'|'mcp', slug, data } — detail drawer with the edit form
       const [detail, setDetail] = useState(null);
       const [draft, setDraft] = useState({});
+      // searchSkills/searchMcps 的 useCallback 依赖是 []，直接读 state 会闭包住首帧的值。
+
+
       const [source, setSource] = useState('clawhub');
       const [mcpSource, setMcpSource] = useState('registry');
       const [mcpCategory, setMcpCategory] = useState('all');
@@ -219,6 +222,9 @@ window.__ModuleLoader__.load({
       const [mcpPageJump, setMcpPageJump] = useState('');
       const [installedFilter, setInstalledFilter] = useState('');
       const [collapsedGroups, setCollapsedGroups] = useState(() => {
+      // searchSkills/searchMcps 的 useCallback 依赖是 []，直接读 state 会闭包住首帧的值；
+
+
         // 折叠偏好跨面板重挂载与刷新保留；拒绝存储的浏览器只是不记忆
         try {
           const raw = window.localStorage.getItem('dsh-skill-mcp-market.collapsedGroups');
@@ -228,6 +234,9 @@ window.__ModuleLoader__.load({
           return {};
         }
       });
+      // 这面镜子在每次渲染时同步最新选择，回调里读它拿到的是当前值而不是初值。
+      const liveRef = useRef({});
+      liveRef.current = { source, category, size, mcpSource, mcpCategory, mcpSort };
       // 会话日志体检：检测并修复「空 tool-call」导致的会话永久损坏
       const [sessionScan, setSessionScan] = useState(null);
       const [sessionBusy, setSessionBusy] = useState('');
@@ -328,8 +337,9 @@ window.__ModuleLoader__.load({
       }, []);
 
       const searchSkills = useCallback(async (text, options) => {
-        const src = (options && options.source) || 'all';
-        const cat = (options && options.category) || category;
+        // 回落到当前选中的源——否则回车/点「搜索」会退化成「全部来源」聚合
+        const src = (options && options.source) || liveRef.current.source;
+        const cat = (options && options.category) || liveRef.current.category || 'all';
         const q = String(text || '');
         const pageNo = (options && options.page) || 1;
         const append = Boolean(options && options.append);
@@ -1090,13 +1100,22 @@ window.__ModuleLoader__.load({
 
               onKeyDown: (e) => {
 
-                if (e.key === 'Enter') (tab === 'skills' ? searchSkills : searchMcps)(query);
+                if (e.key === 'Enter') {
+                  if (tab === 'skills') searchSkills(query, { source, size, category });
+                  else searchMcps(query, { source: mcpSource, category: mcpCategory, sort: mcpSort, page: 1, size });
+                }
 
               },
 
             }),
 
-            h('button', { style: S.btn(), onClick: () => (tab === 'skills' ? searchSkills : searchMcps)(query) }, '搜索'))
+            h('button', {
+              style: S.btn(),
+              onClick: () => {
+                if (tab === 'skills') searchSkills(query, { source, size, category });
+                else searchMcps(query, { source: mcpSource, category: mcpCategory, sort: mcpSort, page: 1, size });
+              },
+            }, '搜索'))
 
         : null;
 

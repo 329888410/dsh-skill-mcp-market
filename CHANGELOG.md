@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.70
+
+- **修复「搜索结果显示所有源聚合、不按选中源过滤」的真正根因**：
+  - 真因一：`searchSkills` 里 `const src = (options && options.source) || 'all'` —— 调用方不传 source 时**回落到 'all'** 而不是当前选中的源。回车与「搜索」按钮正是这种调用（`searchSkills(query)`，不带 options），所以只要不是点源 chip、而是**在搜索框里回车**，就必然退化成八源聚合。这也是用户截图里"clawhub + skillsmp 混排"的直接来源。
+  - 真因二：`searchSkills`/`searchMcps` 的 `useCallback` 依赖是 `[]`，直接读 `source`/`category` 会**闭包住首帧的值**（永远是初始值），即便写了回落也拿不到当前选择。
+  - 修法：新增 `liveRef`（每帧同步 `{source, category, size, mcpSource, mcpCategory, mcpSort}`），回调内改读 `liveRef.current`；回车与「搜索」按钮显式传 `{ source, size, category }`；MCP 侧同样处理。
+  - 实测：选中 clawhub 后仅点源 chip 或在搜索框回车，列表都只剩该源卡片（切到 trusttools 时 24 张 clawhub 卡片全部清空）。
+- 已知遗留（非本次引入）：**trusttools 源当前不可达** —— 面板会显示 `trusttools 不可达：python POST 失败…`。其传输优先走 python，宿主进程内 `findPython()` 探测失败时会退到裸 `python` 并报错；需要单独修传输链（已记录，未在本次改动内）。
+
 ## 0.5.69
 
 - **修复「向下滚动后搜索栏与 Tab 标签栏消失」的真正根因**：
