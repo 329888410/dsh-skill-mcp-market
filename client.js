@@ -228,8 +228,8 @@ window.__ModuleLoader__.load({
           h('div', { style: S.row },
             h('span', { style: S.status },
               unknown
-                ? `${label} · 第 ${page} 页（${hasMore ? '可继续加载' : '已是最后一页'}）`
-                : `${label} 第 ${page} / ${n} 页`),
+                ? `${label ? label + " · " : ""}第 ${page} 页（${hasMore ? '可继续加载' : '已是最后一页'}）`
+                : `${label ? label + " " : ""}第 ${page} / ${n} 页`),
             h('span', { style: { fontSize: 12, opacity: 0.6, marginLeft: 8 } }, '跳至'),
             h('input', {
               style: { ...S.input, width: 56, height: 26, textAlign: 'center' },
@@ -1092,7 +1092,7 @@ window.__ModuleLoader__.load({
                           searchMcps(query, { sort: next, page: 1 });
                         },
                       },
-                        h('option', { value: 'default' }, '按安装数'),
+                        h('option', { value: 'default' }, mcpSource === 'lobehub' ? '按安装数' : '默认顺序'),
                         mcpSource === 'lobehub'
                           ? h('option', { value: 'installCount' }, '安装最多')
                           : h('option', { value: 'name' }, '按名称'),
@@ -1102,7 +1102,7 @@ window.__ModuleLoader__.load({
                         value: sort,
                         onChange: (e) => setSort(e.target.value),
                       },
-                        h('option', { value: 'default' }, '按安装数'),
+                        h('option', { value: 'default' }, ['skillsmp', 'browse.sh', 'all'].includes(source) ? '默认顺序' : '按安装数'),
                         h('option', { value: 'name' }, '按名称')),
 )
               : null,
@@ -1132,7 +1132,7 @@ window.__ModuleLoader__.load({
               ? h('div', { style: S.status },
                   mcpSource === 'lobehub'
                     ? `LobeHub · 共 ${mcpTotal.toLocaleString()} 个连接器 · 第 ${mcpPage}/${mcpTotalPages} 页`
-                    : `MCP 官方注册表 · 共约 ${mcpTotal.toLocaleString()} 个连接器 · 第 ${mcpPage} 页${mcpHasMore ? '（可继续加载）' : ''}`)
+                    : `MCP 官方注册表 · 第 ${mcpPage} 页${mcpHasMore ? '（可继续加载）' : ''}`)
               : null,
             error ? h('div', { style: S.err }, error) : null,
             notice ? h('div', { style: S.status }, notice) : null,
