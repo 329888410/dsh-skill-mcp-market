@@ -12,11 +12,11 @@ import { execFile } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath, agentsHome } from "./src/home.js";
+import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath, agentsHome, dshHome } from "./src/home.js";
 import { importShipped, pluginFrom, resolveShipped, SHIPPED } from "./src/shipped.js";
-import { rm, stat } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "./src/skills.js";
 import { fetchSkillMd, parseRepoRef } from "./src/github.js";
@@ -27,6 +27,7 @@ import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
 import { makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
+import { inspectSessionLog, repairSessionLog } from "./src/session-repair.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -1421,6 +1422,48 @@ export async function apply(ctx, config = {}) {
         return mcp.setEnabled(body.serverName, body.enabled);
       case "mcp.uninstall":
         return mcp.uninstall(body.serverName);
+      case "sessions.scan": {
+        const root = join(dshHome(), "sessions");
+        const deep = body.deep === true;
+        const limit = Math.max(1, Math.min(200, Number(body.limit) || 40));
+        const files = [];
+        const walkSessions = async (dir, depth) => {
+          if (depth > 3 || files.length >= limit) return;
+          let entries = [];
+          try {
+            entries = await readdir(dir, { withFileTypes: true });
+          } catch {
+            return;
+          }
+          for (const entry of entries) {
+            if (files.length >= limit) return;
+            const full = join(dir, entry.name);
+            if (entry.isDirectory()) await walkSessions(full, depth + 1);
+            else if (entry.name === "session.v4.jsonl.zstd") files.push(full);
+          }
+        };
+        await walkSessions(root, 0);
+        const items = [];
+        for (const file of files) {
+          if (!deep) {
+            const info = await stat(file);
+            items.push({ file, sessionId: basename(dirname(file)), bytes: info.size, mtime: info.mtimeMs, scanned: false });
+            continue;
+          }
+          try {
+            items.push({ ...(await inspectSessionLog(file)), scanned: true });
+          } catch (error) {
+            items.push({ file, sessionId: basename(dirname(file)), error: String((error && error.message) || error), scanned: true });
+          }
+        }
+        return { root, deep, count: items.length, items, corrupt: items.filter((item) => item.corrupt).length };
+      }
+      case "sessions.repair": {
+        const file = expandPath(String(body.file || ""));
+        if (!file) throw new Error("请提供会话日志路径");
+        if (!existsSync(file)) throw new Error(`会话日志不存在：${file}`);
+        return repairSessionLog(file, { dryRun: body.dryRun === true });
+      }
       case "frame.check":
         return await checkFrameable(String(body.url || ""));
       default:

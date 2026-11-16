@@ -171,6 +171,9 @@ window.__ModuleLoader__.load({
       const [pageJump, setPageJump] = useState('');
       const [mcpPageJump, setMcpPageJump] = useState('');
       const [installedFilter, setInstalledFilter] = useState('');
+      // 会话日志体检：检测并修复「空 tool-call」导致的会话永久损坏
+      const [sessionScan, setSessionScan] = useState(null);
+      const [sessionBusy, setSessionBusy] = useState('');
       // 最近一次的查询结果缓存（按 tab+source+category+sort+query 作 key），
       // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
       const resultCacheRef = useRef({});
@@ -673,6 +676,45 @@ window.__ModuleLoader__.load({
           setError(String(e.message || e));
         } finally {
           setBusy('');
+        }
+      };
+
+      // 会话日志体检：sessions.scan 列出 + 深度检测；sessions.repair 修复
+      const scanSessions = async (deep) => {
+        setSessionBusy(deep ? 'scan-deep' : 'scan');
+        setError('');
+        setNotice('');
+        try {
+          const d = await call('sessions.scan', { deep: Boolean(deep), limit: 60 });
+          setSessionScan(d);
+          setNotice(`扫描 ${d.count} 个会话日志${deep ? `，发现 ${d.corrupt} 个损坏` : ''}`);
+        } catch (e) {
+          setError(`会话体检失败：${e.message || e}`);
+        } finally {
+          setSessionBusy('');
+        }
+      };
+
+      const repairSession = async (file, dryRun) => {
+        setSessionBusy(`repair:${file}`);
+        setError('');
+        setNotice('');
+        try {
+          const r = await call('sessions.repair', { file, dryRun: Boolean(dryRun) });
+          if (dryRun) {
+            setNotice(r.corruption
+              ? `预演：${r.sessionId} 在 seq ${r.corruption.seq} 处损坏（${r.corruption.reason}），将保留 ${r.keepEvents}/${r.eventsBefore} 条`
+              : `预演：${r.sessionId} 未发现损坏`);
+          } else if (r.repaired) {
+            setNotice(`已修复 ${r.sessionId}：丢弃 ${r.dropped} 条坏事件，保留 ${r.keepEvents} 条；原文件备份为 ${r.backup}`);
+            await scanSessions(true);
+          } else {
+            setNotice(`${r.sessionId} 未发现损坏，无需修复`);
+          }
+        } catch (e) {
+          setError(`修复失败：${e.message || e}`);
+        } finally {
+          setSessionBusy('');
         }
       };
 
@@ -1279,7 +1321,24 @@ window.__ModuleLoader__.load({
                     h('span', { style: S.status }, `配置文件：${settings.settings.settingsPath}`)),
                   h('div', { style: S.status },
                     `技能 provider：${settings.skillProvider && settings.skillProvider.mounted ? '已挂载' : '未挂载'}`),
-                  h('div', { style: S.status }, `MCP 客户端：${settings.shipped && settings.shipped.mcpClient}`))
+                  h('div', { style: S.status }, `MCP 客户端：${settings.shipped && settings.shipped.mcpClient}`),
+                  h('div', { style: { ...S.title, marginTop: 14 } }, '会话日志体检'),
+                  h('div', { style: S.status }, '检测并修复「空 tool-call」导致的会话永久损坏：只截断损坏点、保留其前全部事件，原文件自动备份。'),
+                  h('div', { style: S.row },
+                    h('button', { style: S.btn(), disabled: sessionBusy === 'scan', onClick: () => scanSessions(false) }, sessionBusy === 'scan' ? '扫描中…' : '列出会话'),
+                    h('button', { style: S.btn('primary'), disabled: sessionBusy === 'scan-deep', onClick: () => scanSessions(true) }, sessionBusy === 'scan-deep' ? '检测中…' : '深度检测损坏')),
+                  sessionScan && sessionScan.items
+                    ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 260, overflow: 'auto' } },
+                        sessionScan.items.map((item) => h('div', { key: item.file, style: { ...S.row, fontSize: 11, gap: 6, opacity: item.corrupt ? 1 : 0.75 } },
+                          h('span', { style: { fontWeight: 600, color: item.corrupt ? '#c62828' : undefined } }, item.corrupt ? '损坏' : (item.scanned ? '正常' : '—')),
+                          h('span', { style: { flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.sessionId),
+                          item.corrupt
+                            ? h('span', null, `seq ${item.corruption.seq}：${item.corruption.reason}`)
+                            : h('span', null, item.scanned ? `${item.events} 条事件` : `${Math.round((item.bytes || 0) / 1024)} KB`),
+                          item.corrupt
+                            ? h('button', { style: { ...S.btn(), padding: '0 6px', height: 22, fontSize: 11 }, disabled: sessionBusy === `repair:${item.file}`, onClick: () => repairSession(item.file, false) }, sessionBusy === `repair:${item.file}` ? '修复中…' : '修复')
+                            : null)))
+                    : null)
               : null)));
     }
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.57
+
+- **新增「会话日志体检」**（路径 tab）：检测并一键修复 `session.v4.jsonl.zstd` 的「空 tool-call」永久损坏。
+  - 新增 `src/session-repair.js`：自解析 DSH 的**串联 Zstandard 帧容器**（Node 的 `zstdDecompress` 只解第一帧，必须逐帧解），逐帧解码成 JSONL 事件。
+  - 损坏判定只认已确认的那一类：`assistant/message` 里 `type:"tool-call"` 的 `id` 或 `name` 为空，或 `tool/call` 的 `callId`/`name` 为空，或某行不是合法 JSON。**不猜其它类别**，合法日志绝不会被误裁。
+  - 修复 = 保留损坏点之前的全部事件，重新压成一帧后**原子写回**（`tmp` + `rename`），原文件自动备份为 `<file>.repair-<时间戳>`。
+  - 新增 RPC：`sessions.scan`（`{deep, limit}`，浅扫列大小、深扫逐帧检测）、`sessions.repair`（`{file, dryRun}`）。
+  - 实测：对三份真实损坏日志（seq 2502 / 2807 / 2984）全部精准定位；修复后 seq 2983 `step/start` 收尾、单帧、2985 条事件、零解码错误；12 个正常会话零误报。
+
 ## 0.5.56
 
 - **安装改为「暂存 + 原子提交」**：先在 `<root>/.staging-<slug>-<ts>` 写全部文件与 `.market-install.json`，核对无误后 `rename` 到正式目录（同卷原子）；任何一步失败只清暂存，**正式目录零残留**。跨卷 `EXDEV` 降级 `copy + rm`，失败同样只清暂存。
