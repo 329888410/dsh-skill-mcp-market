@@ -171,6 +171,9 @@ window.__ModuleLoader__.load({
       const [pageJump, setPageJump] = useState('');
       const [mcpPageJump, setMcpPageJump] = useState('');
       const [installedFilter, setInstalledFilter] = useState('');
+      // 已装技能按来源层级分组（rank 100 项目 → 500 插件提供），同名低 rank 胜出
+      const [installedGroups, setInstalledGroups] = useState([]);
+      const [collapsedGroups, setCollapsedGroups] = useState({});
       // 会话日志体检：检测并修复「空 tool-call」导致的会话永久损坏
       const [sessionScan, setSessionScan] = useState(null);
       const [sessionBusy, setSessionBusy] = useState('');
@@ -258,6 +261,7 @@ window.__ModuleLoader__.load({
       const loadInstalled = useCallback(async () => {
         const [s, m] = await Promise.all([call('skills.list'), call('mcp.list')]);
         setInstalled(s.items || []);
+        setInstalledGroups(s.groups || []);
         setMounted(m.items || []);
         return { s, m };
       }, []);
@@ -893,9 +897,10 @@ window.__ModuleLoader__.load({
         : mounted;
       const installedSkills = filteredInstalled.map((item) => {
         const off = disabledSet.has(String(item.slug).toLowerCase());
-        return h('div', { key: `i-${item.dir}-${item.slug}`, style: S.card },
-          h('div', { style: S.title }, `${item.name || item.slug}${off ? '（已停用）' : ''}`),
-          h('div', { style: S.meta }, h('span', null, item.dir)),
+         return h('div', { key: `i-${item.dir}-${item.slug}`, style: { ...S.card, opacity: item.shadowedBy ? 0.55 : 1 } },
+           h('div', { style: S.title }, `${item.name || item.slug}${off ? '（已停用）' : ''}${item.shadowedBy ? `（被 ${item.shadowedBy} 覆盖）` : ''}`),
+           h('div', { style: S.meta }, h('span', null, item.sourceLabel ? `${item.sourceLabel} · rank ${item.rank}` : item.dir)),
+           h('div', { style: S.meta }, h('span', { style: { opacity: 0.6 } }, item.dir)),
           h('div', { style: S.row },
             h('button', {
               style: S.btn(off ? 'primary' : undefined),
@@ -1379,6 +1384,15 @@ window.__ModuleLoader__.load({
                   },
                 }, '打开目录'),
                 h('span', { style: { ...S.status, fontSize: 12, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `（可在资源管理器中直接查看 / 编辑技能文件）`)),
+              installedGroups && installedGroups.length > 0
+                ? h('div', { style: { ...S.row, gap: 6, fontSize: 11, width: '100%', flexWrap: 'wrap' } },
+                    h('span', { style: { ...S.status, fontSize: 11 } }, '来源层级：'),
+                    installedGroups.map((g) => h('span', {
+                      key: `${g.rank}:${g.label}`,
+                      style: { ...S.chip(false), cursor: 'default', fontSize: 11, padding: '2px 8px' },
+                      title: `rank ${g.rank} · ${g.count} 个技能${g.shadowed ? ` · ${g.shadowed} 个被更高层覆盖` : ''}`,
+                    }, `${g.label}（${g.count}）${g.shadowed ? ` · 覆盖 ${g.shadowed}` : ''}`)))
+                : null,
               h('div', { style: S.grid }, installedSkills),
               h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `已装 MCP（${filteredMounted.length}）`,

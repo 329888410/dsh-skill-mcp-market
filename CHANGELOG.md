@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.62
+
+- **已装技能按来源层级浏览**（方案 2），不再把五层目录拍平成一个列表：
+  - 新增 `collectSkillRoots()`：返回 `[{ dir, rank, label }]`，rank 越小越权威
+    | rank | 层 |
+    |---|---|
+    | 200 | 用户目录（`$AGENTS_HOME/skills`、`$DSH_HOME/skills`） |
+    | 300 | 自定义安装目录（`settings.skillDirs`，与用户层同路径时不重复计） |
+    | 400 | 宿主内置（`resources/runtime` 下解包的真实目录） |
+    | 500 | 插件提供（profile `node_modules` 包内 SKILL.md） |
+  - 新增 `collectInstalledGrouped()`：同名 slug **低 rank 胜出**，落败者标 `shadowedBy: "用户目录（rank 200）"`，并按层聚合 `groups: [{rank,label,count,shadowed}]`。
+  - `skills.list` 返回体新增 `groups`；每个 `items[]` 新增 `rank` / `sourceLabel` / 可选 `shadowedBy`（旧字段全保留，无破坏）。
+  - 客户端「已安装」tab：卡片标题显示被谁覆盖、元信息显示 `来源层 · rank`，被覆盖的卡片半透明；列表上方新增「来源层级」汇总条（每层数量 + 被覆盖数）。
+  - 实测：对真实 4 个技能根聚合，schema 与分组结果正确（当前机器仅用户目录 1 个技能，其余目录为空）。
+
 ## 0.5.61
 
 - **启用/禁用改为双轨**（方案 4），消除"停用了但模型仍在调用"的误导：

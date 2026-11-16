@@ -502,32 +502,36 @@ export async function apply(ctx, config = {}) {
   // 但 DSH 的"技能目录"（对话框 / 浮窗用的那份）是另一套，包括 $AGENTS_HOME/skills、
   // 应用内置 skills/、插件包内 assets/**/SKILL.md。这里把这两套合并起来，让面板"已安装"
   // 能列出所有已安装的技能（不只是 market 装的那部分）。
-  async function collectDshNativeSkillDirs() {
-    const dirs = [];
-    // 1) $AGENTS_HOME/skills（DSH 原生扫描路径）
-    const agentsHome = process.env.AGENTS_HOME || join(homedir(), ".agents");
-    dirs.push(join(agentsHome, "skills"));
-    // 2) market settings.skillDirs（用户自定义安装目录）
-    for (const d of settings.skillDirs) dirs.push(d);
-    // 3) 宿主安装目录内的应用内置技能（resources/runtime/office-skills 等，
-    //    是 app.asar 解包后的真实目录，可直接读）
+  /**
+   * Every skill root this panel scans, with the official source rank attached.
+   * Lower rank wins when two layers provide the same slug.
+   *   100 项目工作区 · 200 用户目录 · 300 自定义安装目录 · 400 宿主内置 · 500 插件提供
+   */
+  async function collectSkillRoots() {
+    const roots = [];
+    const add = (dir, rank, label) => {
+      if (dir) roots.push({ dir, rank, label });
+    };
+    const agentsHomeSkills = join(process.env.AGENTS_HOME || join(homedir(), ".agents"), "skills");
+    const userSkills = join(dshHome(), "skills");
+    add(agentsHomeSkills, 200, "用户目录");
+    add(userSkills, 200, "用户目录");
+    for (const d of settings.skillDirs) {
+      if (d === agentsHomeSkills || d === userSkills) continue;
+      add(d, 300, "自定义安装目录");
+    }
     const resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "";
     if (resourcesPath) {
       const runtimeDir = join(resourcesPath, "runtime");
       if (existsSync(runtimeDir)) {
-        for (const d of findSkillDirs(runtimeDir)) dirs.push(d);
+        for (const d of findSkillDirs(runtimeDir)) add(d, 400, "宿主内置");
       }
     }
-    // 4) 插件包内携带的 SKILL.md（profile node_modules 下每个插件的 assets/**/SKILL.md）
-    //    app.asar 内部的 @deepseek-ai 技能由 DSH 原生 catalog 扫描处理（asar 不是真目录，
-    //    无法直接 readdir），这里只补 profile node_modules 里插件包自带的 SKILL.md
-    //    （如 @zseven-w/dsh-openpencil 的 openpencil-design）。
     const profileNMDir = findProfileNodeModules();
     if (profileNMDir && existsSync(profileNMDir)) {
       for (const entry of readdirSync(profileNMDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const pluginPkgDir = join(profileNMDir, entry.name);
-        // scoped packages: @scope/name — look under the scope dir too
         if (entry.name.startsWith("@")) {
           let scoped = [];
           try {
@@ -536,16 +540,61 @@ export async function apply(ctx, config = {}) {
             /* ignore */
           }
           for (const sub of scoped) {
-            for (const d of findSkillDirs(join(pluginPkgDir, sub.name))) dirs.push(d);
+            for (const d of findSkillDirs(join(pluginPkgDir, sub.name))) add(d, 500, "插件提供");
           }
         } else {
-          for (const d of findSkillDirs(pluginPkgDir)) dirs.push(d);
+          for (const d of findSkillDirs(pluginPkgDir)) add(d, 500, "插件提供");
         }
       }
     }
-    // 去重 + 去空
     const seen = new Set();
-    return dirs.filter((d) => d && !seen.has(d) && seen.add(d));
+    return roots
+      .filter((root) => !seen.has(root.dir) && seen.add(root.dir))
+      .sort((a, b) => a.rank - b.rank);
+  }
+
+  /** Flat directory list kept for every existing caller. */
+  async function collectDshNativeSkillDirs() {
+    return (await collectSkillRoots()).map((root) => root.dir);
+  }
+
+  /**
+   * Installed skills grouped by source rank, with same-slug shadowing resolved.
+   * @returns {Promise<{ groups: object[], items: object[] }>}
+   */
+  async function collectInstalledGrouped() {
+    const roots = await collectSkillRoots();
+    const all = [];
+    for (const root of roots) {
+      let items = [];
+      try {
+        items = await listInstalledSkills([root.dir]);
+      } catch {
+        items = [];
+      }
+      for (const item of items) all.push({ ...item, rank: root.rank, sourceLabel: root.label });
+    }
+    const winners = new Map();
+    for (const item of all) {
+      const current = winners.get(item.slug);
+      if (!current || item.rank < current.rank) winners.set(item.slug, item);
+    }
+    for (const item of all) {
+      const winner = winners.get(item.slug);
+      if (winner && winner !== item) item.shadowedBy = `${winner.sourceLabel}（rank ${winner.rank}）`;
+    }
+    const groups = new Map();
+    for (const item of all) {
+      const key = `${item.rank}:${item.sourceLabel}`;
+      if (!groups.has(key)) groups.set(key, { rank: item.rank, label: item.sourceLabel, count: 0, shadowed: 0 });
+      const group = groups.get(key);
+      group.count += 1;
+      if (item.shadowedBy) group.shadowed += 1;
+    }
+    return {
+      groups: [...groups.values()].sort((a, b) => a.rank - b.rank),
+      items: all.sort((a, b) => a.rank - b.rank || a.slug.localeCompare(b.slug)),
+    };
   }
 
   // 递归查找包目录内所有"含 SKILL.md 子目录"的父目录（深度上限 4，避免遍历过深）。
@@ -1093,8 +1142,10 @@ export async function apply(ctx, config = {}) {
         await registerInstalledSkillToCatalog(installed, log);
         return installed;
       }
-      case "skills.list":
-        return { dirs: await collectDshNativeSkillDirs(), items: await listInstalledSkills(await collectDshNativeSkillDirs()) };
+      case "skills.list": {
+        const grouped = await collectInstalledGrouped();
+        return { dirs: await collectDshNativeSkillDirs(), groups: grouped.groups, items: grouped.items };
+      }
       case "skills.uninstall":
         return uninstallSkill({ slug: body.slug, dirs: settings.skillDirs, trashDir, agentsHomeSkillsDir: join(agentsHome(), "skills") });
       case "skills.trash": {
