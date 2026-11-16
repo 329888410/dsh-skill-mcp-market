@@ -8,12 +8,6 @@ window.__ModuleLoader__.load({
     const { useState, useEffect, useCallback, useRef } = React;
 
     const RPC = '/api/dsh-market/rpc';
-    const openExt = (url) => {
-      if (!url) return;
-      if (typeof window !== 'undefined' && window.open) {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      }
-    };
 
     async function call(op, payload) {
       // A hung response must surface as an error instead of an endless spinner.
@@ -514,58 +508,86 @@ window.__ModuleLoader__.load({
         }
       };
 
-      // 各源详情页 URL 推导（通过 DSH 内置 sidebar-right browser tab 打开）
+      // 各源详情页 URL 推导（统一通过 DSH 内置 sidebar-right browser tab 打开）。
+      // 每个源都要给出可打开的地址：全部源的全部技能卡片都必须有「详情」按钮。
       const detailUrlFor = (item) => {
+        if (!item) return '';
         const source = item.source;
-        if (source === 'skills.sh' || source === 'clawhub' || source === 'browse.sh' || source === 'lobehub') {
-          return '';
-        }
         const slug = String(item.slug || '').toLowerCase();
+        const owner = String(item.owner || '').replace(/^@/, '');
+        const homepage = typeof item.homepage === 'string' && /^https?:\/\//i.test(item.homepage) ? item.homepage : '';
+        const upstream = String(item.upstreamUrl || '').replace(/^@/, '');
         if (source === 'skillhub') {
-          return slug ? `https://www.skillhub.cn/skills/${slug}` : '';
+          // homepage 指向 api.skillhub.cn 接口地址，可浏览的详情页在 www 站。
+          if (slug) return `https://www.skillhub.cn/skills/${slug}`;
+          return homepage;
         }
-        if (source === 'trusttools') {
-          if (item.homepage) return item.homepage;
-          if (item.upstreamUrl) return `https://github.com/${item.upstreamUrl}`;
-          return '';
+        if (source === 'skillsmp') {
+          // upstreamUrl 格式为 owner/repo@branch，取 @ 前的部分拼 GitHub URL。
+          const repo = upstream.split('@')[0];
+          if (repo) return `https://github.com/${repo}`;
+          return homepage;
+        }
+        if (homepage) return homepage;
+        if (source === 'skills.sh') {
+          return upstream && slug ? `https://www.skills.sh/${upstream}/${slug}` : '';
+        }
+        if (source === 'clawhub') {
+          return owner && slug ? `https://clawhub.ai/${owner}/${slug}` : '';
+        }
+        if (source === 'browse.sh') {
+          return slug ? `https://browse.sh/skills/${owner ? owner + '/' : ''}${slug}` : '';
         }
         if (source === 'modelscope') {
-          if (item.homepage) return item.homepage;
           const ident = item.modelScopeIdent || '';
           return ident ? `https://modelscope.cn/skills/${ident}` : '';
         }
-        if (source === 'skillsmp') {
-          // upstreamUrl 格式为 owner/repo@branch，取 @ 前的部分拼 GitHub URL
-          if (item.upstreamUrl) {
-            const repo = String(item.upstreamUrl).split('@')[0];
-            return repo ? `https://github.com/${repo}` : '';
-          }
-          if (item.homepage) return item.homepage;
-          return '';
-        }
-        if (item.homepage) return item.homepage;
-        if (item.upstreamUrl) return item.upstreamUrl;
+        if (upstream) return `https://github.com/${upstream}`;
         return '';
       };
 
-      // 通过 DSH 内置 sidebar-right browser tab 打开详情页
+      // 在 DSH 内置 sidebar-right browser tab 中打开详情页（绝不使用系统浏览器）
       const openDetail = (item) => {
         const url = detailUrlFor(item);
-        if (!url) return;
+        if (!url) {
+          setError('该条目没有可打开的详情页');
+          return;
+        }
         const sr = props && props.sidebarRight;
-        if (sr && typeof sr.openTab === 'function') {
+        if (!sr || typeof sr.openTab !== 'function') {
+          setError('当前环境没有 DSH 内置浏览器（sidebarRight 不可用）');
+          return;
+        }
+        // 右侧栏按 Session 挂载：市场面板占满主列时没有挂载的 Session，openTab 会拒绝。
+        // 先回到会话让内置浏览器可用，再打开详情；永远不回退到系统浏览器。
+        const tryOpen = () => {
           try {
             sr.openTab('browser', { params: { url } });
-            return;
-          } catch (e) {
-            // sidebarRight 无挂载 session surface（全局面板显示时）→ 回退系统浏览器
-            console.warn('[dsh-market] sidebarRight.openTab failed, falling back to window.open:', e && e.message);
+            return true;
+          } catch {
+            return false;
           }
-        }
-        // 回退：系统浏览器
-        if (typeof window !== 'undefined' && window.open) {
-          window.open(url, '_blank', 'noopener,noreferrer');
-        }
+        };
+        if (tryOpen()) return;
+        // 全局面板（市场）没有挂载 Session → 回到会话 + 展开右侧栏 + 重试
+        const restore = () => {
+          try {
+            if (props.layout && typeof props.layout.selectPanel === 'function') props.layout.selectPanel(null);
+          } catch { /* layout service unavailable */ }
+          try {
+            if (sr && typeof sr.toggleExpanded === 'function' && !sr.isExpanded()) sr.toggleExpanded();
+          } catch { /* sidebar may not be expandable in this layout */ }
+        };
+        restore();
+        const retry = (left) => {
+          if (tryOpen()) return;
+          if (left > 0 && typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => retry(left - 1));
+            return;
+          }
+          setError('无法在 DSH 内置浏览器中打开详情：右侧栏当前不可用');
+        };
+        retry(40);
       };
 
       const doInstallSkill = async (item) => {
@@ -714,11 +736,12 @@ window.__ModuleLoader__.load({
               disabled: busy === `preview:${item.slug}`,
               onClick: () => openPreview(item),
             }, busy === `preview:${item.slug}` ? '下载中…' : '预览'),
-            detailUrlFor(item) ? h('button', {
+            h('button', {
               style: { ...S.btn(), padding: '0 6px' },
-              title: '在 DSH 内置浏览器中查看详情',
+              title: detailUrlFor(item) ? '在 DSH 内置浏览器中查看详情' : '该条目没有可打开的详情页',
+              disabled: !detailUrlFor(item),
               onClick: () => openDetail(item),
-            }, '详情') : null,
+            }, '详情'),
             installed.some((x) => x.slug === item.slug)
               ? h('span', { style: S.status }, '✓ 已安装')
               : item.installable === false
@@ -1518,7 +1541,7 @@ window.__ModuleLoader__.load({
         // Central panel addressed by that same sidebar id.
         ctx.slots.inject('main', () =>
           ctx.slots.register(
-            { name: 'main', key: 'dsh-market', inject: () => ({ sidebarRight: ctx.sidebarRight }) },
+            { name: 'main', key: 'dsh-market', inject: () => ({ sidebarRight: ctx.sidebarRight, layout: ctx.layout }) },
             Market,
           ));
         // Composer toolbar: 技能 / MCP quick buttons on the input row (left group).
