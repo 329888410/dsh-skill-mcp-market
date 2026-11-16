@@ -546,7 +546,10 @@ window.__ModuleLoader__.load({
         return '';
       };
 
-      // 在 DSH 内置 sidebar-right browser tab 中打开详情页（绝不使用系统浏览器）
+      // 在 DSH 内置 sidebar-right browser tab 中打开详情页（绝不使用系统浏览器）。
+      // 右侧栏按 Session 挂载：市场面板占满主列时没有挂载的 Session，openTab 会拒绝。
+      // 先回到会话（selectPanel(null)），再打开内置浏览器 tab；永远不回退到系统浏览器。
+      // 详情页以停靠 tab 呈现（不展开右侧栏、不用浮窗，避免同时弹出侧边栏+浮窗的突兀感）。
       const openDetail = (item) => {
         const url = detailUrlFor(item);
         if (!url) {
@@ -558,49 +561,19 @@ window.__ModuleLoader__.load({
           setError('当前环境没有 DSH 内置浏览器（sidebarRight 不可用）');
           return;
         }
-        // 右侧栏按 Session 挂载：市场面板占满主列时没有挂载的 Session，openTab 会拒绝。
-        // 先回到会话让内置浏览器可用，再打开详情；永远不回退到系统浏览器。
-        // 详情页以浮动面板（float）呈现：可叠加在市场面板之上，不离开当前视图。
         const tryOpen = () => {
-          let tabId;
           try {
-            // replaceTab: guide tab 让位（宿主语义：新 tab 落在 guide 的家，guide 随之关闭）。
-            // 从 openTabs 快照找当前会话的 guide tab。
-            let replaceTab;
-            try {
-              const snap = sr.openTabs && typeof sr.openTabs.getSnapshot === 'function'
-                ? sr.openTabs.getSnapshot()
-                : (Array.isArray(sr.openTabs) ? sr.openTabs : []);
-              const guide = snap.find((t) => t && t.kind === 'guide');
-              if (guide) replaceTab = guide.tabId;
-            } catch { /* openTabs unavailable */ }
-            sr.openTab('browser', {
-              params: { url },
-              ...(replaceTab ? { replaceTab } : {}),
-            });
-            // 读出刚打开的 tab id，把它取出来变成浮窗。
-            try {
-              tabId = sr.active() && sr.active().id;
-            } catch { tabId = undefined; }
-            if (tabId && typeof sr.float === 'function') {
-              try { sr.float(tabId); } catch { /* float 不可用时保持停靠态 */ }
-            }
+            sr.openTab('browser', { params: { url } });
             return true;
           } catch {
             return false;
           }
         };
         if (tryOpen()) return;
-        // 全局面板（市场）没有挂载 Session → 回到会话 + 展开右侧栏 + 重试
-        const restore = () => {
-          try {
-            if (props.layout && typeof props.layout.selectPanel === 'function') props.layout.selectPanel(null);
-          } catch { /* layout service unavailable */ }
-          try {
-            if (sr && typeof sr.toggleExpanded === 'function' && !sr.isExpanded()) sr.toggleExpanded();
-          } catch { /* sidebar may not be expandable in this layout */ }
-        };
-        restore();
+        // 全局面板（市场）没有挂载 Session → 回到会话，再重试
+        try {
+          if (props.layout && typeof props.layout.selectPanel === 'function') props.layout.selectPanel(null);
+        } catch { /* layout service unavailable */ }
         const retry = (left) => {
           if (tryOpen()) return;
           if (left > 0 && typeof requestAnimationFrame === 'function') {
