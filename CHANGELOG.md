@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.68
+
+- **修复「选中源后搜索结果显示的是聚合结果」与 trusttools 搜索慢**：
+  - 原因：`searchSkills` 分发器把 `category` 参数丢了（客户端→RPC 整条链路都没带），且点击源 chip 时 category 被重置为 all。
+  - 客户端：源 chip 点击保留当前 category；`searchSkills` 接受并传递 `category`；技能分类 chip 点击本地过滤 + 回滚顶。
+  - 实测（新分发器直连上游）：`source=trusttools` 返回 24 条且**全部是 trusttools**（total=579074，约 4.8s——慢在上游，不在插件；python POST 传输 + 三页拼接，属正常）。
+  - 说明：trusttools 上游搜索接口本身不支持 category 过滤，分类 chip 对它做本地过滤（与 UI 其它源行为一致）。
+
 ## 0.5.67
 
 - **空 tool-call 防护 A：写入前哨**（新增 `src/toolcall-guard.js`）

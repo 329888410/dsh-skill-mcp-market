@@ -330,11 +330,12 @@ window.__ModuleLoader__.load({
 
       const searchSkills = useCallback(async (text, options) => {
         const src = (options && options.source) || 'all';
+        const cat = (options && options.category) || category;
         const q = String(text || '');
         const pageNo = (options && options.page) || 1;
         const append = Boolean(options && options.append);
         // 只有「首页」进缓存；翻页是增量追加，缓存它没有意义还会撑爆内存
-        const cacheKey = append ? '' : `sk|${src}|${q}|${pageNo}`;
+        const cacheKey = append ? '' : `sk|${src}|${q}|${cat}|${pageNo}`;
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
         // 命中缓存：立即渲染旧结果，不白屏；后台再刷新
         if (cached) {
@@ -352,6 +353,7 @@ window.__ModuleLoader__.load({
           const d = await call('skills.search', {
             query: text,
             source: src,
+            category: cat === 'all' ? '' : cat,
             page: pageNo,
             pageSize: (options && options.size) || size,
           });
@@ -1130,8 +1132,7 @@ window.__ModuleLoader__.load({
                           style: S.chip(source === key),
                           onClick: () => {
                             setSource(key);
-                            setCategory('all');
-                            searchSkills(query, { source: key, size });
+                            searchSkills(query, { source: key, size, category });
                           },
                         }, key === 'all' ? '全部来源' : key))
                     : ['registry', 'lobehub'].map((key) =>
@@ -1191,7 +1192,7 @@ window.__ModuleLoader__.load({
                     h('button', {
                       key: cat,
                       style: S.chip(category === cat),
-                      onClick: () => setCategory(cat),
+                      onClick: () => { setCategory(cat); window.scrollTo({ top: 0, behavior: 'smooth' }); },
                     }, cat === 'all' ? '全部分类' : cat)))
               : null,
             tab === 'mcp' && (mcpTotal > 0 || mcps.length > 0)
