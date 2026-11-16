@@ -560,9 +560,31 @@ window.__ModuleLoader__.load({
         }
         // 右侧栏按 Session 挂载：市场面板占满主列时没有挂载的 Session，openTab 会拒绝。
         // 先回到会话让内置浏览器可用，再打开详情；永远不回退到系统浏览器。
+        // 详情页以浮动面板（float）呈现：可叠加在市场面板之上，不离开当前视图。
         const tryOpen = () => {
+          let tabId;
           try {
-            sr.openTab('browser', { params: { url } });
+            // replaceTab: guide tab 让位（宿主语义：新 tab 落在 guide 的家，guide 随之关闭）。
+            // 从 openTabs 快照找当前会话的 guide tab。
+            let replaceTab;
+            try {
+              const snap = sr.openTabs && typeof sr.openTabs.getSnapshot === 'function'
+                ? sr.openTabs.getSnapshot()
+                : (Array.isArray(sr.openTabs) ? sr.openTabs : []);
+              const guide = snap.find((t) => t && t.kind === 'guide');
+              if (guide) replaceTab = guide.tabId;
+            } catch { /* openTabs unavailable */ }
+            sr.openTab('browser', {
+              params: { url },
+              ...(replaceTab ? { replaceTab } : {}),
+            });
+            // 读出刚打开的 tab id，把它取出来变成浮窗。
+            try {
+              tabId = sr.active() && sr.active().id;
+            } catch { tabId = undefined; }
+            if (tabId && typeof sr.float === 'function') {
+              try { sr.float(tabId); } catch { /* float 不可用时保持停靠态 */ }
+            }
             return true;
           } catch {
             return false;
