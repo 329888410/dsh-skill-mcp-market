@@ -168,8 +168,6 @@ window.__ModuleLoader__.load({
       const [size, setSize] = useState(24);
       const [sort, setSort] = useState('default');
       const [category, setCategory] = useState('all');
-      const [preview, setPreview] = useState(null);
-      const [previewModal, setPreviewModal] = useState(false);
       const [pageJump, setPageJump] = useState('');
       const [mcpPageJump, setMcpPageJump] = useState('');
       const [installedFilter, setInstalledFilter] = useState('');
@@ -182,7 +180,6 @@ window.__ModuleLoader__.load({
       const [skillsTotalPages, setSkillsTotalPages] = useState(1);
       const [skillsTotal, setSkillsTotal] = useState(0);
       const [skillsHasMore, setSkillsHasMore] = useState(false);
-
 
       const gotoPage = (p) => {
         p = Math.max(1, Math.min(p, 1 << 30));
@@ -479,34 +476,7 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const openPreview = async (item) => {
-        setBusy(`preview:${item.slug}`);
-        setError('');
-        setPreview(null);
-        try {
-          const d = await call('skills.preview', {
-            source: item.source,
-            reference: item.source === 'skills.sh' ? item.homepage : item.source === 'clawhub' ? item.installRef : item.source === 'lobehub' ? item.reference || item.slug : item.source === 'browse.sh' ? item.reference : item.source === 'skillhub' ? item.reference || item.upstreamUrl || item.id : item.source === 'modelscope' ? item.modelScopeIdent || item.id.replace(/^modelscope:/, '') : item.upstreamUrl || item.id,
-            upstreamUrl: item.source === 'modelscope' ? (item.upstreamUrl || '') : '',
-            skillDir: item.skillDir || '',
-            ref: item.ref || '',
-            name: item.slug,
-          });
-          setPreview({
-            slug: item.slug,
-            name: d.name || item.slug,
-            content: d.content || '',
-            files: d.files,
-            openUrl: d.openUrl || '',
-            previewError: d.previewError || '',
-          });
-          setPreviewModal(true);
-        } catch (e) {
-          setError(`预览失败：${e.message || e}`);
-        } finally {
-          setBusy('');
-        }
-      };
+;
 
       // 各源详情页 URL 推导（统一通过 DSH 内置 sidebar-right browser tab 打开）。
       // 每个源都要给出可打开的地址：全部源的全部技能卡片都必须有「详情」按钮。
@@ -726,11 +696,6 @@ window.__ModuleLoader__.load({
             item.describedBy === 'page-meta' ? null : null,
             item.installable === false ? h('span', null, '· 仅可浏览') : null),
           h('div', { style: S.row },
-            item.installable === false ? null : h('button', {
-              style: S.btn(),
-              disabled: busy === `preview:${item.slug}`,
-              onClick: () => openPreview(item),
-            }, busy === `preview:${item.slug}` ? '下载中…' : '预览'),
             h('button', {
               style: { ...S.btn(), padding: '0 6px' },
               title: detailUrlFor(item) ? '在 DSH 内置浏览器中查看详情' : '该条目没有可打开的详情页',
@@ -1096,30 +1061,6 @@ window.__ModuleLoader__.load({
                       detail.kind === 'skill'
                         ? h('button', { style: S.btn('primary'), disabled: busy === 'save:skill', onClick: saveSkillEdit }, '保存')
                         : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, '保存并重连'))))
-              : null,
-            preview && previewModal
-              ? h('div', {
-                  style: { position: 'fixed', inset: 0, zIndex: 20, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
-                  onClick: (e) => { if (e.target === e.currentTarget) setPreviewModal(false); },
-                },
-                  h('div', {
-                    style: { background: '#fff', borderRadius: 12, width: 'min(680px, 92vw)', maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 8px 40px rgba(0,0,0,0.18)' },
-                  },
-                    h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #eaeef2' } },
-                      h('div', { style: { fontSize: 14, fontWeight: 600 } }, `预览：${preview.name}（${preview.files} 个文件，未安装）`),
-                      h('button', { style: { ...S.btn(), padding: '2px 10px' }, onClick: () => setPreviewModal(false) }, '关闭')),
-                    h('div', { style: { flex: 1, overflow: 'auto', padding: '12px 16px' } },
-                      preview.previewError
-                        ? h('div', { style: { ...S.status, color: '#b26a00' } }, `在线预览不可用：${preview.previewError}`)
-                        : null,
-                      h('pre', { style: { fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 480, overflow: 'auto', margin: 0 } }, preview.content || (preview.previewError ? '' : '(没有正文)'))),
-                    h('div', { style: { display: 'flex', gap: 8, padding: '10px 16px', borderTop: '1px solid #eaeef2', justifyContent: 'flex-end' } },
-                      preview.openUrl ? h('button', {
-                        style: { ...S.btn('primary'), padding: '0 12px' },
-                        title: `在 DSH 内置浏览器中查看详情 ${preview.openUrl}`,
-                        onClick: () => { openDetail({ homepage: preview.openUrl }); setPreviewModal(false); },
-                      }, '在 DSH 内置浏览器中查看详情') : null,
-                      h('button', { style: S.btn(), onClick: () => { setPreview(null); setPreviewModal(false); } }, '关闭预览'))))
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,

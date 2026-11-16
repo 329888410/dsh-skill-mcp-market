@@ -34,7 +34,7 @@ DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装
 
 ### 技能市场
 
-顶部按来源切换（`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub` / `skillhub` / `modelscope`），卡片上直接「预览 / 安装」：
+顶部按来源切换（`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub` / `skillhub` / `modelscope`），卡片上直接「详情 / 安装」（「详情」在 DSH 内置浏览器 tab 打开来源站详情页；「预览」功能已随 0.5.54 移除）：
 
 ![技能市场：来源筛选与卡片](docs/screenshots/panel-skills.png)
 

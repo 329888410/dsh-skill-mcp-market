@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.54
+
+- **移除「预览」功能**：详情按钮已覆盖"看介绍"需求（内置浏览器 tab 打开来源站完整详情页，比 tarball 下载快且信息更全），预览按钮与预览弹层（`skills.preview` 客户端调用路径、`preview`/`previewModal` state、卡片「预览」按钮、预览模态）全部移除。
+- `index.js` 的 `skills.preview` RPC 保留（服务端能力，不影响客户端；其他客户端/自动化仍可调）。
+- `client.js` 卡片操作行现为：「详情」+「安装 / ✓ 已安装 / 仅可浏览」。
+
 ## 0.5.33
 
 - **修复 trusttools CLI 命令名**：`trusttools` CLI 的安装命令是 `add` 而非 `install`（`trusttools add <source> -g`），0.5.30 的 `installViaTrustToolsCli` 使用了不存在的 `trusttools install` 子命令，会导致 CLI 安装路径永远失败并回退 GitHub。修正为 `npx -y trusttools add <reference> -g`。
