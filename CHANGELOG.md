@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.64
+
+- **修复「禁用模型调用」的语义与文案**（回应"面板级提示是否合理"）：
+  - 文件级生效时按钮写 **禁用模型调用 / 启用**；文件级不可用（插件提供、符号链接接入）时按钮改为 **在本面板隐藏 / 取消隐藏**，并带 tooltip 说明"模型仍会收到"。
+  - `skills.list` 的每个 `items[]` 新增 `fileToggleable`（由 `skillFileToggleable` 判定），界面据此选择轨道，不再靠猜。
+  - `skills.toggle` 的 `scope` 由界面按技能实际能力传入（`file` / `panel`），不再固定 `auto`。
+- **分级浏览改为真正可折叠的分组**：按 rank 分组的标题行（▸/▾ + 层名 + rank + 数量 + 被覆盖数），点击折叠/展开；折叠偏好写入 `localStorage: dsh-skill-mcp-market.collapsedGroups`，跨面板重挂载与刷新保留。原先那条重复的"来源层级"汇总条已删除。
+- **新增自动化测试 `test/test-new-features.mjs`（37 项）**：frontmatter 标志写（写/改/删/幂等/无 frontmatter）、双轨启停（目录型/单文件/无残留/不存在报错）、回收站（删→列→恢复→清空）、.zip（解析/安装/落盘/零残留/路径越界）、来源分级（低 rank 胜出/shadowedBy/唯一不标记）、会话日志体检（帧扫描/多帧解码/空 tool-call 定位/预演/修复/备份/单帧）。全程在 `mkdtemp` 临时目录，不触碰用户数据。
+- **清理**：删除 `session-repair.js` 里无人使用的 `existsSync/stat/rm` 再导出与对应 import；删除 `verify.js` 中无人调用的 `describeFindings`；删除客户端死状态 `installedGroups`；移除 `~/.dsh/market/skills/.staging-1794469168279-…` 这个 11/12 崩溃安装留下的残骸（无 SKILL.md、无 manifest，已先备份到 `.dsh-repair/staging-…-backup`）。
+- 两套测试合计 **29 + 37 = 66 项全通过**。
+
 ## 0.5.63
 
 - **修复「插件入口反复消失」的真因（右侧栏 tab 注册的 effect 泄漏）**：

@@ -68,9 +68,3 @@ export function scanSkillBundle({ files, skillText }) {
     stats: { files: names.length, totalBytes, high: high.length },
   };
 }
-
-export function describeFindings(findings) {
-  return findings
-    .map((f) => `[${f.severity}] ${f.rule}${f.file ? ` @ ${f.file}` : ""} — ${f.why}`)
-    .join("; ");
-}

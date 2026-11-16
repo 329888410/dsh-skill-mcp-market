@@ -171,9 +171,16 @@ window.__ModuleLoader__.load({
       const [pageJump, setPageJump] = useState('');
       const [mcpPageJump, setMcpPageJump] = useState('');
       const [installedFilter, setInstalledFilter] = useState('');
-      // 已装技能按来源层级分组（rank 100 项目 → 500 插件提供），同名低 rank 胜出
-      const [installedGroups, setInstalledGroups] = useState([]);
-      const [collapsedGroups, setCollapsedGroups] = useState({});
+      const [collapsedGroups, setCollapsedGroups] = useState(() => {
+        // 折叠偏好跨面板重挂载与刷新保留；拒绝存储的浏览器只是不记忆
+        try {
+          const raw = window.localStorage.getItem('dsh-skill-mcp-market.collapsedGroups');
+          const parsed = raw ? JSON.parse(raw) : null;
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+          return {};
+        }
+      });
       // 会话日志体检：检测并修复「空 tool-call」导致的会话永久损坏
       const [sessionScan, setSessionScan] = useState(null);
       const [sessionBusy, setSessionBusy] = useState('');
@@ -626,11 +633,25 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const toggleSkill = async (slug, enabled) => {
+      const toggleGroupCollapsed = (key) => {
+        setCollapsedGroups((prev) => {
+          const next = { ...prev };
+          if (next[key]) delete next[key];
+          else next[key] = true;
+          try {
+            window.localStorage.setItem('dsh-skill-mcp-market.collapsedGroups', JSON.stringify(next));
+          } catch {
+            /* storage refused: the view still collapses for this render */
+          }
+          return next;
+        });
+      };
+
+      const toggleSkill = async (slug, enabled, scope) => {
         setBusy(`toggle:${slug}`);
         setError('');
         try {
-          const d = await call('skills.toggle', { slug, enabled, scope: 'auto' });
+          const d = await call('skills.toggle', { slug, enabled, scope: scope || 'auto' });
           const scopeText = d && d.scope === 'file'
             ? (enabled ? '文件级：已移除禁用标记，模型可再次调用' : '文件级：已写入禁用标记，模型不再调用')
             : '面板级：仅本面板隐藏，宿主注册表仍会加载该技能';
@@ -895,18 +916,22 @@ window.__ModuleLoader__.load({
       const filteredMounted = filterText
         ? mounted.filter((i) => (i.title || i.serverName || '').toLowerCase().includes(filterText) || (i.description || '').toLowerCase().includes(filterText))
         : mounted;
-      const installedSkills = filteredInstalled.map((item) => {
+      // 单张已装技能卡片（分组渲染时复用）
+      const renderInstalledCard = (item) => {
         const off = disabledSet.has(String(item.slug).toLowerCase());
-         return h('div', { key: `i-${item.dir}-${item.slug}`, style: { ...S.card, opacity: item.shadowedBy ? 0.55 : 1 } },
-           h('div', { style: S.title }, `${item.name || item.slug}${off ? '（已停用）' : ''}${item.shadowedBy ? `（被 ${item.shadowedBy} 覆盖）` : ''}`),
-           h('div', { style: S.meta }, h('span', null, item.sourceLabel ? `${item.sourceLabel} · rank ${item.rank}` : item.dir)),
-           h('div', { style: S.meta }, h('span', { style: { opacity: 0.6 } }, item.dir)),
+        // fileToggle 表示这个技能的 SKILL.md 可写（文件级真生效）；否则只能面板级隐藏
+        const fileToggle = item.fileToggleable !== false;
+        return h('div', { key: `i-${item.dir}-${item.slug}`, style: { ...S.card, opacity: item.shadowedBy ? 0.55 : 1 } },
+          h('div', { style: S.title }, `${item.name || item.slug}${off ? '（已停用）' : ''}${item.shadowedBy ? `（被 ${item.shadowedBy} 覆盖）` : ''}`),
+          h('div', { style: S.meta }, h('span', null, item.sourceLabel ? `${item.sourceLabel} · rank ${item.rank}` : item.dir)),
+          h('div', { style: S.meta }, h('span', { style: { opacity: 0.6 } }, item.dir)),
           h('div', { style: S.row },
             h('button', {
               style: S.btn(off ? 'primary' : undefined),
               disabled: busy === `toggle:${item.slug}`,
-              onClick: () => toggleSkill(item.slug, off),
-            }, off ? '启用' : '停用'),
+              title: fileToggle ? '改写 SKILL.md 的 disable-model-invocation，模型不再调用' : '该技能只能在本面板隐藏，模型仍会收到',
+              onClick: () => toggleSkill(item.slug, off, fileToggle ? 'file' : 'panel'),
+            }, busy === `toggle:${item.slug}` ? '处理中…' : (off ? '启用' : (fileToggle ? '禁用模型调用' : '在本面板隐藏'))),
             h('button', {
               style: S.btn(),
               disabled: busy === `openDir:skill:${item.slug}`,
@@ -923,7 +948,37 @@ window.__ModuleLoader__.load({
                 }
               },
             }, '打开文件夹'),
-            h('button', { style: S.btn(), disabled: busy === `remove:${item.slug}`, onClick: () => removeSkill(item.slug) }, '卸载')));
+            h('button', { style: S.btn(), disabled: busy === `remove:${item.slug}`, onClick: () => removeSkill(item.slug) }, '卸载')))
+      };
+
+      // 按来源层级分组（rank 200 用户 → 500 插件提供），折叠状态存 localStorage
+      const installedGrouped = (() => {
+        const map = new Map();
+        for (const item of filteredInstalled) {
+          const rank = item.rank || 999;
+          const label = item.sourceLabel || '未分层';
+          const key = `${rank}:${label}`;
+          if (!map.has(key)) map.set(key, { key, rank, label, items: [] });
+          map.get(key).items.push(item);
+        }
+        return [...map.values()].sort((x, y) => x.rank - y.rank);
+      })();
+
+      const installedSkills = installedGrouped.map((group) => {
+        const collapsed = collapsedGroups[group.key] === true;
+        const shadowed = group.items.filter((x) => x.shadowedBy).length;
+        return h('div', { key: group.key, style: { display: 'flex', flexDirection: 'column', gap: 8, width: '100%' } },
+          h('button', {
+            type: 'button',
+            style: { ...S.row, gap: 8, cursor: 'pointer', background: 'transparent', border: 0, padding: '4px 0', font: 'inherit', textAlign: 'left', width: '100%' },
+            onClick: () => toggleGroupCollapsed(group.key),
+            title: collapsed ? '展开该来源' : '收起该来源',
+          },
+            h('span', { style: { fontSize: 12, width: 12 } }, collapsed ? '▸' : '▾'),
+            h('span', { style: { fontSize: 13, fontWeight: 600 } }, group.label),
+            h('span', { style: { ...S.status, fontSize: 11 } }, `rank ${group.rank} · ${group.items.length} 个`),
+            shadowed > 0 ? h('span', { style: { ...S.status, fontSize: 11, color: '#b26a00' } }, `${shadowed} 个被更高层覆盖`) : null),
+          collapsed ? null : h('div', { style: S.grid }, group.items.map(renderInstalledCard)));
       });
 
       const installedMcps = filteredMounted.map((item) =>
@@ -1384,15 +1439,6 @@ window.__ModuleLoader__.load({
                   },
                 }, '打开目录'),
                 h('span', { style: { ...S.status, fontSize: 12, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `（可在资源管理器中直接查看 / 编辑技能文件）`)),
-              installedGroups && installedGroups.length > 0
-                ? h('div', { style: { ...S.row, gap: 6, fontSize: 11, width: '100%', flexWrap: 'wrap' } },
-                    h('span', { style: { ...S.status, fontSize: 11 } }, '来源层级：'),
-                    installedGroups.map((g) => h('span', {
-                      key: `${g.rank}:${g.label}`,
-                      style: { ...S.chip(false), cursor: 'default', fontSize: 11, padding: '2px 8px' },
-                      title: `rank ${g.rank} · ${g.count} 个技能${g.shadowed ? ` · ${g.shadowed} 个被更高层覆盖` : ''}`,
-                    }, `${g.label}（${g.count}）${g.shadowed ? ` · 覆盖 ${g.shadowed}` : ''}`)))
-                : null,
               h('div', { style: S.grid }, installedSkills),
               h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `已装 MCP（${filteredMounted.length}）`,

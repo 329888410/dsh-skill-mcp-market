@@ -12,8 +12,7 @@
 // v4 relationship validator rejects the whole log, so everything after that
 // event becomes unreadable. Repair keeps the valid prefix and drops the rest.
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
-import { copyFile, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { copyFile, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 const ZSTD_MAGIC = 0xFD2FB528;
@@ -210,4 +209,3 @@ export async function repairSessionLog(filePath, options = {}) {
   return report;
 }
 
-export { existsSync as sessionFileExists, stat as sessionFileStat, rm as removeFile };

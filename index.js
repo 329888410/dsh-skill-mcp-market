@@ -572,7 +572,15 @@ export async function apply(ctx, config = {}) {
       } catch {
         items = [];
       }
-      for (const item of items) all.push({ ...item, rank: root.rank, sourceLabel: root.label });
+      for (const item of items) {
+        all.push({
+          ...item,
+          rank: root.rank,
+          sourceLabel: root.label,
+          // 只有能改写 SKILL.md 的技能才支持"文件级"禁用（真让模型收不到）
+          fileToggleable: skillFileToggleable([root.dir], item.slug),
+        });
+      }
     }
     const winners = new Map();
     for (const item of all) {
