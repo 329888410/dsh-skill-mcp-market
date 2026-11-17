@@ -192,6 +192,7 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
     out.total = merged.length >= wanted ? wanted + 1 : merged.length;
     out.hasMore = merged.length >= wanted;
     if (cache && out.items && out.items.length) await cache.put(cKey, out);
+out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length / size));
     return out;
   }
   // 浏览：顺着 nextCursor 把目录累积到需要的深度，再本地切出这一页。
@@ -201,8 +202,15 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
   const matched = rows.slice((p - 1) * size, p * size);
   const out = mapClawHubRows(matched, q, "browse", matched.length);
   if (!rows.length) out.hint = "clawhub 当前没有返回条目（可达，但列表为空）";
+    // 总页数：cursor 耗尽时精确，未耗尽时下界
+    if (state.done) {
+      out.total = rows.length;
+      out.totalPages = Math.max(1, Math.ceil(rows.length / size));
+    } else {
+      out.totalPages = Math.max(p, Math.ceil(rows.length / size));
+    }
   out.hasMore = p * size < rows.length || (!state.done && rows.length >= p * size);
-  out.total = state.done ? rows.length : Math.max(rows.length, p * size) + 1;
+    out.total = state.done ? rows.length : undefined;
   if (cache && out.items && out.items.length) await cache.put(cKey, out);
   return out;
 }

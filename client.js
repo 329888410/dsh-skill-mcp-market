@@ -390,7 +390,7 @@ window.__ModuleLoader__.load({
         if (cached) {
           setSkills(cached.items || []);
           setSkillsPage(1);
-          setSkillsTotalPages(cached.pages || 1);
+          setSkillsTotalPages(cached.pages || 0);
           setSkillsTotal(cached.total || (cached.items || []).length);
           setSkillsHasMore(Boolean(cached.hasMore));
           if ((cached.items || []).length) setNotice('（缓存，正在刷新…）');
@@ -428,7 +428,7 @@ window.__ModuleLoader__.load({
             setSkills(rows);
           }
           setSkillsPage(d.page || pageNo);
-          setSkillsTotalPages(d.pages || 1);
+          setSkillsTotalPages(d.pages || 0); // 0 = 未知总页数，pager 走窗口式
           setSkillsTotal(Number(d.total) || rows.length);
           setSkillsHasMore(Boolean(d.hasMore));
           const hints = (d.hints || []).filter(Boolean);

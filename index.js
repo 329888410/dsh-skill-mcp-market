@@ -1170,6 +1170,7 @@ export async function apply(ctx, config = {}) {
         return {
           ...result,
           canLoadMore,
+          pages: result.totalPages || undefined,
           items: result.items.map((item) => ({ ...item, installed: taken.has(item.slug) })),
         };
       }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.83
+
+- **clawhub 支持总页数统计**（cursor 耗尽时精确，未耗尽时下界）
+  - browse（空查询）：`extendClawHubCatalog` 累加 cursor，耗尽时 `totalPages = ceil(rows/size)` 精确值；未耗尽时显示下界（「共约」）。
+  - search（带关键词）：`merged.length < wanted` 时 `totalPages` 精确；`hasMore` 时不显示总页数。
+  - 前端 `skillsTotalPages` 默认改为 0（未知），pager 据此走窗口式而非全页码。
+  - 效果：clawhub browse 翻到最后一页时显示精确总页数；中间页显示「共约 第 X / Y 页」。
+
 ## 0.5.82
 
 - **技能市场分页恢复全页码显示；MCP 注册表保持窗口式页码**
