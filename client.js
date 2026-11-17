@@ -367,7 +367,8 @@ window.__ModuleLoader__.load({
         const pageNo = (options && options.page) || 1;
         const append = Boolean(options && options.append);
         // 只有「首页」进缓存；翻页是增量追加，缓存它没有意义还会撑爆内存
-        const cacheKey = append ? '' : `sk|${src}|${q}|${cat}|${pageNo}`;
+        const effSort = sort === 'default' ? 'installCount' : (sort === 'name' ? 'name' : '');
+        const cacheKey = append ? '' : `sk|${src}|${q}|${cat}|${pageNo}|${effSort}`;
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
         // 命中缓存：立即渲染旧结果，不白屏；后台再刷新
         if (cached) {
@@ -388,7 +389,7 @@ window.__ModuleLoader__.load({
             category: cat === 'all' ? '' : cat,
             page: pageNo,
             pageSize: (options && options.size) || size,
-            sort: sort === 'default' ? 'installCount' : (sort === 'name' ? 'name' : ''),
+            sort: effSort,
           });
           const rows = d.items || [];
           if (cacheKey) {
@@ -504,6 +505,15 @@ window.__ModuleLoader__.load({
         if (tab === 'skills') searchSkills('', { source, size });
         else searchMcps('', { size });
       }, [tab, loadSettings, loadInstalled, searchSkills, searchMcps]);
+
+      // 排序变了 → 重新拉取当前 tab 的数据（不同排序返回不同顺序/结果）
+      const prevSortRef = useRef(sort);
+      useEffect(() => {
+        if (tab !== 'skills' || sort === prevSortRef.current) return;
+        prevSortRef.current = sort;
+        setSkills([]);
+        searchSkills('', { source, size, page: 1 });
+      }, [sort, tab]);
 
       const openSkillDetail = async (slug) => {
         setBusy(`detail:${slug}`);
