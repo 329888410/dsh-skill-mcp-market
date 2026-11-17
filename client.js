@@ -438,7 +438,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy('');
         }
-      }, []);
+      }, [sort, liveRef, source, size]);
 
       const searchMcps = useCallback(async (text, options) => {
         const opts = options || {};
