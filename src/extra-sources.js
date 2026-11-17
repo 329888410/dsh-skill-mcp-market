@@ -196,7 +196,7 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
     return out;
   }
   // 浏览：顺着 nextCursor 把目录累积到需要的深度，再本地切出这一页。
-    const need = p === 1 ? 3000 : Math.min(size * (p + 5), 3000);
+    const need = p === 1 ? 150 : Math.min(size * (p + 5), 3000);
   const state = await extendClawHubCatalog(cache, need);
   const rows = state.rows;
   const matched = rows.slice((p - 1) * size, p * size);
@@ -213,6 +213,22 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
     out.total = state.done ? rows.length : undefined;
   if (cache && out.items && out.items.length) await cache.put(cKey, out);
   return out;
+}
+
+
+/** Background-warm the clawhub cursor catalogue up to 3000 rows (~125 pages).
+ *  Called from warmMarketCache so the first panel open is fast; later pages
+ *  just slice from the already-accumulated rows. */
+export async function warmClawHubCatalog(cache) {
+  try {
+    const state = await extendClawHubCatalog(cache, 3000);
+    if (state.rows.length < 3000 && !state.done) {
+      // Continue in background without blocking
+      setTimeout(async () => {
+        try { await extendClawHubCatalog(cache, 6000); } catch { /* best-effort */ }
+      }, 60000);
+    }
+  } catch { /* network down: silent */ }
 }
 
 export async function searchTrustTools({ query = "", page = 1, pageSize = 24, cache } = {}) {

@@ -7,6 +7,7 @@ import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { enrichPageDescriptions, enrichSkillsShFast } from "./enrich.js";
 import {
   searchClawHub,
+  warmClawHubCatalog,
   searchLobeHubSkills,
   searchModelScope,
   searchSkillsMp,
@@ -595,6 +596,7 @@ export async function warmMarketCache(cache = fallbackCache) {
     searchLobeHubSkills({ query: "", page: 1, pageSize: 24, cache }),
     searchModelScope({ query: "", page: 1, pageSize: 24 }),
     skillsShCatalog(cache),
+    warmClawHubCatalog(cache),
   ]);
   return results.map((r) => (r.status === "fulfilled" ? (Array.isArray(r.value) ? r.value.length : (r.value.items || []).length) : 0));
 }
