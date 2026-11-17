@@ -291,7 +291,7 @@ window.__ModuleLoader__.load({
         const pageItems = (function () {
           const items = [];
           const push = (v) => items.push(v);
-          const span = n === 0 ? 2 : 5; // 未知总数±2，已知总数±5
+          const span = 5; // 统一 ±5 窗口
           if (n === 0) {
             for (let i = Math.max(1, page - span); i <= page + span; i += 1) if (i >= 1) push(i);
             return items;
