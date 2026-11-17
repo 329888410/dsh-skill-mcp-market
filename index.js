@@ -1160,6 +1160,7 @@ export async function apply(ctx, config = {}) {
           category: body.category || "",
           page: body.page || 1,
           pageSize: body.pageSize || 24,
+          sort: body.sort || "",
         });
         const installedNow = await listInstalledSkills(settings.skillDirs);
         const taken = new Set(installedNow.map((item) => item.slug));

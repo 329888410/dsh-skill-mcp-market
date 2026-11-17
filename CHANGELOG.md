@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.81
+
+- **补交 index.js 的 `sort: body.sort` 透传**（0.5.80 同步时遗漏，导致重启后排序仍不生效）
+  - 0.5.80 的 `git add -A` 只提交了 4 个文件（client.js / CHANGELOG / package.json / sources.js），index.js 的 `sort: body.sort` 改动在 work 副本里存在但未进入 commit，profile 副本里也缺失。
+  - 本次将 work / profile / D 三处 index.js 统一为含 `sort: body.sort` 的版本，三处逐字节一致。
+  - 需重启 Host 生效（Host 启动时从磁盘加载 index.js）。
+
 ## 0.5.80
 
 - **修复：切换排序后不重新拉取**（导致 LobeHub「按安装数」显示的是默认顺序的个位数安装量）
