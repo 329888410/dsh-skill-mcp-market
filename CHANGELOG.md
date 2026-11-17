@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.84
+
+- **分页器窗口加宽至 ±5 页（已知总数时）+ 所有源返回 totalPages**
+  - 根因：0.5.83 的省略号窗口半径写死 ±2，加上首页 cursor 只累积到当前页深度，导致所有源的分页导航只显示 1-2-3 共 3 个页码。
+  - 修法：`client.js` 已知总页数时半径改为 ±5（`span = n === 0 ? 2 : 5`）；`src/sources.js` dispatcher 和 `src/extra-sources.js` 所有处理器补上 `totalPages` 字段。
+  - 效果：clawhub 第 99 页 / 共 98 页 → `1 … 94 95 96 97 98`；skills.sh 第 1 页 / 共 834 页 → `1 2 3 4 5 6 … 834`。
+
 ## 0.5.83
 
 - **clawhub 支持总页数统计**（cursor 耗尽时精确，未耗尽时下界）
