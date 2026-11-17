@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.77
+
+- **补齐 clawhub / LobeHub / modelscope 源的安装量映射**（卡片「· N 次安装」与「按安装数」排序对全部源生效）
+  - 面板排序与卡片统一读 `item.installs`，但各源上游字段名不同：clawhub 叫 `downloads`、LobeHub 叫 `installCount`、modelscope 叫 `DownloadCount`，此前只映射了 0.5.76 的 skillhub，导致这三个源卡片仍不显示安装量、「按安装数」排序对它们按 0 排。
+  - 本次三处全部补上 `installs` 映射。实测 LobeHub 卡片现在带真实数值（如 creo 系列 installCount=2）。
+  - 说明：clawhub 个别卡片安装量可能显示 0，是该条目上游本身没有 `downloads`/`rolling60DayInstalls` 数据（如新发布技能），非映射缺失。
+
 ## 0.5.76
 
 - **修复 skillhub 源「按安装数」排序恒为 0、卡片不显示安装量**

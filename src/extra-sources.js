@@ -89,6 +89,8 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
       upstreamUrl: "",
       installRef: reference,
       downloads: Number(raw.downloads || raw.metrics?.rolling60DayInstalls || 0) || 0,
+      // 面板排序/卡片统一读 item.installs；clawhub 上游叫 downloads，不映射则「按安装数」对 clawhub 也是 0。
+      installs: Number(raw.downloads || raw.metrics?.rolling60DayInstalls || 0) || 0,
       category: raw.category || "",
       installable: Boolean(reference),
       // 搜索端点无分页；浏览端点支持 limit。让客户端据此决定「加载更多」是否可用
@@ -316,6 +318,8 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
     category: raw.category || "",
     tags: [],
     installCount: Number(raw.installCount || 0),
+    // 面板读 item.installs；LobeHub 上游字段叫 installCount，补映射让卡片与「按安装数」排序有数。
+    installs: Number(raw.installCount || 0),
     rating: Number(raw.ratingAverage || 0),
     installable: Boolean(raw.identifier),
     note: "通过官方 CLI 安装 LobeHub 技能",
@@ -484,6 +488,7 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
       ref: branch,
       skillDir,
       downloads: Number(raw.DownloadCount || 0),
+    installs: Number(raw.DownloadCount || 0),
       tags: Array.isArray(raw.Tags) ? raw.Tags : [],
       installable: true,
       modelScopeIdent: ident,
