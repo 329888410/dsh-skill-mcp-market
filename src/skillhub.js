@@ -20,6 +20,9 @@ function toItem(raw) {
   const namespace = raw.namespace || {};
   const canonical = namespace.canonicalName || raw.slug || "";
   const downloads = Number(raw.downloads ?? raw.installs ?? 0) || 0;
+  // 面板排序与卡片「· N 次安装」统一读 item.installs；skillhub 上游字段叫 downloads，
+  // 不映射则「按安装数」排序对它恒为 0、卡片也不显示安装量。
+  const installs = downloads;
   const stars = Number(raw.stars ?? 0) || 0;
   return {
     id: `skillhub:${canonical || raw.slug}`,
@@ -35,6 +38,7 @@ function toItem(raw) {
     upstreamUrl: raw.upstream_url || "",
     downloads,
     stars,
+    installs,
     verified: Boolean(raw.verified),
     version: raw.version || "",
     installable: Boolean(canonical || raw.slug),

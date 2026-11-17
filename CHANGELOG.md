@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.76
+
+- **修复 skillhub 源「按安装数」排序恒为 0、卡片不显示安装量**
+  - 真因：面板的排序与卡片「· N 次安装」统一读 `item.installs`，但 skillhub 上游字段叫 `downloads`，`toItem` 只映射了 `downloads`/`stars` 没映射 `installs`，于是该源所有卡片 `installs=undefined`——「按安装数」排序全部按 0 比，等于没排；卡片也不打印安装数（与截图一致）。
+  - 修法：`skillhub.js` 的 `toItem` 补 `installs = downloads` 并写入返回对象。
+  - 实测：修复后 skillhub 卡片带真实安装量（如 biaoshu-bailian 743497、ai-ppt-generate 7533），「按安装数」排序按真实数值生效。
+
 ## 0.5.75
 
 - **MCP 卡片详情接入 LobeHub `mcp view` 详细字段**
