@@ -219,7 +219,7 @@ export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cach
     DESCRIPTION_BUDGET_MS,
   );
   fillMissingDescriptions(items);
-  return { source: "skills.sh", items, total: matched.length, hasMore: p * size < matched.length, hint };
+  return { source: "skills.sh", items, total: matched.length, totalPages: Math.max(1, Math.ceil(matched.length / size)), hasMore: p * size < matched.length, hint };
 }
 
 /** skills.sh exposes a real JSON search API (Algolia-backed). */
@@ -575,6 +575,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     page: p,
     pageSize: size,
     pages: Math.max(1, Math.ceil(total / size)),
+    totalPages: Math.max(1, Math.ceil(total / size)),
     total,
     hasMore,
     degraded,

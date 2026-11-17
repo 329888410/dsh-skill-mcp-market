@@ -254,6 +254,7 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
     const path = String(raw.repo_path || "").replace(/\/SKILL\.md$/i, "");
     return {
+    totalPages: undefined,
       id: `trusttools:${raw.id}`,
       slug: raw.slug || raw.name,
       name: raw.name || raw.slug,
