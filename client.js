@@ -282,23 +282,21 @@ window.__ModuleLoader__.load({
         else searchMcps(query, { page: p });
       };
 
-      const pager = (page, totalPages, hasMore, label, jumpState, setJumpState) => {
+      const pager = (page, totalPages, hasMore, label, jumpState, setJumpState, windowed = true) => {
         const unknown = !totalPages; // 注册表按 cursor 走，没有可数的总页数
         const n = unknown ? 0 : Math.max(1, Math.trunc(totalPages) || 1);
         const shown = Math.min(page, n || page);
-        // 页码窗口：固定显示当前页前后各 5 页（初始显示 1–10；已知总数时下界钳制到 1）
+        // 页码窗口：windowed=true 时固定显示当前页前后各 5 页；windowed=false 时显示全部页码
         const pageWin = (function () {
+          if (!windowed && n > 0) {
+            const out = [];
+            for (let i = 1; i <= n; i += 1) out.push(i);
+            return out;
+          }
           const out = [];
-          for (let i = Math.max(1, shown - 5); i <= shown + 5; i += 1) out.push(i);
+          for (let i = Math.max(1, shown - 5); i <= Math.min(n || shown + 5, shown + 5); i += 1) out.push(i);
           return out;
         })();
-        const pageButtons = pageWin.map((p) =>
-          h('button', {
-            key: `pg${p}`,
-            style: S.btn(p === page ? 'primary' : undefined),
-            disabled: busy !== '' || p === page,
-            onClick: () => gotoPage(p),
-          }, String(p)));
         return h('div', { style: { ...S.row, justifyContent: 'space-between', padding: '4px 2px' } },
           h('div', { style: S.row },
             h('button', {
@@ -1380,7 +1378,7 @@ window.__ModuleLoader__.load({
                       tab === 'skills' ? skillsHasMore : mcpHasMore,
                       tab === 'skills' ? '共约' : (mcpSource === 'lobehub' ? '共约' : ''),
                        tab === 'skills' ? pageJump : mcpPageJump,
-                       tab === 'skills' ? setPageJump : setMcpPageJump))))
+                       tab === 'skills' ? setPageJump : setMcpPageJump, tab === 'skills' ? false : true))))
               : null,
             tab === 'installed' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, flex: 1, width: '100%', alignItems: 'stretch' } },
               // 上传技能：拖拽文件夹或点按钮选文件夹。宿主 @deepseek-ai 包没有 showOpenDialog
