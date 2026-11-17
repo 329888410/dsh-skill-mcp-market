@@ -287,16 +287,34 @@ window.__ModuleLoader__.load({
         const n = unknown ? 0 : Math.max(1, Math.trunc(totalPages) || 1);
         const shown = Math.min(page, n || page);
         // 页码窗口：windowed=true 时固定显示当前页前后各 5 页；windowed=false 时显示全部页码
-        const pageWin = (function () {
-          if (!windowed && n > 0) {
-            const out = [];
-            for (let i = 1; i <= n; i += 1) out.push(i);
-            return out;
+        // 页码窗口：显示 1 … [当前±2] … N（省略号折叠中间页）
+        const pageItems = (function () {
+          const items = [];
+          const push = (v) => items.push(v);
+          if (n === 0) {
+            // 未知总数（MCP 注册表）：只显示当前页 ±2
+            for (let i = Math.max(1, page - 2); i <= page + 2; i += 1) if (i >= 1) push(i);
+            return items;
           }
-          const out = [];
-          for (let i = Math.max(1, shown - 5); i <= Math.min(n || shown + 5, shown + 5); i += 1) out.push(i);
-          return out;
+          // 已知总数：1 … window … N
+          const lo = Math.max(2, page - 2);
+          const hi = Math.min(n - 1, page + 2);
+          push(1);
+          if (lo > 2) push('…');
+          for (let i = lo; i <= hi; i += 1) push(i);
+          if (hi < n - 1) push('…');
+          if (n > 1) push(n);
+          return items;
         })();
+        const pageButtons = pageItems.map((v) =>
+          v === '…'
+            ? h('span', { key: 'ellipsis-' + v, style: { padding: '0 4px', opacity: 0.5 } }, '…')
+            : h('button', {
+              key: `pg${v}`,
+              style: S.btn(v === page ? 'primary' : undefined),
+              disabled: busy !== '' || v === page,
+              onClick: () => gotoPage(v),
+            }, String(v)));
         return h('div', { style: { ...S.row, justifyContent: 'space-between', padding: '4px 2px' } },
           h('div', { style: S.row },
             h('button', {
