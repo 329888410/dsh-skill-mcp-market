@@ -187,12 +187,26 @@ window.__ModuleLoader__.load({
       err: { fontSize: 12, color: '#c62828' },
     };
 
-    function setPathRow(label, value, onChange) {
-      return h('div', { style: S.row },
-        h('span', { style: { width: 64, opacity: 0.7, fontSize: 12 } }, label),
-        h('input', { style: S.input, value, onChange: (e) => onChange(e.target.value) }));
+    // 每个目录一行：多目录时逐行渲染，避免 \n 在 <input> 里被吞掉、两行粘成一行
+    function setPathRows(label, values, onValues) {
+      // values: 已换行拼接的字符串；每行一个目录，各占一行、各自可编辑，改完整块写回。
+      const lines = String(values || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      const write = (idx, text) => {
+        const next = lines.slice();
+        next[idx] = text;
+        onValues(next.filter(Boolean).join('\n'));
+      };
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+        h('span', { style: { width: 64, opacity: 0.7, fontSize: 12, alignSelf: 'flex-start', marginTop: 4 } }, label),
+        lines.map((line, idx) =>
+          h('input', {
+            key: idx,
+            style: { ...S.input, width: '100%' },
+            value: line,
+            onChange: (e) => write(idx, e.target.value),
+          }))
+      );
     }
-
     function Market(props) {
       const [tab, setTab] = useState('skills');
       const [query, setQuery] = useState('');
@@ -1582,8 +1596,8 @@ window.__ModuleLoader__.load({
             tab === 'settings' && settings
               ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
                   h('div', { style: S.status }, '每行一个目录；技能列表的第一个目录是安装目标。保存后立即重挂，无需重启。'),
-                  setPathRow('技能目录', skillDraft, setSkillDraft),
-                  setPathRow('MCP 目录', mcpDraft, setMcpDraft),
+                  setPathRows('技能目录', skillDraft, setSkillDraft),
+                  setPathRows('MCP 目录', mcpDraft, setMcpDraft),
                   h('div', { style: S.row },
                     h('button', { style: S.btn('primary'), disabled: busy === 'settings.set', onClick: savePaths }, '保存路径'),
                     h('span', { style: S.status }, `配置文件：${settings.settings.settingsPath}`)),

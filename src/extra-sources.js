@@ -8,6 +8,19 @@
 // Every source here answers a real `page`: either the upstream pages, or a whole catalogue
 // is fetched once and sliced locally. That is what makes「加载更多」actually extend the list.
 import { getJsonEscalating, postJsonEscalating } from "./http.js";
+import { execFile } from "node:child_process";
+const isWinCli = process.platform === "win32";
+function cliRun(pkg, args, { timeoutMs = 120000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const cmd = isWinCli
+      ? [process.env.ComSpec || "cmd.exe", "/d", "/s", "/c", "npx -y " + pkg + " " + args.map((a) => JSON.stringify(a)).join(" ")]
+      : ["npx", "-y", pkg, ...args];
+    execFile(cmd[0], cmd.slice(1), { timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(new Error(pkg + " CLI 失败：" + String((stderr || err.message || "")).slice(0, 160)));
+      else resolve(String(stdout || ""));
+    });
+  });
+}
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -134,6 +147,30 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
     }
     const settled = await Promise.allSettled(pages.map((url) => getJsonClawHub(url)));
     if (settled.every((item) => item.status === "rejected")) {
+      // Web API 全挂 → 官方 CLI 备用（表格文本按列解析；仅 Web 故障时启用）
+      let cliRows = [];
+      try {
+        const text = await cliRun("clawhub", ["search", q, "--limit", String(wanted)]);
+        cliRows = text.split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith("npm") && !l.startsWith("🦞") && !l.startsWith("Usage:"))
+          .map((l) => {
+            const m = l.match(/^([\w-]+)\s+@([\w.-]+)\s+(.+?)\s+\d+ installs/);
+            if (!m) return null;
+            return { name: m[1], owner: m[2], displayName: m[3], slug: m[1] };
+          })
+          .filter(Boolean);
+      } catch (cliErr) {
+        throw new Error("clawhub Web API 与官方 CLI 均不可用：" + String((cliErr && cliErr.message) || cliErr).slice(0, 120));
+      }
+      if (cliRows.length) {
+        const out = mapClawHubRows(cliRows, q, "search-cli", cliRows.length);
+        out.total = cliRows.length;
+        out.hasMore = false;
+        out.hint = "clawhub Web API 不可达，结果来自官方 CLI（较慢）";
+        if (cache && out.items && out.items.length) await cache.put(cKey, out);
+        return out;
+      }
       throw new Error("clawhub 搜索不可达（网络中断，已重试一次）");
     }
     const seen = new Set();

@@ -451,7 +451,48 @@ export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cach
   }
   // browse.sh 一次返回整份目录（约 480 条），本地切片即可真正翻页。
   const items = pageSlice(matched, p, size);
-  return { source: "browse.sh", items, total: matched.length, hasMore: p * size < matched.length };
+  // Web API 无结果且带查询词 → 用官方 browse CLI（真 JSON）复核；仅 API 故障/无结果时启用。
+  if (items.length === 0 && q) {
+    try {
+      const isWin = process.platform === "win32";
+      const cliPkg = "browse", cliArgs = ["skills", "find", q, "--json", "--limit", String(size)];
+      const cmd = isWin
+        ? [process.env.ComSpec || "cmd.exe", "/d", "/s", "/c", "npx -y " + cliPkg + " " + cliArgs.map((a) => JSON.stringify(a)).join(" ")]
+        : ["npx", "-y", cliPkg, ...cliArgs];
+      const text = await new Promise((resolve, reject) => {
+        execFile(cmd[0], cmd.slice(1), { timeout: 120000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+          if (err) reject(new Error("browse CLI 失败：" + String((stderr || err.message || "")).slice(0, 160)));
+          else resolve(String(stdout || ""));
+        });
+      });
+      const parsed = JSON.parse(text.slice(text.indexOf("{")));
+      const cliRows = Array.isArray(parsed.skills) ? parsed.skills : [];
+      if (cliRows.length) {
+        const cliItems = cliRows.map((raw) => ({
+          id: "browse.sh:" + raw.slug,
+          slug: raw.name || String(raw.slug || "").split("/").pop(),
+          name: raw.title || raw.name || raw.slug,
+          description: raw.description || "",
+          category: raw.category || "",
+          tags: raw.tags || [],
+          source: "browse.sh",
+          sourceLabel: "browse.sh",
+          owner: raw.hostname || "",
+          homepage: "https://browse.sh/skills/" + raw.slug,
+          upstreamUrl: "",
+          skillDir: "",
+          reference: raw.slug,
+          installable: true,
+          note: "通过官方 browse CLI 安装（npx browse skills add）；本次结果来自 CLI 备用通道",
+        }));
+        if (cache) await cache.put("browse_sh_api", items.length ? rows : cliRows);
+        return { source: "browse.sh", items: cliItems, total: cliItems.length, hasMore: false, hint: "browse.sh Web API 无结果，结果来自官方 CLI" };
+      }
+    } catch (cliErr) {
+      matched.hint = "browse.sh Web API 与官方 CLI 均无结果或不可达";
+    }
+  }
+    return { source: "browse.sh", items, total: matched.length, hasMore: p * size < matched.length };
 }
 
 // 没带 cache 时（例如 agent 直接调 skill_market_search 工具）退回进程级临时目录缓存。

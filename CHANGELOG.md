@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.74
+
+- **技能目录输入框：多目录改为逐行渲染**（修复 skills 与 custom-skills 粘成一行）
+  - 真因：skillDraft 是换行拼接的多目录字符串，塞进单个 <input>，换行符在单行输入框里被吞，两个目录视觉上连成一行（数据本身正确，保存按行拆无误，纯显示问题）。
+  - 修法：setPathRows 把目录串按行拆开，每个目录独占一行一个输入框，逐行可编辑、改完整块写回。MCP 目录同理。
+- **clawhub / browse.sh 增加 Web API 故障时自动降级到官方 CLI 的备用通道**
+  - 实测数据（本机热缓存）：clawhub Web 3.5s / CLI 44s；browse.sh Web 10.3s / CLI 16.2s。CLI 慢 3-10 倍且需 npx，所以只在 Web API 全挂或返回 0 条时启用，正常路径速度不受影响。
+  - clawhub 用 clawhub search <q> --limit N（表格文本按列解析）；browse.sh 用 browse skills find <q> --json（真 JSON，结构化最可靠）。
+  - 结果带 hint 标注 来自官方 CLI（较慢），让用户知道走的是备用通道。
+
 ## 0.5.73
 
 - **已安装技能卡片的「禁用模型调用」改名为「关闭」**（启用/关闭 对称；面板级按钮仍为「在本面板隐藏」，tooltip 不变）。
