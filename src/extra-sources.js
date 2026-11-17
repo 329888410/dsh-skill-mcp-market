@@ -110,7 +110,7 @@ async function extendClawHubCatalog(cache, need) {
   if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false };
   const seen = new Set(state.rows.map((raw) => String(raw.id ?? raw.slug ?? "")));
   let guard = 0;
-  while (!state.done && state.rows.length < need && guard < 10) {
+  while (!state.done && state.rows.length < need) {
     guard += 1;
     const cursor = state.cursor ? `&cursor=${encodeURIComponent(state.cursor)}` : "";
     const data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=50${cursor}`);
@@ -196,7 +196,7 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
     return out;
   }
   // 浏览：顺着 nextCursor 把目录累积到需要的深度，再本地切出这一页。
-  const need = Math.min(600, size * p);
+    const need = p === 1 ? 3000 : Math.min(size * (p + 5), 3000);
   const state = await extendClawHubCatalog(cache, need);
   const rows = state.rows;
   const matched = rows.slice((p - 1) * size, p * size);
