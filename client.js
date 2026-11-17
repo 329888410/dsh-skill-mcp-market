@@ -996,9 +996,9 @@ window.__ModuleLoader__.load({
             h('button', {
               style: S.btn(off ? 'primary' : undefined),
               disabled: busy === `toggle:${item.slug}`,
-              title: fileToggle ? '改写 SKILL.md 的 disable-model-invocation，模型不再调用' : '该技能只能在本面板隐藏，模型仍会收到',
+              title: fileToggle ? '改写 SKILL.md 的 disable-model-invocation，模型不再调用该技能' : '该技能只能在本面板隐藏，模型仍会收到',
               onClick: () => toggleSkill(item.slug, off, fileToggle ? 'file' : 'panel'),
-            }, busy === `toggle:${item.slug}` ? '处理中…' : (off ? '启用' : (fileToggle ? '禁用模型调用' : '在本面板隐藏'))),
+            }, busy === `toggle:${item.slug}` ? '处理中…' : (off ? '启用' : (fileToggle ? '关闭' : '在本面板隐藏'))),
             h('button', {
               style: S.btn(),
               disabled: busy === `openDir:skill:${item.slug}`,
