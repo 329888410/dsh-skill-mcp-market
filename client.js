@@ -115,6 +115,15 @@ window.__ModuleLoader__.load({
       // 搜索行吸顶：吸附在标签栏（约 48px）之下
       // 搜索栏固定：它和标签栏一样在滚动容器之外，滚动时永不移位
 
+      // 类型 / 分类标签栏：与搜索栏同样在滚动容器之外，滚动时常驻
+      filterBar: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        padding: '0 18px 8px 12px',
+        borderBottom: '1px solid var(--dsh-border, #eaeef2)',
+        background: 'var(--dsh-surface, #ffffff)',
+      },
       searchBar: {
 
         display: 'flex',
@@ -1119,30 +1128,10 @@ window.__ModuleLoader__.load({
 
         : null;
 
-
-      return h('div', {
-          style: S.page,
-          'data-dsh-market-root': '',
-        },
-        // 全局滚动条样式（粗 12px、深色 #444 拇指、#1e1e1e 轨道）
-        h('style', null,
-          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar { width: 12px; }' +
-          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-track { background: #f3f4f6; }' +
-          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb { background: #444; border-radius: 6px; border: 2px solid #f3f4f6; }' +
-          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb:hover { background: #222; }' +
-          '[data-dsh-market-root] [data-dsh-market-body] { scrollbar-width: thin; scrollbar-color: #444 #f3f4f6; }'),
-        h('div', { style: S.panel },
-          h('div', { style: S.head },
-            h('button', { style: S.tab(tab === 'skills'), onClick: () => setTab('skills') }, 'SKILL 技能'),
-            h('button', { style: S.tab(tab === 'mcp'), onClick: () => setTab('mcp') }, 'MCP 连接器'),
-            h('button', { style: S.tab(false), onClick: () => setTab('installed') }, '已安装'),
-            h('button', { style: S.tab(tab === 'settings'), onClick: () => setTab('settings') }, '路径'),
-            h('div', { style: { flex: 1 } }),
-            h('span', { style: S.status }, busy ? `处理中：${busy}` : '')),
-          searchBar,
-          h('div', { style: S.body, 'data-dsh-market-body': '' },
-            (tab === 'skills' || tab === 'mcp')
-              ? h('div', { style: S.row },
+      // 类型 / 分类标签栏：与搜索栏同级、在滚动容器之外，像 Excel 冻结窗格一样常驻。
+      const filterBar = (tab === 'skills' || tab === 'mcp')
+        ? h('div', { style: S.filterBar },
+            h('div', { style: S.row },
                   tab === 'skills'
                     ? ['skills.sh', 'clawhub', 'skillsmp', 'trusttools', 'browse.sh', 'lobehub', 'skillhub', 'modelscope'].map((key) =>
                         h('button', {
@@ -1189,8 +1178,7 @@ window.__ModuleLoader__.load({
                       },
                         h('option', { value: 'default' }, ['skillsmp', 'browse.sh'].includes(source) ? '默认顺序' : '按安装数'),
                         h('option', { value: 'name' }, '按名称')),
-)
-              : null,
+            ),
             tab === 'mcp' && mcpSource === 'lobehub' && mcpCategories.length > 0
               ? h('div', { style: S.row },
                   ['all', ...mcpCategories.slice(0, 12)].map((cat) =>
@@ -1213,6 +1201,32 @@ window.__ModuleLoader__.load({
                       onClick: () => { setCategory(cat); window.scrollTo({ top: 0, behavior: 'smooth' }); },
                     }, cat === 'all' ? '全部分类' : cat)))
               : null,
+          )
+        : null;
+
+
+      return h('div', {
+          style: S.page,
+          'data-dsh-market-root': '',
+        },
+        // 全局滚动条样式（粗 12px、深色 #444 拇指、#1e1e1e 轨道）
+        h('style', null,
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar { width: 12px; }' +
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-track { background: #f3f4f6; }' +
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb { background: #444; border-radius: 6px; border: 2px solid #f3f4f6; }' +
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb:hover { background: #222; }' +
+          '[data-dsh-market-root] [data-dsh-market-body] { scrollbar-width: thin; scrollbar-color: #444 #f3f4f6; }'),
+        h('div', { style: S.panel },
+          h('div', { style: S.head },
+            h('button', { style: S.tab(tab === 'skills'), onClick: () => setTab('skills') }, 'SKILL 技能'),
+            h('button', { style: S.tab(tab === 'mcp'), onClick: () => setTab('mcp') }, 'MCP 连接器'),
+            h('button', { style: S.tab(false), onClick: () => setTab('installed') }, '已安装'),
+            h('button', { style: S.tab(tab === 'settings'), onClick: () => setTab('settings') }, '路径'),
+            h('div', { style: { flex: 1 } }),
+            h('span', { style: S.status }, busy ? `处理中：${busy}` : '')),
+          searchBar,
+          filterBar,
+          h('div', { style: S.body, 'data-dsh-market-body': '' },
             tab === 'mcp' && (mcpTotal > 0 || mcps.length > 0)
               ? h('div', { style: S.status },
                   mcpSource === 'lobehub'
