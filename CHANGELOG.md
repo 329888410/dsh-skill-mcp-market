@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.78
+
+- **修复 LobeHub「按安装数」排序不生效**（排在前面的安装量只有个位数）
+  - 真因：`searchLobeHubSkills` 没有把 `sort` 参数传给 LobeHub CLI，导致无论选「按安装数」还是「按名称」，上游都返回 API 原始顺序（与安装量无关）。
+  - 修法：全链路透传 `sort`：client（`sort==='default'` 映射为 `installCount`）→ `index.js` `skills.search` → `searchSkills` → `searchLobeHubSkills` → CLI `--sort installCount`。
+  - 实测：修复后 LobeHub 浏览页（无查询词）+ sort=installCount 返回 pptx(4080)、pdf(3459)、skill-vetter(3208)… 严格降序；带查询词时 CLI 的 `--sort` 也生效（playwright-cli 1012 排第一）。
+- **补回 0.5.75 的 MCP 卡片详情增强**（mcp view → manifest fallback + 详情抽屉信息块）
+  - 0.5.75 的 commit 只提交了 CHANGELOG + package.json，实际代码改动丢失。本次重新写入 `viewLobeHubMcp` + `mcp.detail` 扩展 + 客户端详情抽屉信息块。
+
 ## 0.5.77
 
 - **补齐 clawhub / LobeHub / modelscope 源的安装量映射**（卡片「· N 次安装」与「按安装数」排序对全部源生效）

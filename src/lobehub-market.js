@@ -240,6 +240,52 @@ function definitionFromManifest(manifest, identifier) {
 }
 
 /** Read one plugin manifest (public endpoint) and reduce it to a runnable definition. */
+export async function viewLobeHubMcp(identifier, { cache, timeoutMs = 90000 } = {}) {
+  const key = "lobehub_mcp_view:" + String(identifier).toLowerCase();
+  if (cache) {
+    const hit = await cache.get(key, 30 * 60 * 1000);
+    if (hit) return hit;
+  }
+  try {
+    const raw = await runCli(["mcp", "view", identifier, "--output", "json"], timeoutMs);
+    const parsed = JSON.parse(raw.slice(raw.indexOf("{")));
+    const data = parsed.data || parsed;
+    const out = {
+      identifier,
+      slug: identifier,
+      name: data.name || data.identifier || identifier,
+      description: data.description || "",
+      category: data.category || "",
+      rating: data.ratingAverage ?? data.rating ?? null,
+      installs: data.installCount ?? null,
+      envRequired: Array.isArray(data.envRequired) ? data.envRequired : [],
+      envHints: data.envHints || {},
+      homepage: data.homepage || data.url || "https://market.lobehub.com/" + encodeURIComponent(identifier),
+      owner: data.owner || "",
+      detailSource: "lobehub-cli",
+    };
+    if (cache) await cache.put(key, out);
+    return out;
+  } catch (error) {
+    const fallback = await lobehubManifestDefinition(identifier);
+    return {
+      identifier,
+      slug: identifier,
+      name: fallback.title || identifier,
+      description: fallback.description || "",
+      category: "",
+      rating: null,
+      installs: null,
+      envRequired: fallback.envRequired || [],
+      envHints: fallback.envHints || {},
+      homepage: "https://market.lobehub.com/" + encodeURIComponent(identifier),
+      owner: fallback.owner || "",
+      detailSource: "lobehub-manifest",
+      note: "CLI view 不可用（" + String((error && error.message) || error).slice(0, 80) + "），已回退到 manifest",
+    };
+  }
+}
+
 export async function lobehubManifestDefinition(identifier) {
   // Cards carry the market prefix in their id (`lobehub:<slug>`) while the manifest route
   // wants the bare slug, so the prefix is stripped here instead of at every call site.

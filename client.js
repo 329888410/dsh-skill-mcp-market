@@ -388,6 +388,7 @@ window.__ModuleLoader__.load({
             category: cat === 'all' ? '' : cat,
             page: pageNo,
             pageSize: (options && options.size) || size,
+            sort: sort === 'default' ? 'installCount' : (sort === 'name' ? 'name' : ''),
           });
           const rows = d.items || [];
           if (cacheKey) {
@@ -1296,6 +1297,17 @@ window.__ModuleLoader__.load({
                     },
                   },
                     h('div', { style: { ...S.title, fontSize: 14 } }, `${detail.kind === 'skill' ? '技能' : 'MCP'}：${detail.slug}`),
+                    detail.kind === 'mcp' && detail.data && (detail.data.detailSource || detail.data.rating != null || detail.data.installs != null || detail.data.description) ? h('div', { style: { ...S.meta, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 } }, [
+                      detail.data.description ? h('span', { key: 'desc', style: { fontSize: 12, opacity: 0.85 } }, detail.data.description) : null,
+                      h('div', { key: 'chips', style: S.row }, [
+                        detail.data.rating != null ? h('span', { key: 'rating', style: S.chip() }, `评分 ${detail.data.rating}`) : null,
+                        detail.data.installs != null ? h('span', { key: 'installs', style: S.chip() }, `安装 ${Number(detail.data.installs).toLocaleString()}`) : null,
+                        detail.data.category ? h('span', { key: 'cat', style: S.chip() }, detail.data.category) : null,
+                        detail.data.detailSource ? h('span', { key: 'src', style: { fontSize: 11, opacity: 0.6 } }, `详情来源：${detail.data.detailSource}`) : null,
+                      ]),
+                      detail.data.envRequired && detail.data.envRequired.length ? h('span', { key: 'env', style: { fontSize: 11, opacity: 0.7 } }, `需环境变量：${detail.data.envRequired.join(', ')}`) : null,
+                      detail.data.homepage ? h('a', { key: 'hp', style: { fontSize: 11, color: 'var(--dsh-accent, #2f6feb)', cursor: 'pointer' }, onClick: () => { try { window.open(detail.data.homepage, '_blank'); } catch {} } }, detail.data.homepage) : null,
+                    ]) : null,
                     detail.kind === 'skill'
                       ? h('div', { style: { marginTop: 12 } },
                           h('div', { style: S.row },

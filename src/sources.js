@@ -523,7 +523,7 @@ const SOURCE_HANDLERS = {
   modelscope: searchModelScope,
 };
 
-export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache }) {
+export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "" }) {
   const wanted = source === "all" ? ALL_SOURCES : [source];
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
@@ -536,7 +536,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     const handler = SOURCE_HANDLERS[name];
     if (!handler) continue;
     try {
-      const result = await handler({ query, page: p, pageSize: size, cache });
+      const result = await handler({ query, page: p, pageSize: size, cache, sort });
       if (result && result.hint) hints.push(`${name}：${result.hint}`);
       if (result && Array.isArray(result.items) && result.items.length) items.push(...result.items);
       total += Number(result && result.total) || 0;

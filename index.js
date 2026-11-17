@@ -25,7 +25,7 @@ import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js"
 import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryDefinitionByName, searchMcpRegistryPage } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
 import { makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
-import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket } from "./src/lobehub-market.js";
+import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 import { inspectSessionLog, repairSessionLog } from "./src/session-repair.js";
 import { autoRepairSessions } from "./src/auto-repair.js";
@@ -1495,8 +1495,16 @@ export async function apply(ctx, config = {}) {
         }
         return updated;
       }
-      case "mcp.detail":
-        return mcp.detail(body.serverName);
+      case "mcp.detail": {
+        const local = await mcp.detail(body.serverName);
+        if (body.source === "lobehub" || String(body.serverName || "").includes("lobehub")) {
+          try {
+            const view = await viewLobeHubMcp(body.serverName, { cache: marketCache });
+            return { ...local, ...view };
+          } catch { return { ...local, detailSource: "local" }; }
+        }
+        return local;
+      }
       case "mcp.update":
         return mcp.update(body.serverName, body.patch || {});
       case "mcp.search": {

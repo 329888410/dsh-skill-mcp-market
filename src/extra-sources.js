@@ -280,10 +280,11 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
 //   install: npx -y @lobehub/market-cli skills install <identifier> --dir <path>
 // The CLI auto-downloads via npx; no pre-install or authentication required.
 // `view` requires a token and is not used.
-export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24, cache }) {
+export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
-  const cacheKey = `lobehub_skills_search:${query.trim()}:${p}:${size}`;
+  const sortKey = String(sort || "").trim();
+  const cacheKey = `lobehub_skills_search:${query.trim()}:${sortKey}:${p}:${size}`;
   const cached = cache ? await cache.get(cacheKey, 30 * 60 * 1000) : undefined;
   if (cached) return { source: "lobehub", ...cached };
 
@@ -293,6 +294,7 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const q = String(query || "").trim();
   const args = ["skills", "search"];
   if (q) args.push("--q", q);
+  if (sort) args.push("--sort", sort);
   args.push("--page", String(p), "--page-size", String(size), "--output", "json");
   // First npx run auto-downloads the CLI (~30 s); subsequent runs are cached.
   // 180 s covers the worst-case cold start without hanging the UI.
