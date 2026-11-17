@@ -545,6 +545,12 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
       degraded.push({ source: name, error: String(error?.message || error) });
     }
   }
+  // 本地排序兜底：多数源上游不支持 sort 参数，按安装数/名称在本地排
+  if (sort === "installCount" && wanted.length === 1) {
+    items.sort((a, b) => (Number(b.installs) || 0) - (Number(a.installs) || 0));
+  } else if (sort === "name" && wanted.length === 1) {
+    items.sort((a, b) => String(a.name || a.slug || "").localeCompare(String(b.name || b.slug || "")));
+  }
   // skills.sh entries get their description from the skill page; browse.sh ships one.
   try {
     const missing = items.filter((item) => item.source === "skills.sh" && !item.description);

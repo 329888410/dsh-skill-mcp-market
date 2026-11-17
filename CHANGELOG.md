@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.79
+
+- **全部源「按安装数/按名称」排序本地兜底**
+  - 真因：只有 LobeHub 源把 `sort` 传给了上游 CLI（`--sort installCount`），其余 7 个源（skills.sh / clawhub / skillsmp / trusttools / browse.sh / skillhub / modelscope）虽然签名里加了 `sort` 参数，但函数体从未使用它，上游 API 也不支持 sort，导致「按安装数」对这些源**实际没排**（trusttools 13/7/6/6/169、skillhub 1239/741/55/190/165、modelscope 4372/23030/7526/1454/7983 都乱序）。
+  - 修法：`searchSkills` 聚合后加本地排序兜底——单源时 `sort==='installCount'` 按 `item.installs` 降序、`sort==='name'` 按名称升序；多源聚合时不排序（跨源安装量不可比）。
+  - 实测：8/8 源全部降序正确（trusttools 169/63/35/21/13、skillhub 501556/88092/76860/58443/3351、modelscope 23030/16908/9463/7983/7526）。
+
 ## 0.5.78
 
 - **修复 LobeHub「按安装数」排序不生效**（排在前面的安装量只有个位数）
