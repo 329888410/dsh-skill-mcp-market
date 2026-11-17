@@ -118,6 +118,12 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
   const q = String(query || "").trim();
+  // 同一 (query,page,size) 5 分钟内复用：clawhub 一次搜索要并发打 1–6 个上游页。
+  const cKey = `clawhub:search:${q.toLowerCase()}:${p}:${size}`;
+  if (cache) {
+    const hit = await cache.get(cKey, 5 * 60 * 1000);
+    if (hit && Array.isArray(hit.items) && hit.items.length) return { ...hit, source: "clawhub" };
+  }
   if (q) {
     // search 端点固定回 10 条/页，顺着 page 取到当前页并拼接上首页，避免翻页拿空。
     const wanted = Math.min(60, size * p);
@@ -146,6 +152,7 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
     const out = mapClawHubRows(slicedRows, q, "search", slicedRows.length);
     out.total = merged.length >= wanted ? wanted + 1 : merged.length;
     out.hasMore = merged.length >= wanted;
+    if (cache && out.items && out.items.length) await cache.put(cKey, out);
     return out;
   }
   // 浏览：顺着 nextCursor 把目录累积到需要的深度，再本地切出这一页。
@@ -157,6 +164,7 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
   if (!rows.length) out.hint = "clawhub 当前没有返回条目（可达，但列表为空）";
   out.hasMore = p * size < rows.length || (!state.done && rows.length >= p * size);
   out.total = state.done ? rows.length : Math.max(rows.length, p * size) + 1;
+  if (cache && out.items && out.items.length) await cache.put(cKey, out);
   return out;
 }
 
@@ -356,6 +364,8 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
   const data = await getJsonEscalating(`https://skillsmp.com/api/skills?${params.toString()}`, {
     headers: { referer: "https://skillsmp.com/" },
     timeoutMs: 20000,
+    // 唯一需要 python 的站点：Cloudflare 按 TLS 指纹拦截，fetch/curl 均 403，只有 CPython urllib 能过。
+    pythonFirst: true,
   });
   const rows = Array.isArray(data.skills) ? data.skills : [];
   const items = rows.slice(0, size).map((raw) => {
@@ -393,10 +403,14 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
 // Data.TotalCount（实测 88k+ 条、页与页不重复）。技能正文挂在 SourceURL 的 GitHub 地址上。
 const MODELSCOPE_SKILLS_URL = "https://modelscope.cn/api/v1/dolphin/skills";
 
-export async function searchModelScope({ query = "", page = 1, pageSize = 24 } = {}) {
+export async function searchModelScope({ query = "", page = 1, pageSize = 24, cache } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
   const body = { PageNumber: p, PageSize: size };
+  const size0 = size;
+  const cacheKey = `modelscope:search:${String(query || "").trim().toLowerCase()}:${p}:${size0}`;
+  const hit = cache ? await cache.get(cacheKey, 5 * 60 * 1000) : undefined;
+  if (hit) return { ...hit, source: "modelscope" };
   const q = String(query || "").trim();
   if (q) body.Query = q;
   const response = await fetch(MODELSCOPE_SKILLS_URL, {
@@ -438,7 +452,9 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24 } =
       modelScopeIdent: ident,
     };
   });
-  return { source: "modelscope", items, total: total || p * size + (rows.length >= size ? 1 : 0), hasMore: total ? p * size < total : rows.length >= size };
+  const result = { source: "modelscope", items, total: total || p * size + (rows.length >= size ? 1 : 0), hasMore: total ? p * size < total : rows.length >= size };
+  if (cache) await cache.put(cacheKey, result);
+  return result;
 }
 
 /**

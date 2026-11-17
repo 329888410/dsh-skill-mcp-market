@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.71
+
+- **八源搜索传输链重排 + 搜索级缓存（先测后用，全部有实测数据支撑）**
+  - 同机同 URL 三传输实测：`fetch` 0.8–3.5s、`curl` 2.5–20s（browse.sh 直接超时失败）、`python` 1.2–17.6s。原实现把 **python 排在第一位**，是 trusttools 反复 `python POST 失败` 的直接原因。
+  - `getJsonEscalating` / `postJsonEscalating` 默认改为 **fetch → curl → python**；新增 `pythonFirst` 开关，只给 skillsmp 用（实测该站 fetch 403，唯有 CPython urllib 能过）。
+  - 新增搜索级缓存（5 分钟）：skills.sh / clawhub / skillhub / modelscope。此前只有 trusttools / skillsmp / lobehub / browse.sh 有缓存。
+  - 修掉自己引入的两个 bug（都被实测抓到）：clawhub 缓存块插在 `const q` 之前触发 TDZ（`Cannot access 'q' before initialization`）；modelscope 提前 return 未写缓存。
+  - **改后实测（query=github）**：skills.sh 10.3s / clawhub 4.3s / skillsmp 1.4s / trusttools 2.6s / browse.sh 4.0s / lobehub 4.2s / skillhub 2.2s / modelscope 1.9s —— **8/8 全部有结果且源纯**（改前 trusttools 恒为 0 条并报错）。
+  - 重复搜索（同查询）后端命中缓存后为 **0ms**（trusttools/skillsmp/lobehub/skillhub/modelscope 实测 0ms；skills.sh 剩 1.8s 是描述补全，不是搜索）。
+- 插件启动时已有的 `warmMarketCache`（browse.sh / lobehub / modelscope / skills.sh 目录）继续生效，冷启动首屏不会再等满一轮。
+
 ## 0.5.70
 
 - **修复「搜索结果显示所有源聚合、不按选中源过滤」的真正根因**：

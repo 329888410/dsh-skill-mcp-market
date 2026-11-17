@@ -233,7 +233,13 @@ export async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cach
   // 上游没有 offset：只能一次取到第 p 页的深度，再在本地切出最后一屏。
   const depth = Math.min(200, size * p);
   const url = `https://www.skills.sh/api/search?q=${encodeURIComponent(q)}&limit=${depth}`;
-  const data = JSON.parse(await fetchText(url, 40000));
+  // 上游每次现算：同一查询短时内复用结果，重复搜索从 ~3s 降到 ~0ms。
+  const searchKey = `skillssh:search:${q.toLowerCase()}:${depth}`;
+  let data = cache ? await cache.get(searchKey, 5 * 60 * 1000) : undefined;
+  if (!data) {
+    data = JSON.parse(await fetchText(url, 40000));
+    if (cache && Array.isArray(data.skills) && data.skills.length) await cache.put(searchKey, data);
+  }
   const rows = Array.isArray(data.skills) ? data.skills : [];
   const items = rows.slice((p - 1) * size, p * size).map((raw) => {
     const sourceRepo = String(raw.source || raw.id || "").split("/").slice(0, 2).join("/");

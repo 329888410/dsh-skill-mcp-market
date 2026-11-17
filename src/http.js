@@ -286,7 +286,7 @@ export async function pythonPostText(url, body, { headers = {}, timeoutMs = 2000
  * POST escalation for hosts whose edge drops this process's TLS handshake: python → curl →
  * Node fetch, first JSON response wins.
  */
-export async function postJsonEscalating(url, body, { headers = {}, timeoutMs = 20000 } = {}) {
+export async function postJsonEscalating(url, body, { headers = {}, timeoutMs = 20000, pythonFirst = false } = {}) {
   const parse = (text) => {
     try {
       return JSON.parse(text);
@@ -294,20 +294,20 @@ export async function postJsonEscalating(url, body, { headers = {}, timeoutMs = 
       throw new Error(`上游返回的不是 JSON：${String(text).slice(0, 80).replace(/\s+/g, " ")}`);
     }
   };
-  const attempts = [
-    async () => parse(await pythonPostText(url, body, { headers, timeoutMs })),
-    async () => parse(await curlPostText(url, body, { headers, timeoutMs })),
-    async () => {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { ...BROWSER_HEADERS, "content-type": "application/json", ...headers },
-        body: JSON.stringify(body ?? {}),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-      return response.json();
-    },
-  ];
+  const viaFetch = async () => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { ...BROWSER_HEADERS, "content-type": "application/json", ...headers },
+      body: JSON.stringify(body ?? {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+    return response.json();
+  };
+  const viaCurl = async () => parse(await curlPostText(url, body, { headers, timeoutMs }));
+  const viaPython = async () => parse(await pythonPostText(url, body, { headers, timeoutMs }));
+  // 与 getJsonEscalating 同理：fetch 快且无子进程，python 只作最后手段。
+  const attempts = pythonFirst ? [viaPython, viaCurl, viaFetch] : [viaFetch, viaCurl, viaPython];
   const errors = [];
   for (const attempt of attempts) {
     try {

@@ -43,13 +43,19 @@ function toItem(raw) {
   };
 }
 
-export async function searchSkills({ query = "", page = 1, pageSize = 20, category = "" } = {}) {
+export async function searchSkills({ query = "", page = 1, pageSize = 20, category = "", cache } = {}) {
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   if (category) params.set("category", category);
   params.set("page", String(Math.max(1, page)));
   params.set("pageSize", String(Math.min(50, Math.max(1, pageSize))));
-  const data = await getJson(`${BASE}?${params.toString()}`);
+  // 同一查询 5 分钟内复用，避免重复打上游。
+  const searchKey = `skillhub:search:${query.toLowerCase()}:${category}:${Math.max(1, page)}:${Math.min(50, Math.max(1, pageSize))}`;
+  let data = cache ? await cache.get(searchKey, 5 * 60 * 1000) : undefined;
+  if (!data) {
+    data = await getJson(`${BASE}?${params.toString()}`);
+    if (cache && (Array.isArray(data.skills) || Array.isArray(data.items))) await cache.put(searchKey, data);
+  }
   const rows = Array.isArray(data.skills) ? data.skills : Array.isArray(data.items) ? data.items : [];
   const items = rows.map(toItem);
   return {
