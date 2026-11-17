@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.75
+
+- **MCP 卡片详情接入 LobeHub `mcp view` 详细字段**
+  - 新增 `src/lobehub-market.js` 的 `viewLobeHubMcp(identifier, { cache })`：调用官方 CLI `mcp view <id> --output json` 拉取评分/安装量/分类/环境变量/主页等详细字段；CLI 鉴权失败（invalid_token）时自动回退到 `lobehubManifestDefinition` 读公开 manifest，详情永不为空。
+  - `mcp.detail` RPC 扩展：`body.source === 'lobehub'` 时合并 CLI view 字段，返回 `detailSource`（`lobehub-cli` / `lobehub-manifest` / `local`）。
+  - 客户端 MCP 详情抽屉新增信息块：描述、评分、安装量、分类、需环境变量、主页（可点击），并标注详情来源。
+- **说明**：`mcp view` 实测在本机因 CLI 设备注册态（`invalid_token`）而回退到 manifest 路径，功能仍可用；一旦 CLI 重新 `register` 成功，详细字段自动生效，无需再改代码。
+
 ## 0.5.74
 
 - **技能目录输入框：多目录改为逐行渲染**（修复 skills 与 custom-skills 粘成一行）
