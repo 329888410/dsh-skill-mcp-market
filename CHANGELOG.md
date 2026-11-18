@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.89
+
+- **clawhub 预热改为串行容错版（3 次连续失败才停）**
+  - 根因：0.5.88 的 3 路并发预热在 Node 24 下触发 clawhub API 限流，python urllib 全挂 → 0 条。
+  - 修法：改回串行（每次 1 个 API 调用），单次失败等 3 秒重试，连续 3 次失败才停。全量 ~50 页 ≈ 5-8 分钟。
+  - TDD：`test/test-warmup.mjs` 4 个测试（rows>500 / totalPages>1 / 精确总页数 / 完成时间<10min）。
+
 ## 0.5.88
 
 - **clawhub 并行预热：3 路并发 cursor 遍历，全量目录 ~5 分钟（原 50 分钟）**
