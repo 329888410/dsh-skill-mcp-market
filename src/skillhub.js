@@ -47,21 +47,36 @@ function toItem(raw) {
   };
 }
 
-export async function searchSkills({ query = "", page = 1, pageSize = 20, category = "", cache } = {}) {
+export async function searchSkills({ query = "", page = 1, pageSize = 20, category = "", cache, sort = "" } = {}) {
+  const p = Math.max(1, page);
+  const size = Math.min(50, Math.max(1, pageSize));
+  // 排序模式下上游无 sort：从第 1 页取宽窗口，本地排序后再切页，否则跨页无序
+  const sortMode = sort === "installCount" || sort === "name";
+  const fetchPage = sortMode ? 1 : p;
+  const fetchSize = sortMode ? 50 : size;
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   if (category) params.set("category", category);
-  params.set("page", String(Math.max(1, page)));
-  params.set("pageSize", String(Math.min(50, Math.max(1, pageSize))));
+  params.set("page", String(fetchPage));
+  params.set("pageSize", String(fetchSize));
   // 同一查询 5 分钟内复用，避免重复打上游。
-  const searchKey = `skillhub:search:${query.toLowerCase()}:${category}:${Math.max(1, page)}:${Math.min(50, Math.max(1, pageSize))}`;
+  const searchKey = `skillhub:search:${query.toLowerCase()}:${category}:${fetchPage}:${fetchSize}:${sort || ""}`;
   let data = cache ? await cache.get(searchKey, 5 * 60 * 1000) : undefined;
   if (!data) {
     data = await getJson(`${BASE}?${params.toString()}`);
     if (cache && (Array.isArray(data.skills) || Array.isArray(data.items))) await cache.put(searchKey, data);
   }
   const rows = Array.isArray(data.skills) ? data.skills : Array.isArray(data.items) ? data.items : [];
-  const items = rows.map(toItem);
+  if (sortMode) {
+    if (sort === "installCount") {
+      const k = (r) => Number(r.downloads ?? r.installCount ?? r.installs) || 0;
+      rows.sort((a, b) => k(b) - k(a));
+    } else {
+      rows.sort((a, b) => String(a.name || a.slug || "").localeCompare(String(b.name || b.slug || "")));
+    }
+  }
+  const pageRows = sortMode ? rows.slice((p - 1) * size, p * size) : rows;
+  const items = pageRows.map(toItem);
   return {
     source: "skillhub",
     items,

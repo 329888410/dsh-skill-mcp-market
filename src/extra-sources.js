@@ -280,8 +280,12 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
   const perPage = 10;
-  const perBatch = Math.ceil(size / perPage);
-  const first = (p - 1) * perBatch + 1;
+  // 排序模式：上游无 sort，必须从第 1 页起取足够宽的窗口，全局排序后再切页。
+  // 否则各页只看到自己那一小段，跨页无序（实测 p1 max=55794 < p2 max=63023）。
+  const sortMode = sort === "installCount" || sort === "name";
+  // 窗口必须与页码无关：所有页都从同一份「第1页起的前 N 条」切出，跨页才连贯。
+  const perBatch = sortMode ? 60 : Math.ceil(size / perPage);
+  const first = sortMode ? 1 : (p - 1) * perBatch + 1;
   const rows = [];
   const seen = new Set();
   let total = 0;
@@ -311,7 +315,9 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
   }
   // 切页前排序：否则每页各自有序、跨页错乱
   sortRawRows(rows, sort, (r) => r.install_count ?? r.download_count ?? r.installs, (r) => r.name || r.slug);
-  const items = rows.slice(0, size).map((raw) => {
+  // 排序模式下窗口从第 1 页起，本地切出第 p 页；否则上游已给对页
+  const pageRows = sortMode ? rows.slice((p - 1) * size, p * size) : rows.slice(0, size);
+  const items = pageRows.map((raw) => {
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
     const path = String(raw.repo_path || "").replace(/\/SKILL\.md$/i, "");
     return {
@@ -353,7 +359,12 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
   const sortKey = String(sort || "").trim();
-  const cacheKey = `lobehub_skills_search:${query.trim()}:${sortKey}:${p}:${size}`;
+  // CLI 的 --sort 只作用于它自己的分页窗口，跨页仍无序。
+  // 排序模式下固定从第 1 页取一个宽窗口，稍后本地排序再切页。
+  const sortMode = sortKey === "installCount" || sortKey === "name";
+  const fetchPage = sortMode ? 1 : p;
+  const fetchSize = sortMode ? Math.min(50, size * 20) : size;
+  const cacheKey = `lobehub_skills_search:${query.trim()}:${sortKey}:${fetchPage}:${fetchSize}`;
   const cached = cache ? await cache.get(cacheKey, 30 * 60 * 1000) : undefined;
   if (cached) return { source: "lobehub", ...cached };
 
@@ -363,8 +374,8 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const q = String(query || "").trim();
   const args = ["skills", "search"];
   if (q) args.push("--q", q);
-  if (sort) args.push("--sort", sort);
-  args.push("--page", String(p), "--page-size", String(size), "--output", "json");
+  if (sort && !sortMode) args.push("--sort", sort);
+  args.push("--page", String(fetchPage), "--page-size", String(fetchSize), "--output", "json");
   // First npx run auto-downloads the CLI (~30 s); subsequent runs are cached.
   // 180 s covers the worst-case cold start without hanging the UI.
   const stdout = await npxRun("@lobehub/market-cli", args, { timeoutMs: 180000 });
@@ -375,7 +386,10 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
     throw new Error("lobehub search: CLI returned non-JSON output");
   }
   const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
-  const items = rawItems.map((raw) => ({
+  // 本地排序：按安装量/名称，切页之前完成（sortMode 下窗口从第1页起）
+  sortRawRows(rawItems, sortMode ? sortKey : "", (r) => r.installCount ?? r.downloads ?? r.installs, (r) => r.name || r.identifier);
+  const pageItems = sortMode ? rawItems.slice((p - 1) * size, p * size) : rawItems;
+  const items = pageItems.map((raw) => ({
     id: `lobehub:${raw.identifier || ""}`,
     slug: raw.name || raw.identifier || "",
     name: raw.name || raw.identifier || "",

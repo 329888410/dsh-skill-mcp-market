@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.93
+
+- **排序彻底修好：8 个源全部跨页全局单调（TDD，21 项断言）**
+  - 0.5.92 只修了 modelscope/skills.sh 的窗口；实测 trusttools、skillhub、lobehub 仍跨页错乱（各自上游分页窗口不同）。
+  - 统一契约：排序模式下**固定从第 1 页取宽窗口 → 本地全局排序 → 切出第 p 页**，窗口不随页码变化。
+    - trusttools / skillhub / lobehub / modelscope / skills.sh 均按此实现；lobehub 排序模式不再依赖 CLI `--sort`。
+  - 缓存 key 必须含**请求页 p**（此前第 2 页复用第 1 页的整窗缓存，实测 p2 与 p1 完全重叠 24 条）。
+  - 验证：`trusttools 63023<=63102`、`skillhub 3746<=4387`、`modelscope 6199<=6512`，全部单调。
+
 ## 0.5.92
 
 - **P0 安全修复：slug 路径穿越 + POSIX 命令注入；P0 正确性：跨页排序；P0 工程：CI 测试闸门**
