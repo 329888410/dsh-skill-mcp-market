@@ -502,7 +502,7 @@ export async function apply(ctx, config = {}) {
     if (!key) throw new Error("slug 不能为空");
     const wanted = scope === "file" || scope === "panel" ? scope : "auto";
     const fileDirs = [...settings.skillDirs, join(agentsHome(), "skills")];
-    const canFile = wanted !== "panel" && skillFileToggleable(fileDirs, key);
+    const canFile = wanted !== "panel" && (await skillFileToggleable(fileDirs, key));
     if (wanted === "file" || canFile) {
       const result = await toggleSkillFile({ dirs: fileDirs, slug: key, enabled });
       try {
@@ -618,7 +618,7 @@ export async function apply(ctx, config = {}) {
           rank: root.rank,
           sourceLabel: root.label,
           // 只有能改写 SKILL.md 的技能才支持"文件级"禁用（真让模型收不到）
-          fileToggleable: skillFileToggleable([root.dir], item.slug),
+          fileToggleable: await skillFileToggleable([root.dir], item.slug),
         });
       }
     }

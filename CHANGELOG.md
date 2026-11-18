@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.97
+
+- **修复「看得见却删不掉」：@owner/slug 两层布局在卸载/详情/开关上全部失效（TDD 121 项）**
+  - 症状：面板显示 `lgd-skill-review` 已安装，点卸载返回 `{"ok":false,"removed":[]}`，界面无任何反应。
+  - 根因：clawhub CLI 装到 `<root>/@<owner>/<slug>/`，而 **4 处**各自只枚举一层路径：
+    - `uninstallSkill` → 卸载永远匹配不到
+    - `resolveSkillFile` → 「关闭」开关、`skills.detail` 全部失效（连带 `skillFileToggleable`）
+    - `readSkillBody`（provider.js）→ 详情页对 @owner 技能返回「未找到」
+  - 0.5.96 只修了 `listInstalledSkills`（列表可见），删除路径没同步——于是变成「看得见、删不掉」的自相矛盾状态。
+  - 修法：四处统一按「一层 `<root>/<slug>/` + 两层 `<root>/@<owner>/<slug>/`」枚举；`resolveSkillFile` 改为 async 并同步 await 全部调用方（index.js 两处、test-new-features 一处）。
+  - 实测：`uninstallSkill('lgd-skill-review')` → `{"ok":true,"removed":["...@zhaoxinghua09-cell\\lgd-skill-review"]}`，列表随即清空，条目进回收站可恢复。
+  - 测试：新增 `test-uninstall-nested`(12)，覆盖列表 / 详情 / 开关 / 卸载四个入口。
+
 ## 0.5.96
 
 - **功能修复：TrustTools 搜索失效、安装目录看不见、分类筛选、安装链路（TDD 109 项）**

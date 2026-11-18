@@ -37,6 +37,21 @@ export async function curatedSkills() {
 }
 
 /** List installed skills across the configured roots. */
+/**
+ * 枚举一个技能根目录下所有可能的技能路径。
+ * 布局有两种：一层 <root>/<slug>/ 与 clawhub CLI 的两层 <root>/@<owner>/<slug>/。
+ * 列表、卸载、详情必须共用这一套判定，否则会出现「看得见却删不掉」。
+ */
+function skillCandidates(root, slug) {
+  const key = kebab(slug) || String(slug || "");
+  if (!key) return [];
+  return [
+    join(root, key, "SKILL.md"),
+    join(root, `${key}.md`),
+    join(root, `@${key}`, "SKILL.md"),
+  ];
+}
+
 export async function listInstalledSkills(dirs) {
   const out = [];
   for (const dir of dirs) {
@@ -529,7 +544,23 @@ export async function uninstallSkill({ slug, dirs, trashDir, agentsHomeSkillsDir
   const removed = [];
   const allDirs = agentsHomeSkillsDir ? [...(dirs || []), agentsHomeSkillsDir] : (dirs || []);
   for (const dir of allDirs) {
+    // 一层与两层（@owner/slug）都要试：clawhub CLI 用的是两层布局，
+    // 只试一层会让「面板里看得见的技能」永远删不掉（实测 removed: []）。
     const candidates = [join(dir, key), join(dir, `${key}.md`)];
+    // 两层：扫描 @* 目录，找到 basename 匹配的子目录
+    try {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !entry.name.startsWith("@")) continue;
+        const ownerDir = join(dir, entry.name);
+        let subs = [];
+        try { subs = await readdir(ownerDir, { withFileTypes: true }); } catch { subs = []; }
+        for (const sub of subs) {
+          if (sub.isDirectory() && (kebab(sub.name) === key || sub.name === key)) candidates.push(join(ownerDir, sub.name));
+        }
+      }
+    } catch {
+      // unreadable root: keep the flat candidates
+    }
     for (const candidate of candidates) {
       if (!existsSync(candidate)) continue;
       // Trash inside the skill's own directory by default: a cross-drive rename fails with
@@ -898,10 +929,27 @@ export async function emptyTrash({ trashDir, dirs } = {}) {
 }
 
 /** Locate a resolvable skill file and whether it is reached through a symlink. */
-function resolveSkillFile(dirs, slug) {
+async function resolveSkillFile(dirs, slug) {
   const key = kebab(slug);
   for (const dir of dirs || []) {
+    // 与列表/卸载共用同一套判定：一层 <root>/<slug>/ 与 clawhub 的两层 <root>/@<owner>/<slug>/。
+    // 只试一层会让 @owner 下的技能无法开关、无法查看详情（与卸载同源缺陷）。
     const candidates = [join(dir, key, "SKILL.md"), join(dir, `${key}.md`)];
+    try {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !entry.name.startsWith("@")) continue;
+        const ownerDir = join(dir, entry.name);
+        let subs = [];
+        try { subs = await readdir(ownerDir, { withFileTypes: true }); } catch { subs = []; }
+        for (const sub of subs) {
+          if (sub.isDirectory() && (kebab(sub.name) === key || sub.name === key)) {
+            candidates.push(join(ownerDir, sub.name, "SKILL.md"));
+          }
+        }
+      }
+    } catch {
+      // unreadable root: keep the flat candidates
+    }
     for (const candidate of candidates) {
       if (!existsSync(candidate)) continue;
       let link = false;
@@ -923,7 +971,7 @@ function resolveSkillFile(dirs, slug) {
  * @returns {Promise<{ ok: boolean, scope: 'file', path: string, enabled: boolean }>}
  */
 export async function toggleSkillFile({ dirs, slug, enabled }) {
-  const found = resolveSkillFile(dirs, slug);
+  const found = await resolveSkillFile(dirs, slug);
   if (!found) throw new Error(`没有找到技能 ${slug} 的 SKILL.md，无法做文件级开关`);
   if (found.link) throw new Error(`技能 ${slug} 通过符号链接接入，改写会越出技能根，请改用面板级开关`);
   const text = await readFile(found.path, "utf8");
@@ -937,7 +985,7 @@ export async function toggleSkillFile({ dirs, slug, enabled }) {
 }
 
 /** Whether a skill can be toggled at file level (exists and is not symlinked). */
-export function skillFileToggleable(dirs, slug) {
-  const found = resolveSkillFile(dirs, slug);
+export async function skillFileToggleable(dirs, slug) {
+  const found = await resolveSkillFile(dirs, slug);
   return Boolean(found && !found.link);
 }

@@ -114,7 +114,23 @@ export function createMarketSkillProvider({ getDirs, getDisabled, log }) {
 /** Read one skill body by slug across the configured roots (used by the detail panel). */
 export async function readSkillBody(dirs, slug) {
   for (const dir of dirs) {
-    for (const candidate of [join(dir, slug, "SKILL.md"), join(dir, `${slug}.md`)]) {
+    // 与列表/卸载同源：一层 <root>/<slug>/ 与 clawhub 的两层 <root>/@<owner>/<slug>/ 都要试，
+    // 否则 @owner 下已安装的技能查不到详情（skills.detail 返回「未找到」）。
+    const candidates = [join(dir, slug, "SKILL.md"), join(dir, `${slug}.md`)];
+    try {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !entry.name.startsWith("@")) continue;
+        const ownerDir = join(dir, entry.name);
+        let subs = [];
+        try { subs = await readdir(ownerDir, { withFileTypes: true }); } catch { subs = []; }
+        for (const sub of subs) {
+          if (sub.isDirectory() && sub.name === slug) candidates.push(join(ownerDir, sub.name, "SKILL.md"));
+        }
+      }
+    } catch {
+      // unreadable root: keep flat candidates
+    }
+    for (const candidate of candidates) {
       if (!existsSync(candidate)) continue;
       const text = await readFile(candidate, "utf8");
       const info = await stat(candidate);

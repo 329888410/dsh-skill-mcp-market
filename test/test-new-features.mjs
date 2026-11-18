@@ -56,7 +56,7 @@ await mkdir(skills, { recursive: true });
   await mkdir(join(skills, "demo"), { recursive: true });
   const sm = join(skills, "demo", "SKILL.md");
   await writeFile(sm, "---\nname: demo\ndescription: d\n---\nbody\n", "utf8");
-  check("启停：目录型技能可文件级", skillFileToggleable([skills], "demo"));
+  check("启停：目录型技能可文件级", await skillFileToggleable([skills], "demo"));
   const off = await toggleSkillFile({ dirs: [skills], slug: "demo", enabled: false });
   const text = await readFile(sm, "utf8");
   check("启停：停用写入 frontmatter", off.scope === "file" && /disable-model-invocation: true/.test(text));
