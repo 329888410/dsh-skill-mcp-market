@@ -11,8 +11,9 @@ const W = path.resolve(import.meta.dirname, '..');
 import os from 'node:os';
 const HOME = os.homedir();
 const P = process.env.DSH_MARKET_PROFILE_DIR || path.join(HOME, '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-skill-mcp-market');
+// 镜像仓库完全可选：只认环境变量或 ~/dsh-market，不存在就跳过。
 const D = process.env.DSH_MARKET_MIRROR_DIR
-  || ['D:\\DeepSeek Harness WorkSpace\\dsh-market', path.join(HOME, 'dsh-market')]
+  || [path.join(HOME, 'dsh-market')]
        .find((c) => { try { fs.accessSync(path.join(c, 'package.json')); return true; } catch { return false; } })
   || path.join(HOME, 'dsh-market-none');
 const exists = (p) => { try { fs.accessSync(p); return true; } catch { return false; } };

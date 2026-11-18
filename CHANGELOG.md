@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.94
+
+- **让 CI 闸门真正可跑：测试去掉 Windows/网络耦合**
+  - 0.5.93 的 publish 在 CI 上被测试闸门拦下（`Run tests → failure`，Publish 被 skip）。根因是两个测试只在 Windows 上成立：
+    - `test-security.mjs` 的根目录写成 `path.join('C:','tmp',...)`，在 ubuntu 上退化为相对路径，绝对路径断言必失败。改用 `os.tmpdir()`。
+    - `test-profile-sync.mjs` 硬编码 `D:\DeepSeek Harness WorkSpace\dsh-market`，CI 上没有该目录。改为只认环境变量或 `~/dsh-market`，缺失即跳过。
+  - `test-global-sort.mjs` 重写为两条腿：**合成数据验证切片契约**（始终运行、零网络）+ **真实上游可选验证**（连不上则 SKIP），不再让 CI 因网络抖动失败。
+  - 本地 desktop profile 已实测可运行：`index.js` 可导入、`src/sources.js` 真实搜索出结果、翻页无重叠、路径穿越被拦、POSIX 转义生效。
+
 ## 0.5.93
 
 - **排序彻底修好：8 个源全部跨页全局单调（TDD，21 项断言）**
