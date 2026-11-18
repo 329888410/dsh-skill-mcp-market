@@ -510,8 +510,6 @@ export const ALL_SOURCES = [
   "modelscope",
 ];
 
-// 每个源现在都实现了真正的翻页：有 page 参数的服务端分页，没有的把整份目录缓存后本地切片。
-export const LOAD_MORE_CAPABLE = new Set(ALL_SOURCES);
 
 const SOURCE_HANDLERS = {
   "skills.sh": searchSkillsSh,
@@ -532,6 +530,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   const degraded = [];
   const hints = [];
   let total = 0;
+  let pagesSum = 0;
   let hasMore = false;
   for (const name of wanted) {
     const handler = SOURCE_HANDLERS[name];
@@ -539,8 +538,15 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     try {
       const result = await handler({ query, page: p, pageSize: size, cache, sort });
       if (result && result.hint) hints.push(`${name}：${result.hint}`);
-      if (result && Array.isArray(result.items) && result.items.length) items.push(...result.items);
-      total += Number(result && result.total) || 0;
+      const srcItems = result && Array.isArray(result.items) ? result.items : [];
+      if (srcItems.length) items.push(...srcItems);
+      const srcTotal = Number(result && result.total) || 0;
+      total += srcTotal;
+      // 每个源自己的页数：优先用 handler 的 totalPages（目录感知，随预热增长），
+      // 否则用它的 total（或本页条数）反推。跨源求和得到总页数。
+      const srcPages = Number(result && result.totalPages)
+        || Math.max(1, Math.ceil((srcTotal || srcItems.length) / size));
+      pagesSum += srcPages;
       if (result && result.hasMore) hasMore = true;
     } catch (error) {
       degraded.push({ source: name, error: String(error?.message || error) });
@@ -571,12 +577,13 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
           ? hints
           : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
   if (!total || total < items.length) total = hasMore ? p * size + 1 : (p - 1) * size + items.length;
+  const pages = Math.max(pagesSum, Math.ceil(total / size), 1);
   return {
     items,
     page: p,
     pageSize: size,
-    pages: Math.max(1, Math.ceil(total / size)),
-    totalPages: Math.max(1, Math.ceil(total / size)),
+    pages,
+    totalPages: pages,
     total,
     hasMore,
     degraded,

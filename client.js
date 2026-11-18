@@ -1182,7 +1182,7 @@ window.__ModuleLoader__.load({
                             setSource(key);
                             searchSkills(query, { source: key, size, category });
                           },
-                        }, key === 'all' ? '全部来源' : key))
+                        }, key))
                     : ['registry', 'lobehub'].map((key) =>
                         h('button', {
                           key,

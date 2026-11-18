@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.90
+
+- **修复分页总页数：dispatcher 现在透传各源的目录感知 totalPages（TDD）**
+  - 根因：dispatcher 丢弃 handler 的 `totalPages`，用被下限钳制的 `total` 反推页数——clawhub 缓存了 3016 条目录，首页却显示「共 2 页」。修法：逐源累加 `pagesSum`，`pages = max(pagesSum, ceil(total/size), 1)`。
+  - 清理「全部来源」失效残留：chip 数组不含 'all'，`key === 'all' ? '全部来源'` 分支不可达，已删；`LOAD_MORE_CAPABLE` 导出无任何引用，已删。保留 `ALL_SOURCES` 与 dispatcher 的 `source:"all"` 路径——那是 MCP 工具 `skill_market_search` 的默认聚合，是活的。
+  - 修复 desktop profile 陈旧：12 个文件停留在 0.5.66 之前（吸顶头部与省略号分页器丢失），现已与工作树逐字节同步，`test/test-profile-sync.mjs` 守护。
+  - 测试：`test-total-pages.mjs`（7 项）、`test-dead-all.mjs`（6 项）、`test-profile-sync.mjs`（7 项）、`test-paging.mjs` 全绿。
+
 ## 0.5.89
 
 - **clawhub 预热改为串行容错版（3 次连续失败才停）**
