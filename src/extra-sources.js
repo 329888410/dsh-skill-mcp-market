@@ -202,15 +202,16 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
   const matched = rows.slice((p - 1) * size, p * size);
   const out = mapClawHubRows(matched, q, "browse", matched.length);
   if (!rows.length) out.hint = "clawhub 当前没有返回条目（可达，但列表为空）";
-    // 总页数：cursor 耗尽时精确，未耗尽时下界
+    // 总页数：只有真正耗尽游标（done=true）才报精确值；无界流必须诚实说「未知」，
+    // 谎报一个下界（共 2 页）会让用户以为目录就这么大。客户端把 undefined 当未知 → 窗口式分页。
     if (state.done) {
       out.total = rows.length;
       out.totalPages = Math.max(1, Math.ceil(rows.length / size));
     } else {
-      out.totalPages = Math.max(p, Math.ceil(rows.length / size));
+      out.total = undefined;
+      out.totalPages = undefined;
     }
   out.hasMore = p * size < rows.length || (!state.done && rows.length >= p * size);
-    out.total = state.done ? rows.length : undefined;
   if (cache && out.items && out.items.length) await cache.put(cKey, out);
   return out;
 }
@@ -219,9 +220,11 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
 /** Background-warm the clawhub cursor catalogue up to 3000 rows (~125 pages).
  *  Called from warmMarketCache so the first panel open is fast; later pages
  *  just slice from the already-accumulated rows. */
-export async function warmClawHubCatalog(cache) {
-  // 串行 cursor 遍历（容错：单次失败跳过，继续下一个 cursor）。
-  // 全量 ~50 页 × 5-10s/页 ≈ 5-8 分钟。warmMarketCache 是 Promise.allSettled，不阻塞其他源。
+export async function warmClawHubCatalog(cache, options = {}) {
+  // clawhub 的 browse 目录是 28k+ 且游标不封顶的流：上游既不返回 total，也永远爬不完。
+  // 所以这里只预热一个**有界预算**（默认 1200 行 ≈ 50 页），换来首页之后几十页秒开；
+  // 总页数因此是「共约」下界而不是精确值——这是上游能力边界，不是本地缺陷。
+  const budget = Math.max(50, Number(options.budget) || 1200);
   const state0 = cache ? await cache.get(CLAWHUB_CATALOG_KEY, CLAWHUB_CATALOG_TTL) : undefined;
   const seen = new Set((state0?.rows || []).map((raw) => String(raw.id ?? raw.slug ?? "")));
   const rows = [...(state0?.rows || [])];
@@ -229,7 +232,7 @@ export async function warmClawHubCatalog(cache) {
   let done = state0?.done || false;
 
   let consecutiveErrors = 0;
-  while (!done && consecutiveErrors < 3) {
+  while (!done && rows.length < budget && consecutiveErrors < 3) {
     const qs = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
     try {
       const data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=50${qs}`);
@@ -244,15 +247,13 @@ export async function warmClawHubCatalog(cache) {
       consecutiveErrors = 0;
     } catch {
       consecutiveErrors++;
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 3000));
       continue;
     }
-    if (cache && rows.length % 150 === 0) {
-      await cache.put(CLAWHUB_CATALOG_KEY, { rows, cursor, done });
-    }
   }
+  // 预算用满但游标未尽：done 保持 false，让分页器显示「共约」。
   if (cache) await cache.put(CLAWHUB_CATALOG_KEY, { rows, cursor, done });
-  return { rows, done };
+  return { rows, done, budget };
 }
 
 export async function searchTrustTools({ query = "", page = 1, pageSize = 24, cache } = {}) {
@@ -294,7 +295,6 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
     const path = String(raw.repo_path || "").replace(/\/SKILL\.md$/i, "");
     return {
-    totalPages: undefined,
       id: `trusttools:${raw.id}`,
       slug: raw.slug || raw.name,
       name: raw.name || raw.slug,

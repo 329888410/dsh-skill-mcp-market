@@ -531,6 +531,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   const hints = [];
   let total = 0;
   let pagesSum = 0;
+  let pagesUnknown = false;
   let hasMore = false;
   for (const name of wanted) {
     const handler = SOURCE_HANDLERS[name];
@@ -544,9 +545,14 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
       total += srcTotal;
       // 每个源自己的页数：优先用 handler 的 totalPages（目录感知，随预热增长），
       // 否则用它的 total（或本页条数）反推。跨源求和得到总页数。
-      const srcPages = Number(result && result.totalPages)
-        || Math.max(1, Math.ceil((srcTotal || srcItems.length) / size));
-      pagesSum += srcPages;
+      // 页数判定：handler 给了数字就用它；没给但有真实 total 就用 total 反推；
+      // 两者都没有（clawhub 无界流把 total/totalPages 都置 undefined）才算「未知」。
+      const declared = result && typeof result.totalPages === "number" ? Number(result.totalPages) : null;
+      const srcPages = declared !== null ? declared
+        : srcTotal > 0 ? Math.ceil(srcTotal / size)
+        : null;
+      if (srcPages === null) pagesUnknown = true;
+      else pagesSum += srcPages;
       if (result && result.hasMore) hasMore = true;
     } catch (error) {
       degraded.push({ source: name, error: String(error?.message || error) });
@@ -577,7 +583,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
           ? hints
           : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
   if (!total || total < items.length) total = hasMore ? p * size + 1 : (p - 1) * size + items.length;
-  const pages = Math.max(pagesSum, Math.ceil(total / size), 1);
+  const pages = pagesUnknown && wanted.length === 1 ? undefined : Math.max(pagesSum, Math.ceil(total / size), 1);
   return {
     items,
     page: p,

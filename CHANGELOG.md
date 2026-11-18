@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.91
+
+- **分页总页数改为诚实语义：无界流不再谎报下界（TDD）**
+  - 新证据：clawhub 的 browse 目录实测 **30,150 条且游标仍未耗尽**（缓存一度涨到 30MB）。上游从不返回 total，所以「精确总页数」对它根本不可能——它和 MCP 官方注册表是同一类。
+  - 根因：handler 用「已抓到的行数」反推页数，把 25 条说成「共 2 页」；dispatcher 又把「没设置 totalPages」和「明确未知」混为一谈，一度让 trusttools（579,074 条）也变成未知。
+  - 修法：`state.done` 才报精确 `totalPages`，否则 `total/totalPages = undefined`；dispatcher 按「声明数字 > 真实 total 反推 > 未知」三级判定；`warmClawHubCatalog` 加**有界预算**（默认 1200 行）终止爬取。
+  - 效果：clawhub / MCP 注册表 → 窗口式 ±5 +「可继续加载」；skills.sh 1667 页、trusttools 48257 页、skillhub 19187 页等 → 精确页码 + 省略号。
+  - 测试：`test-total-pages.mjs` 8 项、`test-warm-budget.mjs` 5 项、`test-dead-all.mjs` 6 项、`test-paging.mjs` 全绿。
+
 ## 0.5.90
 
 - **修复分页总页数：dispatcher 现在透传各源的目录感知 totalPages（TDD）**
