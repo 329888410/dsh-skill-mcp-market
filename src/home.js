@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 
 export function dshHome() {
   if (process.env.DSH_HOME) return process.env.DSH_HOME;
@@ -30,6 +31,31 @@ export function expandPath(input) {
 
 export function settingsPath() {
   return join(dshHome(), "market", "settings.json");
+}
+
+/**
+ * 一个在任何进程里都真实可写的临时目录。
+ * os.tmpdir() 依赖 TEMP/TMPDIR/TMP 环境变量：某些宿主进程（如 CI、被清空环境的
+ * Electron 子进程）里三者全空，Windows 会拼出字面量 "undefined\temp"（实测），
+ * 后续 mkdtemp/writeFile 全部 ENOENT。这里显式校验并逐级回退：
+ *   TEMP/TMP 环境变量 → os.tmpdir() → ~/.dsh/tmp
+ * 并确保目录存在。所有 mkdtemp/临时写入都应使用本函数，而不是裸 tmpdir()。
+ */
+export function safeTempDir() {
+  const envCandidates = [process.env.DSH_TMP, process.env.TEMP, process.env.TMP, process.env.TMPDIR]
+    .filter((v) => typeof v === "string" && v.trim() && !v.includes("undefined"));
+  for (const c of envCandidates) {
+    try { fs.mkdirSync(c, { recursive: true }); if (fs.existsSync(c)) return c; } catch { /* next */ }
+  }
+  const std = tmpdir();
+  const stdLooksReal = std && !std.includes("undefined") && !std.includes("null");
+  if (stdLooksReal) {
+    try { fs.mkdirSync(std, { recursive: true }); if (fs.existsSync(std)) return std; } catch { /* next */ }
+  }
+  // 最后兜底：用户目录下的 .dsh/tmp（一定可写，因为整个插件就装在 ~/.dsh 下）
+  const fallback = join(dshHome(), "tmp");
+  try { fs.mkdirSync(fallback, { recursive: true }); } catch { /* ignore */ }
+  return fallback;
 }
 
 export function defaultSettings() {

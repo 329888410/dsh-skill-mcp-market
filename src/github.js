@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, normalize, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { curlText, pythonDownload, pythonText } from "./http.js";
+import { safeTempDir } from "./home.js";
 
 const LIST = "https://data.jsdelivr.com/v1/packages/gh";
 const CDN = "https://cdn.jsdelivr.net/gh";
@@ -196,7 +197,7 @@ async function listContentsViaApi(repo, ref, path = "", depth = 0, budget = { le
  * the GitHub contents API is rate limited, but the archive endpoint is neither.
  */
 async function downloadSkillViaTarball({ repo, ref, skillDir, destDir, limit }) {
-  const tmp = await mkdtemp(join(tmpdir(), "dsh-market-tar-"));
+  const tmp = await mkdtemp(join(safeTempDir(), "dsh-market-tar-"));
   try {
     const archive = join(tmp, "repo.tgz");
     const extract = join(tmp, "x");

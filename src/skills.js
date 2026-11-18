@@ -90,9 +90,9 @@ export async function listInstalledSkills(dirs) {
             name: meta.name || cand.slug,
             description: meta.description,
             whenToUse: meta.whenToUse,
-            dir,
+            dir: dirname(cand.file),
+            root: dir,
             path: cand.file,
-            kind: cand.kind,
           });
         } catch {
           // unreadable skill: skip it, keep the rest
@@ -863,11 +863,15 @@ export async function restoreFromTrash({ path: entryPath, dirs, trashDir } = {})
   } catch {
     sidecar = null;
   }
+  // 优先按 originalPath 原位恢复：clawhub 技能住在 <root>/@<owner>/<slug>/，
+  // 若按 originalDir(=root)+slug 恢复会变成扁平的 <root>/<slug>/——位置错了，
+  // 而且 listInstalledSkills 之后按 @owner 找不到它（实测 restoredTo 落在根目录）。
+  const originalPath = sidecar && sidecar.originalPath ? String(sidecar.originalPath) : "";
   const root = sidecar && sidecar.originalDir
     ? sidecar.originalDir
     : (dirs && dirs.length > 0 ? dirs[0] : "");
-  if (!root) throw new Error("无法确定恢复目标目录");
-  await ensureDir(root);
+  if (!root && !originalPath) throw new Error("无法确定恢复目标目录");
+  await ensureDir(originalPath ? dirname(originalPath) : root);
   const rawName = basename(entryPath);
   const nameMatch = TRASH_NAME.exec(rawName);
   const nameIsFile = /\.md$/i.test(rawName);
@@ -875,12 +879,15 @@ export async function restoreFromTrash({ path: entryPath, dirs, trashDir } = {})
   const baseName = sidecar && sidecar.slug
     ? `${sidecar.slug}${sidecar.kind === "file" ? ".md" : ""}`
     : `${slugFromName}${nameIsFile ? ".md" : ""}`;
-  let target = join(root, baseName);
+  let target = originalPath || join(root, baseName);
   if (existsSync(target)) {
+    // 冲突时也必须留在原目录（@owner 布局下 root 与目标父目录不同）
+    const parent = dirname(target);
+    await ensureDir(parent);
     for (let index = 2; index < 1000; index += 1) {
       const candidate = sidecar && sidecar.kind === "file"
-        ? join(root, `${sidecar.slug}-${index}.md`)
-        : join(root, `${baseName}-${index}`);
+        ? join(parent, `${sidecar.slug}-${index}.md`)
+        : join(parent, `${basename(target)}-${index}`);
       if (!existsSync(candidate)) {
         target = candidate;
         break;

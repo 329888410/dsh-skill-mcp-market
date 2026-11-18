@@ -14,6 +14,7 @@ import {
   searchSkillsMp,
   searchTrustTools,
 } from "./extra-sources.js";
+import { safeTempDir } from "./home.js";
 
 const UA = { "User-Agent": "dsh-skill-mcp-market/0.3 (+skill and mcp market)", accept: "application/json" };
 
@@ -520,7 +521,7 @@ export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cach
 // 没带 cache 时（例如 agent 直接调 skill_market_search 工具）退回进程级临时目录缓存。
 // 必须用 os.tmpdir()：process.env.TEMP 在某些进程（如 CI、无环境注入的调用）中是空的，
 // 旧写法会退化成字面量 "undefined\\temp\\..." 并让 mkdtemp 直接 ENOENT。
-const fallbackCache = makeCache(join(os.tmpdir(), "dsh-market-cache"));
+const fallbackCache = makeCache(join(safeTempDir(), "dsh-market-cache"));
 
 
 // ---------------------------------------------------------------- 排序能力声明

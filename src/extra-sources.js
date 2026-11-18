@@ -26,6 +26,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { skillMetaFromText } from "./frontmatter.js";
+import { safeTempDir } from "./home.js";
 
 const UA = { "User-Agent": "dsh-skill-mcp-market/0.9", accept: "application/json" };
 
@@ -431,7 +432,7 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
 export async function lobehubAgentSkill(identifier) {
   if (!identifier) throw new Error("lobehub skill install requires an identifier");
   const { npxRun } = await import("./cli-install.js");
-  const tmpRoot = await mkdtemp(join(tmpdir(), "dsh-lobehub-"));
+  const tmpRoot = await mkdtemp(join(safeTempDir(), "dsh-lobehub-"));
   const targetDir = join(tmpRoot, identifier);
   try {
     await npxRun("@lobehub/market-cli", ["skills", "install", identifier, "--dir", tmpRoot], {
@@ -623,7 +624,7 @@ export async function modelScopeSkill(ident) {
     const { mkdtemp } = await import("node:fs/promises");
     const { join: jp } = await import("node:path");
     const { tmpdir } = await import("node:os");
-    const tmp = await mkdtemp(jp(tmpdir(), "dsh-ms-zip-"));
+    const tmp = await mkdtemp(jp(safeTempDir(), "dsh-ms-zip-"));
     const target = jp(tmp, "skill.zip");
     try {
       await pythonDownload(url, target, { timeoutMs: 60000 });
@@ -673,7 +674,7 @@ export async function modelScopeGitHubSkill(upstreamUrl, skillDir, ident) {
   const repo = parsed.repo;
   const ref = parsed.ref || "main";
 
-  const tmp = await mkdtemp(jp(tmpdir(), "dsh-ms-gh-"));
+  const tmp = await mkdtemp(jp(safeTempDir(), "dsh-ms-gh-"));
   try {
     await mkdir(jp(tmp, "skill"), { recursive: true });
     const { files: written, skillText, skipped } = await downloadSkillDir({

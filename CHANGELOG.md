@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.98
+
+- **P0/P1 修复：临时目录兜底、原位恢复、真实目录上报（TDD 136 项）**
+  - **临时目录退化（P0）**：`os.tmpdir()` 依赖 TEMP/TMP/TMPDIR，三者全空时（实测本环境）Windows 拼出字面量 `undefined\temp`，导致上传/预览/解压/缓存全部 ENOENT。上一版只改了 sources.js 一处；本次新增 `home.safeTempDir()`（校验→逐级回退→`~/.dsh/tmp` 兜底→确保存在），并替换全部 **9 处**生产调用（index.js 4、extra-sources.js 3、github.js 1、sources.js 1），补齐 4 个文件的 import。`test-safe-temp` Test 3 断言全仓不再有裸 `tmpdir()`。
+  - **恢复落点错误（P0）**：`restoreFromTrash` 按 `originalDir(=根)+slug` 恢复，把 `@owner/slug` 的技能复原成扁平 `根/slug`——位置错且之后按两层扫描找不到。现在优先按 sidecar 的 `originalPath` 原位恢复，冲突去重也留在原父目录。实测：卸载→恢复→再列出，路径全程正确。
+  - **列表/详情目录字段（#5）**：`listInstalledSkills` 的 `dir` 原为扫描根目录，面板直接显示它、`market.openDir` 又 `join(dir, slug)` 二次拼接，@owner 技能会指向不存在的路径。现在 `dir` = 技能自身目录（`dirname(SKILL.md)`），并新增 `root` 字段保留扫描根；`market.openDir` 改为直接用 `item.dir`。与 `installSkill` 返回的 `dir`（本就是技能目录）语义统一。
+  - 端到端实测：listed→uninstall→trash→restore→relist→openDir 六步全部正确；install 结果 dir 与 list 一致。
+  - 测试：新增 `test-safe-temp`(15)；全套 **136 项全绿**，CI 发布闸门包含全部 12 个套件。
+
 ## 0.5.97
 
 - **修复「看得见却删不掉」：@owner/slug 两层布局在卸载/详情/开关上全部失效（TDD 121 项）**

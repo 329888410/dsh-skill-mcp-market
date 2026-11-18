@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath, agentsHome, dshHome } from "./src/home.js";
+import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath, agentsHome, dshHome, safeTempDir } from "./src/home.js";
 import { importShipped, pluginFrom, resolveShipped, SHIPPED } from "./src/shipped.js";
 import { readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1270,7 +1270,7 @@ export async function apply(ctx, config = {}) {
         let totalBytes = 0;
         for (const name of entries) totalBytes += Buffer.byteLength(zipRead.files[name], "utf8");
         if (totalBytes > 4 * 1024 * 1024) throw new Error(`解压后 ${(totalBytes / 1024 / 1024).toFixed(1)}MB 超过 4MB 上限`);
-        const tempPath = join(tmpdir(), `dsh-market-${Date.now()}-${Math.random().toString(16).slice(2)}.zip`);
+        const tempPath = join(safeTempDir(), `dsh-market-${Date.now()}-${Math.random().toString(16).slice(2)}.zip`);
         await writeFile(tempPath, buffer);
         try {
           const installed = await installSkill({
@@ -1295,7 +1295,7 @@ export async function apply(ctx, config = {}) {
         let result;
         if (body.files && Array.isArray(body.files) && body.files.length) {
           // 前端 <input type=file webkitdirectory> 路径：解包到临时目录
-          const tmpRoot = join(tmpdir(), `dsh-market-upload-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+          const tmpRoot = join(safeTempDir(), `dsh-market-upload-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
           await mkdir(tmpRoot, { recursive: true });
           try {
             for (const f of body.files) {
@@ -1333,7 +1333,7 @@ export async function apply(ctx, config = {}) {
         return result;
       }
       case "skills.preview": {
-        const tmpRoot = join(tmpdir(), `dsh-market-preview-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+        const tmpRoot = join(safeTempDir(), `dsh-market-preview-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
         // Fast path: for github references, fetch only SKILL.md instead of the whole skill
         // directory. Falls back to the full-download path when the single-file fetch fails.
         if ((body.source || "github") === "github") {
@@ -1612,7 +1612,9 @@ export async function apply(ctx, config = {}) {
           const all = await listInstalledSkills(await collectDshNativeSkillDirs());
           const item = all.find((x) => x.slug === slug);
           if (!item) throw new Error(`未找到技能 ${slug}`);
-          target = item.dir ? joinPath(item.dir, item.slug) : item.path;
+          // item.dir 现在就是技能自身所在目录（@owner 布局下与根目录不同），
+          // 直接打开它；旧的 join(dir, slug) 会多拼一层导致「打开文件夹」失效。
+          target = item.dir || (item.path ? joinPath(item.path, "..") : "");
         } else if (kind === "mcp-item") {
           // 打开某个 MCP 定义所在目录
           const serverName = String(body.serverName || "");
@@ -1706,7 +1708,7 @@ export async function apply(ctx, config = {}) {
           handler: async (req, res) => {
             let payload = { ok: false, error: "invalid request" };
             // 准入：请求必须来自本机 GUI 页面（此前本机任意进程可直接调用并读到全部路径）
-            try { appendFileSync(join(tmpdir(), "dsh-rpc-headers.log"), JSON.stringify({ origin: req.headers.origin || null, referer: req.headers.referer || null, host: req.headers.host || null }) + "\n"); } catch {}
+            try { appendFileSync(join(safeTempDir(), "dsh-rpc-headers.log"), JSON.stringify({ origin: req.headers.origin || null, referer: req.headers.referer || null, host: req.headers.host || null }) + "\n"); } catch {}
             const verdict = rpcGuard.check(req);
             if (!verdict.ok) {
               res.writeHead(verdict.status || 401, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
