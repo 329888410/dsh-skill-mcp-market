@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.87
+
+- **clawhub 全量预热：Host 启动时后台遍历全部 cursor（~50 条/页 × ~50 页 ≈ 2400 条，约 10-15 分钟），完成后缓存 6 小时**
+  - 根因：0.5.86 的 `warmClawHubCatalog` 只预热 3000 条上限 + setTimeout 60s 后再继续，实际只预热了 ~1500 条，翻页时 cursor 未耗尽 → 总页数仍是下界。
+  - 修法：去掉 3000 上限和 setTimeout，`extendClawHubCatalog(cache, 99999)` 一次遍历到 cursor 耗尽；`warmMarketCache` 是 `Promise.allSettled`，不阻塞其他源。
+  - 效果：Host 重启后 ~10-15 分钟预热完成，clawhub 总页数变为精确值（如「共 98 页」），翻页即时切片。
+
 ## 0.5.86
 
 - **clawhub 后台预热全量目录，首页秒开、翻页有真实总页数**

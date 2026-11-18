@@ -220,15 +220,9 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
  *  Called from warmMarketCache so the first panel open is fast; later pages
  *  just slice from the already-accumulated rows. */
 export async function warmClawHubCatalog(cache) {
-  try {
-    const state = await extendClawHubCatalog(cache, 3000);
-    if (state.rows.length < 3000 && !state.done) {
-      // Continue in background without blocking
-      setTimeout(async () => {
-        try { await extendClawHubCatalog(cache, 6000); } catch { /* best-effort */ }
-      }, 60000);
-    }
-  } catch { /* network down: silent */ }
+  // 一次性把 cursor 遍历到底（约 2400-3000 条，60-90 次 API 调用）。
+  // warmMarketCache 是 Promise.allSettled，不会阻塞其他源的预热。
+  try { await extendClawHubCatalog(cache, 99999); } catch { /* network down: silent */ }
 }
 
 export async function searchTrustTools({ query = "", page = 1, pageSize = 24, cache } = {}) {
