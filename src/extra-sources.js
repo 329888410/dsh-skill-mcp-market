@@ -220,6 +220,24 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
 /** Background-warm the clawhub cursor catalogue up to 3000 rows (~125 pages).
  *  Called from warmMarketCache so the first panel open is fast; later pages
  *  just slice from the already-accumulated rows. */
+
+/**
+ * 全局排序的分页契约：必须在**切页之前**排序，否则每页各自有序、页与页之间无序。
+ * 之前 dispatcher 在 handler 切完页后才排序，导致「按安装数」跨页错乱（实测第2页 max > 第1页 max）。
+ * 所有 handler 在自己 slice 之前调用本函数。
+ */
+/** 就地排序原始上游行（按 installs 字段路径取值），供各 handler 复用。 */
+function sortRawRows(rows, sort, getInstalls, getName) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+  if (sort === "installCount") {
+    const v = (r) => Number(getInstalls(r)) || 0;
+    return rows.sort((a, b) => v(b) - v(a));
+  }
+  if (sort === "name") {
+    return rows.sort((a, b) => String(getName(a) || "").localeCompare(String(getName(b) || "")));
+  }
+  return rows;
+}
 export async function warmClawHubCatalog(cache, options = {}) {
   // clawhub 的 browse 目录是 28k+ 且游标不封顶的流：上游既不返回 total，也永远爬不完。
   // 所以这里只预热一个**有界预算**（默认 1200 行 ≈ 50 页），换来首页之后几十页秒开；
@@ -256,7 +274,7 @@ export async function warmClawHubCatalog(cache, options = {}) {
   return { rows, done, budget };
 }
 
-export async function searchTrustTools({ query = "", page = 1, pageSize = 24, cache } = {}) {
+export async function searchTrustTools({ query = "", page = 1, pageSize = 24, cache, sort = "" } = {}) {
   // trusttools ignores `pageSize` and always answers with 10 rows per page, so a page of 24
   // needs three upstream pages stitched together (pages are disjoint, verified).
   const p = Math.max(1, Number(page) || 1);
@@ -291,6 +309,8 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     }
     if (batch.length === 0 || added === 0) break; // catalogue exhausted or the page repeats
   }
+  // 切页前排序：否则每页各自有序、跨页错乱
+  sortRawRows(rows, sort, (r) => r.install_count ?? r.download_count ?? r.installs, (r) => r.name || r.slug);
   const items = rows.slice(0, size).map((raw) => {
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
     const path = String(raw.repo_path || "").replace(/\/SKILL\.md$/i, "");
@@ -445,7 +465,7 @@ function skillsmpTarget(raw) {
   return { repo, branch, skillDir };
 }
 
-export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache }) {
+export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
@@ -460,6 +480,7 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
     pythonFirst: true,
   });
   const rows = Array.isArray(data.skills) ? data.skills : [];
+  sortRawRows(rows, sort, (r) => r.installCount ?? r.downloads, (r) => r.name ?? r.skillName);
   const items = rows.slice(0, size).map((raw) => {
     const { repo, branch, skillDir } = skillsmpTarget(raw);
     return {
@@ -495,15 +516,22 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
 // Data.TotalCount（实测 88k+ 条、页与页不重复）。技能正文挂在 SourceURL 的 GitHub 地址上。
 const MODELSCOPE_SKILLS_URL = "https://modelscope.cn/api/v1/dolphin/skills";
 
-export async function searchModelScope({ query = "", page = 1, pageSize = 24, cache } = {}) {
+export async function searchModelScope({ query = "", page = 1, pageSize = 24, cache, sort = "" } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
-  const body = { PageNumber: p, PageSize: size };
-  const size0 = size;
-  const cacheKey = `modelscope:search:${String(query || "").trim().toLowerCase()}:${p}:${size0}`;
+  const q = String(query || "").trim();
+  // 排序模式下上游无 --sort：取大窗口 -> 全局排序 -> 再切页，否则跨页无序
+  const sortMode = sort === "installCount" || sort === "name";
+  // 固定窗口：所有页都从同一份已排序全集切出（上游接受大 PageSize，实测 200 正常）
+  // 稳定窗口：固定取第 1 页起的前 N 条，全局排序后本地切页。
+  // 窗口不随页码变化，否则每页看到的子集不同、跨页无法保持一致。
+  const fetchSize = sortMode ? Math.min(500, size * 20) : size;
+  const fetchPage = sortMode ? 1 : p;
+  // cache key 必须含请求页 p：否则第2页会复用第1页缓存里的整窗结果
+  const cacheKey = `modelscope:search:${q.toLowerCase()}:${p}:${size}:${sort || ''}`;
   const hit = cache ? await cache.get(cacheKey, 5 * 60 * 1000) : undefined;
   if (hit) return { ...hit, source: "modelscope" };
-  const q = String(query || "").trim();
+  const body = { PageNumber: fetchPage, PageSize: fetchSize };
   if (q) body.Query = q;
   const response = await fetch(MODELSCOPE_SKILLS_URL, {
     method: "PUT",
@@ -516,7 +544,11 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   const data = payload.Data || {};
   const rows = Array.isArray(data.SkillList) ? data.SkillList : [];
   const total = Number(data.TotalCount) || 0;
-  const items = rows.filter((raw) => raw && raw.Name).map((raw) => {
+  // 切页前排序：在映射前对整页行排序（同一数组，非副本）
+  const usableRows = rows.filter((raw) => raw && raw.Name);
+  sortRawRows(usableRows, sort, (r) => r.DownloadCount, (r) => r.DisplayName || r.Name);
+  const pageRows = sortMode ? usableRows.slice((p - 1) * size, p * size) : usableRows;
+  const items = pageRows.map((raw) => {
     const owner = raw.Path || raw.Owner || "";
     const name = raw.Name || "";
     const ident = owner ? `${owner}/${name}` : name;

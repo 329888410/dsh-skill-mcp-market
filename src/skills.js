@@ -1,7 +1,7 @@
 // Skill install / list / remove, plus the curated catalog shipped with this bundle.
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync, lstatSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kebab, parseFrontmatter, setFrontmatterFlag, skillMetaFromText } from "./frontmatter.js";
 import { downloadSkillDir, listTree, parseRepoRef, readRepoFile, resolveRef, skillDirsFrom, findSkillDirFor } from "./github.js";
@@ -100,6 +100,38 @@ async function existingSlugs(dirs) {
  * Install a skill into the first configured skill directory.
  * Supported sources: `github` (owner/repo[/sub/path]), `url` (a SKILL.md or raw file URL), `skillhub` (needs upstream_url), `local` (a directory on disk).
  */
+/**
+ * 把不可信 slug 收敛成一个安全的单段目录名。
+ * kebab() 归零（纯符号/全中文）时抛错——绝不回退到原始字符串。
+ */
+export function safeInstallSlug(raw) {
+  const text = String(raw ?? "").trim();
+  // 先按 kebab 归一化；若拉丁字符全被滤掉（中文/符号名），保留原值但去掉任何路径成分。
+  // 关键：绝不把可能含 ".." 的原始值直接当目录名。
+  let slug = kebab(text);
+  if (!slug) {
+    slug = text
+      .replace(/[\\/:*?"<>|]/g, "-")   // 去掉 Windows/Unix 路径字符
+      .replace(/\.\./g, "")            // 去掉 .. 片段
+      .replace(/^[.\s-]+|[.\s-]+$/g, "");
+  }
+  if (!slug) throw new Error(`技能名 ${JSON.stringify(text)} 净化后为空，拒绝安装`);
+  if (slug.includes("..") || slug.includes("/") || slug.includes("\\") || /^[A-Za-z]:/.test(slug)) {
+    throw new Error(`技能名 ${JSON.stringify(text)} 含路径分隔符，拒绝安装`);
+  }
+  return slug;
+}
+
+/** 解析后的目标目录必须仍在 skills 根目录之内（穿越最后兜底）。 */
+export function resolveInsideRoot(root, slug) {
+  const normRoot = resolve(root);
+  const normTarget = resolve(join(root, slug));
+  if (normTarget !== normRoot && !normTarget.startsWith(normRoot + sep)) {
+    throw new Error(`安装目标越出技能目录：${normTarget}`);
+  }
+  return normTarget;
+}
+
 export async function installSkill({ source = "github", reference = "", skillDir = "", dir = "", name = "", ref = "", force = false, skillDirs, cache, upstreamUrl = "" } = {}) {
   const roots = skillDirs && skillDirs.length > 0 ? skillDirs : [];
   if (roots.length === 0) throw new Error("no skill directories are configured");
@@ -108,8 +140,11 @@ export async function installSkill({ source = "github", reference = "", skillDir
   const taken = await existingSlugs(roots);
 
   const writeSkill = async ({ slug, files, skillText, origin }) => {
-    const finalSlug = force ? kebab(slug) || slug : uniqueSlug(kebab(slug) || slug, taken);
-    const targetDir = join(targetRoot, finalSlug);
+    // 安全：slug 来自不可信上游（SKILL.md frontmatter / 仓库名）。kebab() 对纯符号输入返回空串，
+    // 旧代码 `kebab(slug) || slug` 会把原始值当兜底，join() 后可越出 skills 根目录（实测 slug=".."）。
+    const safeBase = safeInstallSlug(slug);
+    const finalSlug = force ? safeBase : uniqueSlug(safeBase, taken);
+    const targetDir = resolveInsideRoot(targetRoot, finalSlug);
     const meta = skillMetaFromText(skillText || "", finalSlug);
     if (!meta.name || !meta.description) {
       throw new Error("SKILL.md must declare both `name` and `description` in its frontmatter");

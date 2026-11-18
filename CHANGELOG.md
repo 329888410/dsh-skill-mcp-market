@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.92
+
+- **P0 安全修复：slug 路径穿越 + POSIX 命令注入；P0 正确性：跨页排序；P0 工程：CI 测试闸门**
+  - **跨页排序**（实测 bug）：dispatcher 在 handler **切页之后**排序，导致每页各自有序、页与页无序（trusttools 第1页 max=55794，第2页 max=60406）。改为 handler 在切页之前排序；modelscope/skills.sh 取固定窗口后全局排序再切页；dispatcher 仅对多源聚合再排一次。
+  - **slug 路径穿越**（P0）：`kebab(slug) || slug` 对纯符号名回退到原始值，`slug=".."` 可让安装写出 skills 根目录。新增 `safeInstallSlug` / `resolveInsideRoot`；纯中文名改为保留原字符（不再被误拒）。
+  - **POSIX 命令注入**（P0）：`env.js` 的 Unix 分支只转义双引号，值被写入 `~/.profile` 后会在下次登录展开 `$(...)`。新增 `buildPosixExportLine`，单引号包裹并把 `'` 转义为 `'\''`。
+  - **CI 闸门**（P0）：`package.json` 增加 `npm test`，publish 工作流在发布前执行测试。此前 25 个版本零测试，分页/排序改坏多次都进了 npm。
+  - **测试可移植**：`test-profile-sync.mjs` 不再写死用户名路径，改用 `os.homedir()` + 环境变量，缺路径时跳过。
+  - 新增测试：`test-global-sort.mjs`（7）、`test-security.mjs`（11）；全套 44 项全绿。
+
 ## 0.5.91
 
 - **分页总页数改为诚实语义：无界流不再谎报下界（TDD）**

@@ -185,7 +185,7 @@ async function loadSkillsShCatalog(cache) {
   return null;
 }
 
-export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cache } = {}) {
+export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort = "" } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
   let catalog = await loadSkillsShCatalog(cache);
@@ -198,6 +198,8 @@ export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cach
   const matched = needle
     ? catalog.filter((row) => `${row.owner}/${row.slug}`.toLowerCase().includes(needle))
     : catalog;
+  // 切页前排序：对整份目录排序，才能保证跨页全局有序
+  sortSkillsShRows(matched, sort);
   const items = pageSlice(matched, p, size).map(skillsShCard);
   // 首页/sitemap 都不带描述：先读 SKILL.md 头，落空的再读 skills.sh 详情页的 meta。
   // 整段有总时间预算，超时就先发卡片（描述退回通用文案），面板不会为此转圈。
@@ -224,13 +226,25 @@ export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cach
 }
 
 /** skills.sh exposes a real JSON search API (Algolia-backed). */
-export async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cache }) {
+/** skills.sh 上游行排序（切页之前调用）。 */
+function sortSkillsShRows(rows, sort) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+  if (sort === "installCount") {
+    return rows.sort((a, b) => (Number(b.installCount ?? b.downloads) || 0) - (Number(a.installCount ?? a.downloads) || 0));
+  }
+  if (sort === "name") {
+    return rows.sort((a, b) => String(a.slug || a.name || "").localeCompare(String(b.slug || b.name || "")));
+  }
+  return rows;
+}
+
+export async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
   // The upstream search API rejects queries shorter than 2 characters; an empty box is a
   // legitimate state, so browse the (whole) catalogue instead.
-  if (q.length < 2) return browseSkillsSh({ query: q, page: p, pageSize: size, cache });
+  if (q.length < 2) return browseSkillsSh({ query: q, page: p, pageSize: size, cache, sort });
   // 上游没有 offset：只能一次取到第 p 页的深度，再在本地切出最后一屏。
   const depth = Math.min(200, size * p);
   const url = `https://www.skills.sh/api/search?q=${encodeURIComponent(q)}&limit=${depth}`;
@@ -242,6 +256,7 @@ export async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cach
     if (cache && Array.isArray(data.skills) && data.skills.length) await cache.put(searchKey, data);
   }
   const rows = Array.isArray(data.skills) ? data.skills : [];
+  sortSkillsShRows(rows, sort);
   const items = rows.slice((p - 1) * size, p * size).map((raw) => {
     const sourceRepo = String(raw.source || raw.id || "").split("/").slice(0, 2).join("/");
     const slug = raw.skillId || raw.name || String(raw.id || "").split("/").pop();

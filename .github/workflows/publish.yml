@@ -39,6 +39,10 @@ jobs:
       - name: Install dependencies (no scripts)
         run: npm install --ignore-scripts --no-audit --no-fund
 
+      # 闸门：测试不绿就不发布（此前 25 个版本零测试，分页/排序改坏多次都进了 npm）
+      - name: Run tests (gates the publish)
+        run: npm test
+
       - name: Publish package (trusted publishing)
         if: ${{ inputs.dry_run != true }}
         run: npm publish

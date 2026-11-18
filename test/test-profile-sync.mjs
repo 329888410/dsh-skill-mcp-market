@@ -6,8 +6,16 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 
 const W = path.resolve(import.meta.dirname, '..');
-const P = 'C:\\Users\\贺新\\.dsh\\profiles\\desktop\\node_modules\\dsh-skill-mcp-market';
-const D = 'D:\\DeepSeek Harness WorkSpace\\dsh-market';
+// 可移植：不写死用户名/盘符。profile 与 D 仓库都是「可选」的镜像，
+// 不存在时跳过而记为 skipped（CI 上没有这些路径是正常的）。
+import os from 'node:os';
+const HOME = os.homedir();
+const P = process.env.DSH_MARKET_PROFILE_DIR || path.join(HOME, '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-skill-mcp-market');
+const D = process.env.DSH_MARKET_MIRROR_DIR
+  || ['D:\\DeepSeek Harness WorkSpace\\dsh-market', path.join(HOME, 'dsh-market')]
+       .find((c) => { try { fs.accessSync(path.join(c, 'package.json')); return true; } catch { return false; } })
+  || path.join(HOME, 'dsh-market-none');
+const exists = (p) => { try { fs.accessSync(p); return true; } catch { return false; } };
 const norm = (t) => t.replace(/\r\n/g, '\n');
 
 let passed = 0, failed = 0;
@@ -22,7 +30,9 @@ const tracked = execSync('git ls-files', { cwd: W, encoding: 'utf8' })
 
 // ── Test 1: profile client.js 必须有吸顶头部 ──
 console.log('\nTest 1: profile client.js keeps the sticky tab header');
-{
+if (!exists(path.join(P, 'client.js'))) {
+  console.log('  (skipped: no profile checkout at ' + P + ')');
+} else {
   const c = norm(fs.readFileSync(path.join(P, 'client.js'), 'utf8'));
   check('has position: sticky', c.includes("position: 'sticky'"));
   check('has data-dsh-market-body scroll root', c.includes('data-dsh-market-body'));
@@ -30,7 +40,9 @@ console.log('\nTest 1: profile client.js keeps the sticky tab header');
 
 // ── Test 2: profile client.js 分页器必须折叠中间页（省略号） ──
 console.log('\nTest 2: profile pager collapses the middle with an ellipsis');
-{
+if (!exists(path.join(P, 'client.js'))) {
+  console.log('  (skipped: no profile checkout)');
+} else {
   const c = norm(fs.readFileSync(path.join(P, 'client.js'), 'utf8'));
   check('uses pageItems (ellipsis window)', c.includes('pageItems'));
   check('no legacy pageWin', !c.includes('pageWin'));
@@ -38,8 +50,9 @@ console.log('\nTest 2: profile pager collapses the middle with an ellipsis');
 }
 
 // ── Test 3: 每个 git 跟踪的 .js 在 profile 与 D 中逐字节一致 ──
-console.log('\nTest 3: every tracked .js matches across work / profile / D');
+console.log('\nTest 3: every tracked .js matches across the mirror checkouts that exist');
 {
+  if (!exists(P) && !exists(D)) console.log('  (skipped: no mirror checkouts present)');
   const stale = [];
   for (const f of tracked) {
     let a, b, d;
@@ -47,19 +60,21 @@ console.log('\nTest 3: every tracked .js matches across work / profile / D');
     try { b = norm(fs.readFileSync(path.join(P, f), 'utf8')); } catch { b = null; }
     try { d = norm(fs.readFileSync(path.join(D, f), 'utf8')); } catch { d = null; }
     if (a === null) continue;
-    if (a !== b) stale.push('profile:' + f);
-    if (a !== d) stale.push('D:' + f);
+    if (b !== null && a !== b) stale.push('profile:' + f);
+    if (d !== null && a !== d) stale.push('D:' + f);
   }
   check('no stale copies', stale.length === 0, stale.slice(0, 6).join(', '));
 }
 
 // ── Test 4: profile package.json 版本与工作树一致 ──
 console.log('\nTest 4: profile package.json version matches worktree');
-{
-  const wv = JSON.parse(fs.readFileSync(path.join(W, 'package.json'), 'utf8')).version;
-  const pv = JSON.parse(fs.readFileSync(path.join(P, 'package.json'), 'utf8')).version;
-  const dv = JSON.parse(fs.readFileSync(path.join(D, 'package.json'), 'utf8')).version;
-  check('all three report ' + wv, wv === pv && wv === dv, '(work=' + wv + ' profile=' + pv + ' D=' + dv + ')');
+if (!exists(path.join(P, 'package.json'))) {
+  console.log('  (skipped: no profile checkout)');
+} else {
+  const readv = (base) => { try { return JSON.parse(fs.readFileSync(path.join(base, 'package.json'), 'utf8')).version; } catch { return null; } };
+  const wv = readv(W), pv = readv(P), dv = readv(D);
+  const present = [pv, dv].filter((v) => v !== null);
+  check('mirrors report ' + wv, present.every((v) => v === wv), '(work=' + wv + ' profile=' + pv + ' D=' + dv + ')');
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');

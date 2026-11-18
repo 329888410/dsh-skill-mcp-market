@@ -1,6 +1,6 @@
 {
   "name": "dsh-skill-mcp-market",
-  "version": "0.5.91",
+  "version": "0.5.92",
   "type": "module",
   "description": "DSH 技能市场与 MCP 连接器市场：浏览实时技能源，一键安装 SKILL.md 技能与 MCP 连接器，装完即刻可用、无需重启。SKILL & MCP marketplace for DeepSeek Harness — browse live sources, install skills and MCP connectors, effective immediately.",
   "license": "MIT",
@@ -52,5 +52,9 @@
   "homepage": "https://github.com/kuailexiaozixin/dsh-skill-mcp-market#readme",
   "bugs": {
     "url": "https://github.com/kuailexiaozixin/dsh-skill-mcp-market/issues"
+  },
+  "scripts": {
+    "test": "node test/test-security.mjs && node test/test-total-pages.mjs && node test/test-dead-all.mjs && node test/test-warm-budget.mjs && node test/test-global-sort.mjs && node test/test-profile-sync.mjs",
+    "test:paging": "node test/test-paging.mjs"
   }
 }
