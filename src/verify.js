@@ -68,3 +68,14 @@ export function scanSkillBundle({ files, skillText }) {
     stats: { files: names.length, totalBytes, high: high.length },
   };
 }
+
+/**
+ * 安装闸门：有 high 级发现时默认拒绝安装，只有 force:true 才放行。
+ * 此前的实现只把发现附在返回值里（"报告制"），等于发现了却不作为——
+ * 用户会以为扫描在保护他。要么拦，要么别扫。
+ */
+export function shouldBlockInstall(highFindings, force = false) {
+  const high = Array.isArray(highFindings) ? highFindings.filter((f) => f && f.severity === "high") : [];
+  if (high.length === 0) return false;
+  return force !== true;
+}

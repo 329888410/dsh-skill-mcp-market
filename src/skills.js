@@ -7,7 +7,7 @@ import { kebab, parseFrontmatter, setFrontmatterFlag, skillMetaFromText } from "
 import { downloadSkillDir, listTree, parseRepoRef, readRepoFile, resolveRef, skillDirsFrom, findSkillDirFor } from "./github.js";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { resolveSkillsShInstall } from "./sources.js";
-import { scanSkillBundle } from "./verify.js";
+import { scanSkillBundle, shouldBlockInstall } from "./verify.js";
 import { writeJson } from "./home.js";
 import { locateSkillRoot, readZip, stripCommonPrefix } from "./zip.js";
 import { clawhubResolve, lobehubAgentSkill, modelScopeSkill, modelScopeGitHubSkill } from "./extra-sources.js";
@@ -149,9 +149,13 @@ export async function installSkill({ source = "github", reference = "", skillDir
     if (!meta.name || !meta.description) {
       throw new Error("SKILL.md must declare both `name` and `description` in its frontmatter");
     }
-    // 安全扫描：报告制（不拒装），高危发现随结果返回，由客户端展示
+    // 安全闸门：有高危发现时默认拒装；force:true 才放行（发现仍随返回值返回）
     const scan = scanSkillBundle({ files, skillText });
     const highFindings = scan.findings.filter((f) => f.severity === "high");
+    if (shouldBlockInstall(highFindings, force)) {
+      const rules = highFindings.map((f) => f.rule).filter(Boolean).slice(0, 3).join(", ");
+      throw new Error(`安全扫描发现高危内容，已拒绝安装（${rules || "high severity"}）。确认无误可加 force:true 强制安装。`);
+    }
 
     // 暂存目录 + 原子提交：任何一步失败只清暂存，正式目录零残留
     const staging = join(targetRoot, `.staging-${finalSlug}-${Date.now()}`);

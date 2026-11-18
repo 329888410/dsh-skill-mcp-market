@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.95
+
+- **P0 安全：RPC 来源准入 + 破坏性操作二次确认；P1：假排序修正 + 扫描闸门**
+  - **RPC 零鉴权**（P0）：`/api/dsh-market/rpc` 此前无任何校验，实测本机任意进程 POST 即返回 `settings.get` 全部路径与 `sessions.scan` 全部会话列表（HTTP 200）。新增 `src/rpc-guard.js`：请求必须来自本机 GUI（Origin/Referer 属于 loopback）。已实测浏览器同源 POST **必然携带 Origin**，第三方网页与无关进程无法伪造。无来源 → **403**。
+  - **破坏性操作无确认**（P0）：`sessions.repair` / `skills.uninstall` / `mcp.uninstall` 直接执行。现统一要求 `confirm:true`（与既有的 `skills.trashEmpty` 约定一致）；`sessions.repair` 的 `dryRun` 为只读预演，豁免确认。面板侧已同步传参，并有测试锁定该契约。
+  - **skills.sh 假排序**（P1，上一版我自己引入）：该源无安装量数据，按「安装数」排序会把上游顺序打乱成第三种顺序。新增 `supportsSort()` 能力声明：不支持的源降级为「不排序」，保持上游原序。
+  - **排序键与展示同源**（P1）：新增 `sortKeyOf()`，排序与卡片展示共用同一取值口径。
+  - **目录共享污染**（P1，修复中发现）：`sortSkillsShRows` 就地排序，无查询时 `matched === catalog`，会改写模块缓存——这是「排完序后默认顺序也变了」的真实根因。改为排序副本（`matched.slice()`）。
+  - **安全扫描改为默认拦截**（P1）：`verify.js` 有 11 条 high 规则，但此前只报告不拦截。新增 `shouldBlockInstall()`：高危默认拒装，`force:true` 才放行，`force` 时仍返回发现。
+  - 测试：新增 `test-rpc-guard`(32)、`test-scan-block`(6)、`test-sort-honesty`(9)；全套 **106 项全绿**，`npm test` 扩至 9 个套件并作为 CI 发布闸门。
+
 ## 0.5.94
 
 - **让 CI 闸门真正可跑：测试去掉 Windows/网络耦合**

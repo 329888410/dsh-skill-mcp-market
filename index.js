@@ -27,6 +27,7 @@ import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
 import { makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
+import { makeRpcGuard } from "./src/rpc-guard.js";
 import { inspectSessionLog, repairSessionLog } from "./src/session-repair.js";
 import { autoRepairSessions } from "./src/auto-repair.js";
 import { installToolCallGuard } from "./src/toolcall-guard.js";
@@ -1680,6 +1681,9 @@ export async function apply(ctx, config = {}) {
     }
   }
 
+  // 来源准入：浏览器同源 POST 必然携带 Origin（已实测），第三方网页与本机无关进程无法伪造。
+  const rpcGuard = makeRpcGuard();
+
   const webServer = ctx.get("webServer");
   if (webServer && typeof webServer.register === "function") {
     ctx.effect(
@@ -1689,12 +1693,26 @@ export async function apply(ctx, config = {}) {
           path: "/api/dsh-market/rpc",
           handler: async (req, res) => {
             let payload = { ok: false, error: "invalid request" };
+            // 准入：请求必须来自本机 GUI 页面（此前本机任意进程可直接调用并读到全部路径）
+            const verdict = rpcGuard.check(req);
+            if (!verdict.ok) {
+              res.writeHead(verdict.status || 401, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+              res.end(JSON.stringify({ ok: false, error: verdict.error }));
+              return;
+            }
             try {
               const chunks = [];
               for await (const chunk of req) chunks.push(chunk);
               const text = Buffer.concat(chunks).toString("utf8");
               const body = text ? JSON.parse(text) : {};
-              payload = { ok: true, ...(await dispatch(String(body.op || ""), body)) };
+              // 破坏性操作必须显式 confirm:true（与 skills.trashEmpty 的既有约定一致）
+              const opName = String(body.op || "");
+              const confirmVerdict = rpcGuard.checkDestructive(opName, body);
+              if (!confirmVerdict.ok) {
+                payload = { ok: false, error: confirmVerdict.error };
+              } else {
+                payload = { ok: true, ...(await dispatch(opName, body)) };
+              }
             } catch (error) {
               payload = { ok: false, error: String(error && error.message ? error.message : error) };
             }

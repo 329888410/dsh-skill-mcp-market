@@ -198,9 +198,10 @@ export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cach
   const matched = needle
     ? catalog.filter((row) => `${row.owner}/${row.slug}`.toLowerCase().includes(needle))
     : catalog;
-  // 切页前排序：对整份目录排序，才能保证跨页全局有序
-  sortSkillsShRows(matched, sort);
-  const items = pageSlice(matched, p, size).map(skillsShCard);
+  // 切页前排序。必须排**副本**：无查询时 matched === catalog，就地排序会污染模块缓存，
+  // 导致同一次会话里后续调用拿到已被重排的目录（实测：sort 改变了默认顺序）。
+  const ordered = sortSkillsShRows(matched.slice(), sort);
+  const items = pageSlice(ordered, p, size).map(skillsShCard);
   // 首页/sitemap 都不带描述：先读 SKILL.md 头，落空的再读 skills.sh 详情页的 meta。
   // 整段有总时间预算，超时就先发卡片（描述退回通用文案），面板不会为此转圈。
   await withDeadline(
@@ -514,6 +515,28 @@ export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cach
 // 没带 cache 时（例如 agent 直接调 skill_market_search 工具）退回进程级临时目录缓存。
 const fallbackCache = makeCache(join(process.env.TEMP || process.env.TMPDIR || ".", "dsh-market-cache"));
 
+
+// ---------------------------------------------------------------- 排序能力声明
+// 「按安装数」只有在源确实提供安装量时才有意义。没有该字段的源若参与排序，
+// 会把它原本的上游顺序打乱成任意的第三种顺序（假排序）——比不排更差。
+// skills.sh 的卡片 installs 恒为 0（sitemap 不含安装量），因此不支持按安装数排序。
+const INSTALL_COUNT_CAPABLE = new Set(["clawhub", "trusttools", "lobehub", "skillhub", "modelscope", "skillsmp"]);
+
+/** 该源的该项排序是否有真实数据支撑。 */
+export function supportsSort(source, sort) {
+  const key = String(sort || "");
+  if (key !== "installCount") return key === "name" || key === "";
+  return INSTALL_COUNT_CAPABLE.has(String(source || ""));
+}
+
+/** 排序与展示使用同一个取值口径，避免「排了但看起来没排」。 */
+export function sortKeyOf(item, sort) {
+  if (!item) return 0;
+  if (String(sort) === "installCount") return Number(item.installs) || 0;
+  if (String(sort) === "name") return String(item.name || item.slug || "");
+  return 0;
+}
+
 export const ALL_SOURCES = [
   "skills.sh",
   "clawhub",
@@ -539,6 +562,10 @@ const SOURCE_HANDLERS = {
 
 export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "" }) {
   const wanted = source === "all" ? ALL_SOURCES : [source];
+  // 该源没有安装量数据时，忽略按安装数排序（保持上游顺序），而不是打乱它
+  // 该源没有对应数据时，降级为「不排序」而不是打乱上游顺序。
+  let effectiveSort = "";
+  if (sort && supportsSort(source, sort)) effectiveSort = sort;
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
   const items = [];
@@ -552,7 +579,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     const handler = SOURCE_HANDLERS[name];
     if (!handler) continue;
     try {
-      const result = await handler({ query, page: p, pageSize: size, cache, sort });
+      const result = await handler({ query, page: p, pageSize: size, cache, sort: effectiveSort });
       if (result && result.hint) hints.push(`${name}：${result.hint}`);
       const srcItems = result && Array.isArray(result.items) ? result.items : [];
       if (srcItems.length) items.push(...srcItems);

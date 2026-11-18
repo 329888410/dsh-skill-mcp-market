@@ -790,7 +790,7 @@ window.__ModuleLoader__.load({
       const removeSkill = async (slug) => {
         setBusy(`remove:${slug}`);
         try {
-          await call('skills.uninstall', { slug });
+          await call('skills.uninstall', { slug, confirm: true });
           await loadInstalled();
           await searchSkills(query);
         } catch (e) {
@@ -885,7 +885,7 @@ window.__ModuleLoader__.load({
         setError('');
         setNotice('');
         try {
-          const r = await call('sessions.repair', { file, dryRun: Boolean(dryRun) });
+          const r = await call('sessions.repair', { file, dryRun: Boolean(dryRun), confirm: !dryRun });
           if (dryRun) {
             setNotice(r.corruption
               ? `预演：${r.sessionId} 在 seq ${r.corruption.seq} 处损坏（${r.corruption.reason}），将保留 ${r.keepEvents}/${r.eventsBefore} 条`
@@ -1121,7 +1121,7 @@ window.__ModuleLoader__.load({
                 setBusy(`remove:${item.serverName}`);
                 setError('');
                 try {
-                  await call('mcp.uninstall', { serverName: item.serverName });
+                  await call('mcp.uninstall', { serverName: item.serverName, confirm: true });
                   setNotice(`已卸载 ${item.serverName}`);
                   await loadInstalled();
                 } catch (e) {
