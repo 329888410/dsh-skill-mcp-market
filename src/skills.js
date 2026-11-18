@@ -1,11 +1,9 @@
-// Skill install / list / remove, plus the curated catalog shipped with this bundle.
+// Skill install / list / remove / update, trash & restore, and the file-level enable toggle.
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync, lstatSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { kebab, parseFrontmatter, setFrontmatterFlag, skillMetaFromText } from "./frontmatter.js";
 import { downloadSkillDir, listTree, parseRepoRef, readRepoFile, resolveRef, skillDirsFrom, findSkillDirFor } from "./github.js";
-import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { resolveSkillsShInstall } from "./sources.js";
 import { scanSkillBundle, shouldBlockInstall } from "./verify.js";
 import { writeJson } from "./home.js";
@@ -20,23 +18,6 @@ import {
   installViaTrustToolsCli,
 } from "./cli-install.js";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const CATALOG_FILE = join(HERE, "..", "catalog", "skills.json");
-
-let catalogCache = null;
-
-export async function curatedSkills() {
-  if (catalogCache) return catalogCache;
-  try {
-    const raw = JSON.parse(await readFile(CATALOG_FILE, "utf8"));
-    catalogCache = Array.isArray(raw.items) ? raw.items : [];
-  } catch {
-    catalogCache = [];
-  }
-  return catalogCache;
-}
-
-/** List installed skills across the configured roots. */
 /**
  * 枚举一个技能根目录下所有可能的技能路径。
  * 布局有两种：一层 <root>/<slug>/ 与 clawhub CLI 的两层 <root>/@<owner>/<slug>/。
@@ -594,49 +575,6 @@ export async function uninstallSkill({ slug, dirs, trashDir, agentsHomeSkillsDir
     }
   }
   return { ok: removed.length > 0, removed };
-}
-
-export async function searchFromSources({ query = "", source = "all", page = 1, pageSize = 20, category = "" }) {
-  const wanted = source === "all" ? ["skillhub", "curated"] : [source];
-  const results = [];
-  const degraded = [];
-  for (const name of wanted) {
-    try {
-      if (name === "skillhub") {
-        const hub = await searchSkillHub({ query, page, pageSize, category });
-        results.push(...hub.items);
-      } else if (name === "curated") {
-        const q = query.trim().toLowerCase();
-        const items = (await curatedSkills())
-          .filter((item) =>
-            !q
-              ? true
-              : `${item.name} ${item.description} ${item.slug} ${item.category}`.toLowerCase().includes(q),
-          )
-          .map((item) => ({
-            id: `curated:${item.repo}:${item.path}`,
-            slug: item.slug,
-            name: item.name,
-            description: item.description,
-            category: item.category || "skills",
-            source: "curated",
-            sourceLabel: "精选技能库",
-            owner: item.repo,
-            homepage: `https://github.com/${item.repo}`,
-            upstreamUrl: `${item.repo}${item.ref ? `@${item.ref}` : ""}`,
-            skillDir: item.dir || "",
-            verified: true,
-            installable: true,
-            downloads: 0,
-            stars: 0,
-          }));
-        results.push(...items);
-      }
-    } catch (error) {
-      degraded.push({ source: name, error: String(error?.message || error) });
-    }
-  }
-  return { items: results, degraded, total: results.length, page, pageSize };
 }
 
 /** Rewrite an installed skill's `name`, `description` and body in place, preserving every

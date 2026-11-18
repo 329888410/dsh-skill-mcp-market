@@ -300,62 +300,6 @@ export async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cach
   return { source: "skills.sh", items, total, hasMore };
 }
 
-// ------------------------------------------------------------------ LobeHub MCP
-const ENTITIES = { "&quot;": '"', "&amp;": "&", "&lt;": "<", "&gt;": ">", "&#39;": "'", "&nbsp;": " " };
-
-function decodeHtml(text) {
-  return text.replace(/&(quot|amp|lt|gt|#39|nbsp);/g, (m) => ENTITIES[m] ?? m);
-}
-
-/** Pull the first `<pre><code>{ "mcpServers": … }</code></pre>` block out of a LobeHub page. */
-export function extractMcpServers(html) {
-  const blocks = [...html.matchAll(/<pre[^>]*>\s*<code[^>]*>([\s\S]{0,4000}?)<\/code>\s*<\/pre>/g)];
-  for (const block of blocks) {
-    const text = decodeHtml(block[1]).trim();
-    if (!text.includes("mcpServers")) continue;
-    try {
-      const parsed = JSON.parse(text);
-      const servers = parsed.mcpServers || parsed.servers || {};
-      const first = Object.entries(servers)[0];
-      if (!first) continue;
-      const [name, config] = first;
-      return { name, ...config };
-    } catch {
-      // not JSON, keep looking
-    }
-  }
-  return null;
-}
-
-async function lobehubSlugs(cache) {
-  const cached = await cache.get("lobehub_slugs", 24 * 3600 * 1000);
-  if (cached && cached.length) return cached;
-  const index = await fetchText("https://lobehub.com/sitemap.xml");
-  const shards = [...index.matchAll(/<loc>([^<]+)<\/loc>/g)]
-    .map((m) => m[1])
-    .filter((url) => /\/sitemap\/mcp-\d+\.xml$/.test(url))
-    .slice(0, 16);
-  const slugs = [];
-  for (const shard of shards) {
-    let xml = "";
-    try {
-      xml = await fetchText(shard, 12000);
-    } catch {
-      continue;
-    }
-    for (const match of xml.matchAll(/<loc>https:\/\/lobehub\.com\/mcp\/([^<]+)<\/loc>/g)) slugs.push(match[1]);
-  }
-  // Never persist an empty catalogue: a 24-hour cache of "no servers" would outlive the
-  // upstream problem that caused it.
-  if (slugs.length > 0) await cache.put("lobehub_slugs", slugs);
-  return slugs;
-}
-
-/** Resolve one skills.sh page into the exact install target it advertises.
- *  The page embeds `npx skills add <repo> --skill <name>`; the repo path inside the
- *  repository is resolved later against the repository tree. */
-const SKILLS_SH_INSTALL_RESOLVED_KEY = "skills_sh_install_resolved_v1";
-
 /**
  * Parse a skills.sh page URL into its owner/repo + skill name without fetching the page.
  * The page URL shape is `https://www.skills.sh/<owner>/<repo>/<slug>` (see SKILLS_SH_URL_RE).
@@ -392,50 +336,6 @@ export async function resolveSkillsShInstall(url, cache) {
   const result = { repo, skill };
   if (cache) await cache.put(key, result);
   return result;
-}
-
-export async function searchLobeHubMcp({ query = "", pageSize = 24, cache }) {
-  const slugs = await lobehubSlugs(cache);
-  const q = query.trim().toLowerCase();
-  const items = [];
-  for (const slug of slugs) {
-    if (items.length >= pageSize) break;
-    if (q && !slug.includes(q.replace(/\s+/g, "-"))) continue;
-    items.push({
-      id: `lobehub:${slug}`,
-      slug,
-      name: slug.replace(/-/g, " "),
-      description: "LobeHub 实时目录条目；安装时抓取该页的真实启动配置",
-      source: "lobehub",
-      sourceLabel: "LobeHub",
-      homepage: `https://lobehub.com/mcp/${slug}`,
-      transport: "stdio",
-      installable: true,
-    });
-  }
-  return { source: "lobehub", items, total: slugs.length };
-}
-
-/** Fetch and parse one LobeHub entry's real MCP definition. */
-export async function lobehubMcpConfig(slug) {
-  let html = "";
-  try {
-    html = await fetchText(`https://lobehub.com/mcp/${slug}`, 30000);
-  } catch (error) {
-    if (/HTTP 402/.test(String((error && error.message) || error))) {
-      throw new Error(
-        "LobeHub 目录已改为付费接口（HTTP 402 payment_required），自动化访问不再可用；请改用 MCP 官方注册表名称安装。",
-      );
-    }
-    throw error;
-  }
-  const config = extractMcpServers(html);
-  if (!config) {
-    throw new Error(
-      "LobeHub 该页面没有提供可直接使用的 mcpServers 配置（只给了说明文字）。请改用“手动配置”，或到该项目的 README 里取启动命令。",
-    );
-  }
-  return config;
 }
 
 // ------------------------------------------------------------------ browse.sh

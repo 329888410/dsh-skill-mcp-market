@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.100
+
+- **恢复面板「修复会话」+ 清除 164 行死代码（TDD，离线 100 项全绿）**
+  - **0.5.98 的功能破坏（本批修复）**：当时把 `sessions.repair` 加入 `HTTP_BLOCKED_OPS` 整体封禁，但面板正是它唯一的合法调用方——「修复会话」按钮（含 dryRun 预演）整个失效。防护应分层：该 op 已有 confirm 闸门 + dryRun 豁免，封禁多余且有害。`HTTP_BLOCKED_OPS` 清空；新增 `test-rpc-surface.mjs`(6) 锁住不变量：**面板调用的任何 op 都不得被服务端封禁**，防止再次「安全修复破坏功能」。
+  - **死代码清除**：`sources.js` 删除 LobeHub MCP 遗留集群（searchLobeHubMcp / lobehubMcpConfig / extractMcpServers / decodeHtml / ENTITIES / lobehubSlugs / SKILLS_SH_INSTALL_RESOLVED_KEY，-100 行，纯删除零新增）；`skills.js` 删除精选目录遗留（curatedSkills / searchFromSources / CATALOG_FILE / catalogCache / HERE / fileURLToPath import，-64 行——catalog 目录本就不存在、files[] 也不打包它，curatedSkills 永远返回空数组）。每个符号删除前均经全仓引用扫描确认零调用方。
+  - **误导性注释修正**：路由处「请求必须来自本机 GUI 页面」与恒通过的 check() 矛盾（0.5.99 遗留），改为如实描述当前分层防护。
+  - 验证：9 个离线套件 100 项全绿；skillhub/modelscope/trusttools 直连探测确认删除未误伤（trusttools 为上游故障，非代码问题）；index.js 加载正常。
+
 ## 0.5.99
 
 - **清理批次：移除生产调试日志与死代码，sessions.scan 节流（TDD 141 项）**

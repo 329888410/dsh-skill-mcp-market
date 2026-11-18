@@ -1093,10 +1093,12 @@ export async function apply(ctx, config = {}) {
   });
 
   // ---------------------------------------------------------------- client panel RPC
-  // HTTP 面只暴露只读 + 已确认的安装操作。
-  // 可执行任意命令（mcp.install 的 command/args 模式）与改写会话日志（sessions.repair）
-  // 在无鉴权的 HTTP 路由上风险过高——它们仍可通过 agent 工具调用，但不经由浏览器可触发的通道。
-  const HTTP_BLOCKED_OPS = new Set(["sessions.repair"]);
+  // HTTP 面的高危 op 黑名单。
+  // 历史教训（0.5.98）：这里曾拦掉 sessions.repair，但面板正是它唯一的合法调用方，
+  // 结果「修复会话」按钮整个失效——服务端封禁 op 前必须先查客户端有没有在用。
+  // 该不变量现由 test/test-rpc-surface.mjs 锁死：面板调用的 op 不得出现在本集合。
+  // mcp.install 的任意 command 风险改在 case 内按参数拒绝（不影响 slug 安装）。
+  const HTTP_BLOCKED_OPS = new Set([]);
   // sessions.scan 节流状态（见 case "sessions.scan"）
   const scanCache = { at: 0, shallow: null };
   let scanInflight = null;
@@ -1686,7 +1688,8 @@ export async function apply(ctx, config = {}) {
           path: "/api/dsh-market/rpc",
           handler: async (req, res) => {
             let payload = { ok: false, error: "invalid request" };
-            // 准入：请求必须来自本机 GUI 页面（此前本机任意进程可直接调用并读到全部路径）
+            // 准入判定：当前恒通过（Origin 校验已被实测推翻，见 src/rpc-guard.js 头注释）。
+            // 真正的防护分层：破坏性 op 要 confirm，任意 command 在 mcp.install 内拒绝。
             const verdict = rpcGuard.check(req);
             if (!verdict.ok) {
               res.writeHead(verdict.status || 401, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
