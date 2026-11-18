@@ -9,7 +9,7 @@
 //   mounted as a live `@deepseek-ai/dsh-mcp-client` plugin instance, whose tools register on
 //   `ctx.tools` immediately — also without restarting DSH.
 import { execFile } from "node:child_process";
-import { appendFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -43,47 +43,6 @@ function textResult(value) {
   return [{ type: "text", text }];
 }
 
-/**
- * Decide whether `url` may be embedded in an iframe of the DSH web UI.
- *
- * A blocked frame fires no error event in the embedding page, so the panel cannot
- * detect the rejection from the browser side; it asks the host instead. The host
- * reads `X-Frame-Options` and the CSP `frame-ancestors` directive, which is what
- * the browser obeys. `frame-ancestors` is only satisfied for a cross-origin
- * embedder by `*` (or by an explicit DSH origin, which no catalogue site lists),
- * so any other directive means "render the detail panel instead of an iframe".
- */
-async function checkFrameable(url) {
-  if (!/^https?:\/\//i.test(url)) return { embeddable: false, reason: "invalid url", status: 0 };
-  let response;
-  try {
-    response = await fetch(url, {
-      redirect: "follow",
-      headers: { "user-agent": "Mozilla/5.0 (compatible; dsh-market)" },
-      signal: AbortSignal.timeout(15000),
-    });
-  } catch (error) {
-    return { embeddable: false, reason: `fetch failed: ${String((error && error.message) || error)}`, status: 0 };
-  }
-  // Only the headers matter; never buffer the body of a catalogue page.
-  try {
-    if (response.body && typeof response.body.cancel === "function") await response.body.cancel();
-  } catch {
-    /* the body is already closed or not cancellable */
-  }
-  const xfo = String(response.headers.get("x-frame-options") || "").toLowerCase();
-  const csp = String(response.headers.get("content-security-policy") || "").toLowerCase();
-  let reason = "";
-  if (xfo.includes("deny")) reason = "X-Frame-Options: DENY";
-  else if (xfo.includes("sameorigin")) reason = "X-Frame-Options: SAMEORIGIN";
-  const ancestors = csp.match(/frame-ancestors([^;]*)/);
-  if (ancestors) {
-    const value = ancestors[1].trim();
-    if (value.includes("'none'")) reason = "CSP frame-ancestors 'none'";
-    else if (value !== "" && !value.split(/\s+/).includes("*")) reason = reason || `CSP frame-ancestors ${value}`;
-  }
-  return { embeddable: reason === "", reason, status: response.status };
-}
 
 
 /** Tool values must be lossless JSON: drop `undefined`, functions and other non-JSON members. */
@@ -1138,6 +1097,9 @@ export async function apply(ctx, config = {}) {
   // 可执行任意命令（mcp.install 的 command/args 模式）与改写会话日志（sessions.repair）
   // 在无鉴权的 HTTP 路由上风险过高——它们仍可通过 agent 工具调用，但不经由浏览器可触发的通道。
   const HTTP_BLOCKED_OPS = new Set(["sessions.repair"]);
+  // sessions.scan 节流状态（见 case "sessions.scan"）
+  const scanCache = { at: 0, shallow: null };
+  let scanInflight = null;
   async function dispatch(op, body) {
     if (HTTP_BLOCKED_OPS.has(op)) {
       throw new Error(`操作 ${op} 不允许经由面板 HTTP 通道执行`);
@@ -1647,40 +1609,59 @@ export async function apply(ctx, config = {}) {
       case "mcp.uninstall":
         return mcp.uninstall(body.serverName);
       case "sessions.scan": {
+        // 节流：无鉴权 HTTP 面上的深扫每次约 1.5s，本机任意进程可滥用作侦察 + 拖慢宿主。
+        // 浅扫结果缓存 30 秒；任何扫描都经 single-flight 串行化，并发请求共享同一次扫描。
+        // 面板扫描是用户显式点击触发的，正常操作不受影响。
+        const SCAN_THROTTLE_MS = 30_000;
         const root = join(dshHome(), "sessions");
         const deep = body.deep === true;
-        const limit = Math.max(1, Math.min(200, Number(body.limit) || 40));
-        const files = [];
-        const walkSessions = async (dir, depth) => {
-          if (depth > 3 || files.length >= limit) return;
-          let entries = [];
-          try {
-            entries = await readdir(dir, { withFileTypes: true });
-          } catch {
-            return;
-          }
-          for (const entry of entries) {
-            if (files.length >= limit) return;
-            const full = join(dir, entry.name);
-            if (entry.isDirectory()) await walkSessions(full, depth + 1);
-            else if (entry.name === "session.v4.jsonl.zstd") files.push(full);
-          }
-        };
-        await walkSessions(root, 0);
-        const items = [];
-        for (const file of files) {
-          if (!deep) {
-            const info = await stat(file);
-            items.push({ file, sessionId: basename(dirname(file)), bytes: info.size, mtime: info.mtimeMs, scanned: false });
-            continue;
-          }
-          try {
-            items.push({ ...(await inspectSessionLog(file)), scanned: true });
-          } catch (error) {
-            items.push({ file, sessionId: basename(dirname(file)), error: String((error && error.message) || error), scanned: true });
+        if (!deep && scanCache.shallow && Date.now() - scanCache.at < SCAN_THROTTLE_MS) {
+          return { ...scanCache.shallow, cached: true };
+        }
+        if (scanInflight) {
+          await scanInflight.catch(() => {});
+          if (!deep && scanCache.shallow && Date.now() - scanCache.at < SCAN_THROTTLE_MS) {
+            return { ...scanCache.shallow, cached: true };
           }
         }
-        return { root, deep, count: items.length, items, corrupt: items.filter((item) => item.corrupt).length };
+        const runScan = async () => {
+          const limit = Math.max(1, Math.min(200, Number(body.limit) || 40));
+          const files = [];
+          const walkSessions = async (dir, depth) => {
+            if (depth > 3 || files.length >= limit) return;
+            let entries = [];
+            try {
+              entries = await readdir(dir, { withFileTypes: true });
+            } catch {
+              return;
+            }
+            for (const entry of entries) {
+              if (files.length >= limit) return;
+              const full = join(dir, entry.name);
+              if (entry.isDirectory()) await walkSessions(full, depth + 1);
+              else if (entry.name === "session.v4.jsonl.zstd") files.push(full);
+            }
+          };
+          await walkSessions(root, 0);
+          const items = [];
+          for (const file of files) {
+            if (!deep) {
+              const info = await stat(file);
+              items.push({ file, sessionId: basename(dirname(file)), bytes: info.size, mtime: info.mtimeMs, scanned: false });
+              continue;
+            }
+            try {
+              items.push({ ...(await inspectSessionLog(file)), scanned: true });
+            } catch (error) {
+              items.push({ file, sessionId: basename(dirname(file)), error: String((error && error.message) || error), scanned: true });
+            }
+          }
+          return { root, deep, count: items.length, items, corrupt: items.filter((item) => item.corrupt).length };
+        };
+        scanInflight = runScan().finally(() => { scanInflight = null; });
+        const result = await scanInflight;
+        if (!deep) { scanCache.at = Date.now(); scanCache.shallow = result; }
+        return result;
       }
       case "sessions.repair": {
         const file = expandPath(String(body.file || ""));
@@ -1688,8 +1669,6 @@ export async function apply(ctx, config = {}) {
         if (!existsSync(file)) throw new Error(`会话日志不存在：${file}`);
         return repairSessionLog(file, { dryRun: body.dryRun === true });
       }
-      case "frame.check":
-        return await checkFrameable(String(body.url || ""));
       default:
         throw new Error(`unknown operation "${op}"`);
     }
@@ -1708,7 +1687,6 @@ export async function apply(ctx, config = {}) {
           handler: async (req, res) => {
             let payload = { ok: false, error: "invalid request" };
             // 准入：请求必须来自本机 GUI 页面（此前本机任意进程可直接调用并读到全部路径）
-            try { appendFileSync(join(safeTempDir(), "dsh-rpc-headers.log"), JSON.stringify({ origin: req.headers.origin || null, referer: req.headers.referer || null, host: req.headers.host || null }) + "\n"); } catch {}
             const verdict = rpcGuard.check(req);
             if (!verdict.ok) {
               res.writeHead(verdict.status || 401, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });

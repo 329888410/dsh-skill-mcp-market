@@ -23,7 +23,7 @@ DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装
   卸载时不自动清理这份 junction（避免误删用户手工放置的），但 `skill_market_uninstall` 会额外扫描 `$AGENTS_HOME/skills/` 并移除对应条目。
 
 - 详情面板：`detailUrlFor` 对 `skills.sh` / `clawhub` / `browse.sh` / `lobehub` 返回空串（不设详情按钮），
-  其余源用 `homepage` 或 `upstreamUrl`。`frame.check` 探测目标页是否允许嵌入（`x-frame-options` / CSP `frame-ancestors`），
+其余源用 `homepage` 或 `upstreamUrl`，
   不允许时显示友好提示面板（含「复制 URL」「在浏览器中打开」按钮），不显示空白 iframe。
   可嵌入时在 iframe 上方加一条 URL 工具条（复制 URL + 在浏览器中打开）。
 - trusttools 技能市场：该 API 固定返回 10 行/页（`pageSize` 参数被忽略），面板默认要 24 行 → 自动拼 3 页；搜索词命中后走 10 分钟缓存，不重复打上游。

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.99
+
+- **清理批次：移除生产调试日志与死代码，sessions.scan 节流（TDD 141 项）**
+  - **P0 调试日志**：诊断 Origin 问题时加入的「每请求写一行 dsh-rpc-headers.log」忘了删，随 0.5.96–0.5.98 发布到 npm（实测 162 行/9KB 且持续增长）。已删除写入语句与 `appendFileSync` import。`test-cleanup` 断言全仓不再出现该字符串，防复发。
+  - **P0 frame.check 删除**：面板从未调用过它（client.js 零引用），却提供任意 URL 服务端 fetch + redirect:follow 的 SSRF 面（实测可探测本机端口状态）。`case "frame.check"`、`checkFrameable`、README 宣传段落一并移除。
+  - **P1 rpc-guard 死代码清理**：`token`/`checkToken`/`TOKEN_HEADER`/`isTrustedOrigin` 无任何生产调用方，但曾有 32 项 CI 断言为其护航——给死代码上闸门比没测试更危险。文件重写为只保留 `check()`（恒通过，注释说明原因与历史）与 `checkDestructive()`（真正生效的 confirm 契约）。头注释如实记录 0.5.95 的教训（面板不带 Origin 被误伤 / 本机进程可伪造绕过，实测证据）。
+  - **P1 sessions.scan 节流**：无鉴权 HTTP 面上的深扫每次 ~1.5s，可被本机进程滥用作侦察+拖慢宿主。浅扫结果缓存 30 秒（命中返回 `cached:true`），所有扫描经 single-flight 串行化，并发请求共享同一次扫描。面板显式点击不受影响。
+  - **P1 CHANGELOG 勘误**：0.5.95 的「RPC 来源准入」已被实测推翻且弄坏过面板，CHANGELOG 中补记勘误，防止误读版本历史。
+  - 测试：新增 `test-cleanup`(14)；`test-rpc-guard` 重写为只测生效契约(23)；全套 **141 项全绿、13 套件**。
+
 ## 0.5.98
 
 - **P0/P1 修复：临时目录兜底、原位恢复、真实目录上报（TDD 136 项）**
@@ -39,6 +49,9 @@
 
 ## 0.5.95
 
+> **勘误（0.5.98 补记）**：本版宣称的「RPC 来源准入」经实测推翻——面板 fetch 不带 Origin（宿主调试日志
+> 162 条全部 origin:null），导致面板被自己的 403 拦死；而本机任意进程又可伪造 Origin 绕过。
+> 同版还把调试日志留在生产代码里。0.5.98 移除该闸门与调试日志，教训详见 0.5.98 CHANGELOG。
 - **P0 安全：RPC 来源准入 + 破坏性操作二次确认；P1：假排序修正 + 扫描闸门**
   - **RPC 零鉴权**（P0）：`/api/dsh-market/rpc` 此前无任何校验，实测本机任意进程 POST 即返回 `settings.get` 全部路径与 `sessions.scan` 全部会话列表（HTTP 200）。新增 `src/rpc-guard.js`：请求必须来自本机 GUI（Origin/Referer 属于 loopback）。已实测浏览器同源 POST **必然携带 Origin**，第三方网页与无关进程无法伪造。无来源 → **403**。
   - **破坏性操作无确认**（P0）：`sessions.repair` / `skills.uninstall` / `mcp.uninstall` 直接执行。现统一要求 `confirm:true`（与既有的 `skills.trashEmpty` 约定一致）；`sessions.repair` 的 `dryRun` 为只读预演，豁免确认。面板侧已同步传参，并有测试锁定该契约。

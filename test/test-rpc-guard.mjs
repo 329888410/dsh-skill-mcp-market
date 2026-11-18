@@ -1,46 +1,33 @@
 #!/usr/bin/env node
-// test-rpc-guard.mjs — TDD: RPC 端点必须鉴权；破坏性操作必须二次确认。
-// 症状：本机任意进程 POST /api/dsh-market/rpc 无来源校验即返回 200 与全部路径/会话列表。
+// test-rpc-guard.mjs — TDD: 破坏性操作确认契约 + 死代码不得复活。
+// 注意：0.5.95 的 Origin 边界已被推翻（见 rpc-guard.js 头注释），
+// 本套件不再测试任何「来源判定」，只测真正生效的 confirm 契约。
 import fs from 'node:fs';
-import { makeRpcGuard, isTrustedOrigin, DESTRUCTIVE_OPS } from '../src/rpc-guard.js';
+import path from 'node:path';
+import { makeRpcGuard, DESTRUCTIVE_OPS } from '../src/rpc-guard.js';
 
 let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + d : '')); } };
 
 console.log('');
-console.log('Test 1: isTrustedOrigin 只是辅助判断，不再是安全边界');
+console.log('Test 1: 死代码不得复活');
 {
-  check('accepts 127.0.0.1 origin', isTrustedOrigin('http://127.0.0.1:61177'));
-  check('accepts localhost origin', isTrustedOrigin('http://localhost:61177'));
-  check('rejects remote origin', !isTrustedOrigin('https://evil.example.com'));
-  check('rejects file origin', !isTrustedOrigin('file:///C:/x.html'));
-  check('rejects empty', !isTrustedOrigin(''));
-  check('rejects garbage', !isTrustedOrigin('not a url'));
+  const g = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src/rpc-guard.js'), 'utf8');
+  check('no token machinery', !g.includes('randomBytes') && !g.includes('timingSafeEqual'));
+  check('no origin gate', !g.includes('isTrustedOrigin'));
+  check('lesson recorded in header', g.includes('误伤') || g.includes('绕过'));
 }
 
 console.log('');
-console.log('Test 2: 准入不再依赖可伪造的 Origin（既误伤面板又可被绕过）');
+console.log('Test 2: check() 恒通过（面板请求不带 Origin 也必须放行）');
 {
   const guard = makeRpcGuard();
-  check('no longer gates on headers', guard.check({ headers: {} }).ok === true);
-  check('no longer gates on origin', guard.check({ headers: { origin: 'https://evil.example.com' } }).ok === true);
-  check('accepts loopback origin', guard.check({ headers: { origin: 'http://127.0.0.1:61177' } }).ok === true);
-  check('accepts loopback referer without origin', guard.check({ headers: { referer: 'http://127.0.0.1:61177/' } }).ok === true);
+  check('no headers passes', guard.check({ headers: {} }).ok === true);
+  check('null origin passes', guard.check({ headers: { origin: null } }).ok === true);
 }
 
 console.log('');
-console.log('Test 3: token 随机且可校验（页面可选加固）');
-{
-  const a = makeRpcGuard(), b = makeRpcGuard();
-  check('two instances differ', a.token !== b.token);
-  check('token is long enough', String(a.token).length >= 64);
-  check('absent token is tolerated', a.checkToken({ headers: {} }).ok === true);
-  check('wrong token is rejected', a.checkToken({ headers: { 'x-dsh-market-token': 'nope' } }).ok === false);
-  check('right token is accepted', a.checkToken({ headers: { 'x-dsh-market-token': a.token } }).ok === true);
-}
-
-console.log('');
-console.log('Test 4: 破坏性操作必须带 confirm:true');
+console.log('Test 3: 破坏性操作必须带 confirm:true');
 {
   const guard = makeRpcGuard();
   for (const op of DESTRUCTIVE_OPS) {
@@ -50,29 +37,29 @@ console.log('Test 4: 破坏性操作必须带 confirm:true');
 }
 
 console.log('');
-console.log('Test 5: 只读操作不受 confirm 限制');
+console.log('Test 4: 只读操作不受 confirm 限制');
 {
   const guard = makeRpcGuard();
-  for (const op of ['settings.get', 'skills.list', 'skills.search', 'mcp.list']) {
+  for (const op of ['settings.get', 'skills.list', 'skills.search', 'mcp.list', 'sessions.scan']) {
     check(op + ' needs no confirm', guard.checkDestructive(op, {}).ok === true);
   }
 }
 
 console.log('');
-console.log('Test 6: 面板自己调用破坏性操作时必须带 confirm（否则面板功能会被闸门打断）');
+console.log('Test 5: 面板调用破坏性操作时必须带 confirm（否则面板功能被闸门打断）');
 {
-  const client = fs.readFileSync(new URL('../client.js', import.meta.url), 'utf8');
-  check('skills.uninstall passes confirm', /call\('skills\.uninstall',\s*\{[^}]*confirm:\s*true/.test(client));
-  check('mcp.uninstall passes confirm', /call\('mcp\.uninstall',\s*\{[^}]*confirm:\s*true/.test(client));
-  check('sessions.repair passes confirm when not dryRun', /call\('sessions\.repair',\s*\{[^}]*confirm:\s*!dryRun/.test(client));
+  const c = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'client.js'), 'utf8');
+  check('skills.uninstall passes confirm', /call\('skills\.uninstall',\s*\{[^}]*confirm:\s*true/.test(c));
+  check('mcp.uninstall passes confirm', /call\('mcp\.uninstall',\s*\{[^}]*confirm:\s*true/.test(c));
+  check('sessions.repair passes confirm when not dryRun', /call\('sessions\.repair',\s*\{[^}]*confirm:\s*!dryRun/.test(c));
 }
 
 console.log('');
-console.log('Test 7: dryRun 预演不需要确认（只读，不落盘）');
+console.log('Test 6: dryRun 预演不需要确认（只读，不落盘）');
 {
   const guard = makeRpcGuard();
-  check('dryRun repair is allowed without confirm', guard.checkDestructive('sessions.repair', { dryRun: true }).ok === true);
-  check('real repair still needs confirm', guard.checkDestructive('sessions.repair', { dryRun: false }).ok === false);
+  check('dryRun repair allowed without confirm', guard.checkDestructive('sessions.repair', { dryRun: true }).ok === true);
+  check('real repair needs confirm', guard.checkDestructive('sessions.repair', { dryRun: false }).ok === false);
 }
 
 console.log('');
