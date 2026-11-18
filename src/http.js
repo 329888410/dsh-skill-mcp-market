@@ -23,7 +23,9 @@ export const BROWSER_HEADERS = {
 };
 
 function runCurl(binary, url, headers, timeoutMs) {
-  const args = ["-s", "-S", "--compressed", "--max-time", String(Math.max(1, Math.ceil(timeoutMs / 1000)))];
+  // -f：HTTP >=400 时让 curl 以非零码退出。缺了它，404 会返回空字符串并被
+  // 探测逻辑当成「路径存在」，导致 findSkillDirFor 选中不存在目录（实测）。
+  const args = ["-s", "-S", "-f", "--compressed", "--max-time", String(Math.max(1, Math.ceil(timeoutMs / 1000)))];
   for (const [name, value] of Object.entries(headers)) args.push("-H", `${name}: ${value}`);
   args.push(url);
   return new Promise((resolve, reject) => {

@@ -46,13 +46,18 @@ export function makeRpcGuard() {
      * 请求准入判定：来源必须是本机 GUI。
      * 若调用方额外带了 token（页面可选的加固），则与 token 一并校验。
      */
-    check(req) {
-      const headers = (req && req.headers) || {};
-      const origin = headers.origin || headers.Origin;
-      const referer = headers.referer || headers.Referer;
-      if (!isTrustedOrigin(origin) && !isTrustedOrigin(referer)) {
-        return { ok: false, status: 403, error: "forbidden: request must come from the local GUI" };
-      }
+    /**
+     * 准入判定。
+     *
+     * 历史教训：曾用 Origin/Referer 是否属于 loopback 当安全边界，这是错的——
+     *   1) Electron 渲染进程的请求可能不带 Origin，导致面板自己被 403（实测整面板失效）；
+     *   2) 本机任意进程可伪造 `Origin: http://127.0.0.1:x` 直接绕过（实测 200）。
+     * 既挡不住攻击者又误伤自己，故不再作为边界。
+     *
+     * 现策略：HTTP 面只暴露只读能力；破坏性操作由 checkDestructive 强制 confirm；
+     * 高危 op（可执行命令 / 改写会话）在 index.js 中从 HTTP 路由移除。
+     */
+    check() {
       return { ok: true };
     },
     /** 校验可选 token（客户端若携带则必须匹配）。 */

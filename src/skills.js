@@ -49,22 +49,39 @@ export async function listInstalledSkills(dirs) {
     }
     for (const entry of entries) {
       const full = join(dir, entry.name);
-      const skillFile = entry.isDirectory() ? join(full, "SKILL.md") : entry.name.endsWith(".md") ? full : "";
-      if (!skillFile || !existsSync(skillFile)) continue;
-      try {
-        const text = await readFile(skillFile, "utf8");
-        const meta = skillMetaFromText(text, entry.isDirectory ? entry.name : basename(entry.name, ".md"));
-        out.push({
-          slug: entry.isDirectory ? entry.name : basename(entry.name, ".md"),
-          name: meta.name || entry.name,
-          description: meta.description,
-          whenToUse: meta.whenToUse,
-          dir,
-          path: skillFile,
-          kind: entry.isDirectory ? "directory" : "file",
-        });
-      } catch {
-        // unreadable skill: skip it, keep the rest
+      // clawhub CLI 装到 <root>/@<owner>/<slug>/（两层），单层扫描会漏掉它们。
+      // 对 @ 前缀目录下探一层，其余保持一层语义。
+      const candidates = [];
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith("@")) {
+          let inner = [];
+          try { inner = await readdir(full, { withFileTypes: true }); } catch { inner = []; }
+          for (const sub of inner) {
+            if (sub.isDirectory()) candidates.push({ file: join(full, sub.name, "SKILL.md"), slug: sub.name, kind: "directory" });
+          }
+        } else {
+          candidates.push({ file: join(full, "SKILL.md"), slug: entry.name, kind: "directory" });
+        }
+      } else if (entry.name.endsWith(".md")) {
+        candidates.push({ file: full, slug: basename(entry.name, ".md"), kind: "file" });
+      }
+      for (const cand of candidates) {
+        if (!existsSync(cand.file)) continue;
+        try {
+          const text = await readFile(cand.file, "utf8");
+          const meta = skillMetaFromText(text, cand.slug);
+          out.push({
+            slug: cand.slug,
+            name: meta.name || cand.slug,
+            description: meta.description,
+            whenToUse: meta.whenToUse,
+            dir,
+            path: cand.file,
+            kind: cand.kind,
+          });
+        } catch {
+          // unreadable skill: skip it, keep the rest
+        }
       }
     }
   }

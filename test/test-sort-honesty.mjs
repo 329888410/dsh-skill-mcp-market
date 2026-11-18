@@ -36,6 +36,15 @@ console.log('Test 3: skills.sh 按安装数排序时不得打乱上游顺序（�
 {
   let a, b, errored = false;
   try {
+    // 目录是异步预热的；两次调用若跨越预热边界会比到不同数据集。
+    // 先连续读到两次相同的目录长度，确认目录已稳定，再比较顺序。
+    let prev = -1;
+    for (let i = 0; i < 5; i += 1) {
+      const probe = await searchSkills({ query: '', source: 'skills.sh', page: 1, pageSize: 12, cache, sort: '' });
+      if (probe.total === prev && probe.items.length > 0) break;
+      prev = probe.total;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
     a = await searchSkills({ query: '', source: 'skills.sh', page: 1, pageSize: 12, cache, sort: 'installCount' });
     b = await searchSkills({ query: '', source: 'skills.sh', page: 1, pageSize: 12, cache, sort: '' });
   } catch { errored = true; }

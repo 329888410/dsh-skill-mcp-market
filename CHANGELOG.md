@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.96
+
+- **功能修复：TrustTools 搜索失效、安装目录看不见、分类筛选、安装链路（TDD 109 项）**
+  - **TrustTools 搜索从未生效**（P0）：上游参数是 `search`，代码一直发 `q`（被忽略，永远返回默认列表）。实测 `q=playwright`→feishu-*，`search=playwright`→e2e 相关。已改正。
+  - **安装成功的技能永远进不了「已安装」**（P0）：clawhub CLI 装到 `<root>/@<owner>/<slug>/` 两层，而 `listInstalledSkills` 只扫一层。现在对 `@` 前缀目录下探一层；实测装完后可见。
+  - **分类筛选是假的**（P0）：`searchSkills` 从未接受 `category`，客户端只在当前页本地过滤。现在签名接收 category，在返回前按 category 过滤；源无分类数据时返回 `categoryNote` 如实告知而非静默返回全量。
+  - **切源不重置分类**（P0）：切源沿用旧 category 会在筛选落到服务端后变成空列表。现在切源同步 `setCategory('all')`。
+  - **排序下拉与能力不符**（P1）：无安装量数据的源（skillsmp / browse.sh / skills.sh）如实标注「默认顺序」。
+  - **安装参考统一**（P1）：新增 `installRefOf()`，dispatcher 为每条结果盖章 `installRef`；客户端 7 层三元简化为单字段 + 兜底。
+  - **skills.sh 安装链路修复**（P1，连带发现 3 个真 bug）：
+    - `curl -s` 缺 `-f`：404 返回空串被当成「文件存在」，导致 `findSkillDirFor` 选中不存在的 `skills/engineering/<slug>`。已加 `-f`，并对空响应体判为失败。
+    - 空 `ref` 拼出 `repo//path` 与 `repo@`：jsDelivr 返回 400/404。现在空 ref 归一化为 HEAD / 省略 `@`。
+    - `fallbackCache` 用 `process.env.TEMP`：无环境注入时退化成字面量 `undefined\temp` 并让 `mkdtemp` ENOENT。改用 `os.tmpdir()`。
+  - 测试：新增 `test-func-fixes`(9)；`test-sort-honesty` 消除目录预热的竞态；全套 **109 项全绿**。
+
 ## 0.5.95
 
 - **P0 安全：RPC 来源准入 + 破坏性操作二次确认；P1：假排序修正 + 扫描闸门**

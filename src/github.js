@@ -56,13 +56,17 @@ async function fetchText(url, timeoutMs = 20000) {
  */
 export async function fetchFileText(repo, ref, path) {
   const sources = [
-    `${RAW}/${repo}/${encodeURIComponent(ref)}/${path}`,
-    `${CDN}/${repo}@${encodeURIComponent(ref)}/${path}`,
+    `${RAW}/${repo}/${ref ? encodeURIComponent(ref) : "HEAD"}/${path}`,
+    `${CDN}/${repo}${ref ? "@" + encodeURIComponent(ref) : ""}/${path}`,
   ];
   let lastError = null;
   for (const url of sources) {
     try {
-      return await fetchText(url);
+      const text = await fetchText(url);
+      // 空响应不能当作「文件存在」：某些降级传输（curl -s / python）对 404 返回空串，
+      // 会让 findSkillDirFor 误判并选中不存在的目录（实测 skills/engineering/...）。
+      if (!String(text || "").trim()) throw new Error(`empty body for ${path}`);
+      return text;
     } catch (error) {
       lastError = error;
     }
@@ -132,7 +136,7 @@ export async function resolveRef(repo, preferred) {
 
 /** Flat list of file paths in the repository at `ref`. */
 export async function listTree(repo, ref) {
-  const data = JSON.parse(await fetchText(`${LIST}/${repo}@${encodeURIComponent(ref)}`));
+    const data = JSON.parse(await fetchText(`${LIST}/${repo}${ref ? "@" + encodeURIComponent(ref) : ""}`));
   const out = [];
   const walk = (nodes, prefix) => {
     for (const node of nodes || []) {

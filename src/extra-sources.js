@@ -296,7 +296,8 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     if (!data) {
       data = await postJsonEscalating(
         "https://ai.trusttools.cn/api/skills/search",
-        { q: query, page: upstreamPage, pageSize: perPage },
+        // 上游参数名是 search（不是 q）：传 q 会被忽略，永远返回默认列表。实测 search 才生效。
+        { search: query, page: upstreamPage, pageSize: perPage },
         { timeoutMs: 25000 },
       );
       if (cache) await cache.put(key, data);

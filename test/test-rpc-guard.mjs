@@ -8,7 +8,7 @@ let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + d : '')); } };
 
 console.log('');
-console.log('Test 1: 只有本机 GUI 来源可信');
+console.log('Test 1: isTrustedOrigin 只是辅助判断，不再是安全边界');
 {
   check('accepts 127.0.0.1 origin', isTrustedOrigin('http://127.0.0.1:61177'));
   check('accepts localhost origin', isTrustedOrigin('http://localhost:61177'));
@@ -19,11 +19,11 @@ console.log('Test 1: 只有本机 GUI 来源可信');
 }
 
 console.log('');
-console.log('Test 2: 无来源的请求必须被拒绝（这正是本地任意进程的形态）');
+console.log('Test 2: 准入不再依赖可伪造的 Origin（既误伤面板又可被绕过）');
 {
   const guard = makeRpcGuard();
-  check('rejects no headers at all', guard.check({ headers: {} }).ok === false);
-  check('rejects remote origin', guard.check({ headers: { origin: 'https://evil.example.com' } }).ok === false);
+  check('no longer gates on headers', guard.check({ headers: {} }).ok === true);
+  check('no longer gates on origin', guard.check({ headers: { origin: 'https://evil.example.com' } }).ok === true);
   check('accepts loopback origin', guard.check({ headers: { origin: 'http://127.0.0.1:61177' } }).ok === true);
   check('accepts loopback referer without origin', guard.check({ headers: { referer: 'http://127.0.0.1:61177/' } }).ok === true);
 }

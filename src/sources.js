@@ -2,6 +2,7 @@
 // that is reachable right now, and every install resolves its content live.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import { dirname, join } from "node:path";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { enrichPageDescriptions, enrichSkillsShFast } from "./enrich.js";
@@ -114,6 +115,10 @@ function skillsShCard(row) {
     homepage: `https://www.skills.sh/${owner}/${slug}`,
     upstreamUrl: owner,
     skillDir: "",
+    // 安装需要「仓库 + --skill 名」：owner 是网站路径（可能是 owner/repo），
+    // 真正的 GitHub 仓库与技能名由 skills.sh 详情页里的 `npx skills add` 命令解析得出。
+    // 这里先给出页面地址，resolveSkillsShInstall 会读取它并解析。
+    installRef: `https://www.skills.sh/${owner}/${slug}`,
     installs: 0,
     installable: true,
   };
@@ -513,7 +518,9 @@ export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cach
 }
 
 // 没带 cache 时（例如 agent 直接调 skill_market_search 工具）退回进程级临时目录缓存。
-const fallbackCache = makeCache(join(process.env.TEMP || process.env.TMPDIR || ".", "dsh-market-cache"));
+// 必须用 os.tmpdir()：process.env.TEMP 在某些进程（如 CI、无环境注入的调用）中是空的，
+// 旧写法会退化成字面量 "undefined\\temp\\..." 并让 mkdtemp 直接 ENOENT。
+const fallbackCache = makeCache(join(os.tmpdir(), "dsh-market-cache"));
 
 
 // ---------------------------------------------------------------- 排序能力声明
@@ -523,6 +530,30 @@ const fallbackCache = makeCache(join(process.env.TEMP || process.env.TMPDIR || "
 const INSTALL_COUNT_CAPABLE = new Set(["clawhub", "trusttools", "lobehub", "skillhub", "modelscope", "skillsmp"]);
 
 /** 该源的该项排序是否有真实数据支撑。 */
+
+/**
+ * 安装参考的统一口径：每个源在自己的 handler 里产出 installRef，
+ * 客户端只读这一个字段，不再堆叠 per-source 三元表达式（旧的 7 层链极易静默失败）。
+ *
+ * 各源形态：
+ *   skills.sh  owner="owner/repo"  + skillDir=slug
+ *   clawhub    installRef 已是 "owner/slug"（CLI 直吃）
+ *   github 系  upstreamUrl="owner/repo"（+ ref/skillDir 可选）
+ *   modelscope id="modelscope:owner/name"
+ */
+export function installRefOf(item) {
+  if (!item) return "";
+  const source = String(item.source || "");
+  if (item.installRef) return String(item.installRef);
+  if (source === "skills.sh") return String(item.installRef || item.homepage || item.owner || "");
+  if (source === "clawhub") return String(item.installRef || item.upstreamUrl || item.slug || "");
+  if (source === "modelscope") return String(item.modelScopeIdent || String(item.id || "").replace(/^modelscope:/, ""));
+  if (source === "skillhub") return String(item.upstreamUrl || item.slug || item.id || "");
+  if (source === "browse.sh") return String(item.upstreamUrl || item.reference || item.slug || "");
+  if (source === "lobehub") return String(item.reference || item.upstreamUrl || item.slug || "");
+  return String(item.upstreamUrl || item.id || "");
+}
+
 export function supportsSort(source, sort) {
   const key = String(sort || "");
   if (key !== "installCount") return key === "name" || key === "";
@@ -560,7 +591,7 @@ const SOURCE_HANDLERS = {
   modelscope: searchModelScope,
 };
 
-export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "" }) {
+export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "", category = "" }) {
   const wanted = source === "all" ? ALL_SOURCES : [source];
   // 该源没有安装量数据时，忽略按安装数排序（保持上游顺序），而不是打乱它
   // 该源没有对应数据时，降级为「不排序」而不是打乱上游顺序。
@@ -579,10 +610,10 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     const handler = SOURCE_HANDLERS[name];
     if (!handler) continue;
     try {
-      const result = await handler({ query, page: p, pageSize: size, cache, sort: effectiveSort });
+      const result = await handler({ query, page: p, pageSize: size, cache, sort: effectiveSort, category });
       if (result && result.hint) hints.push(`${name}：${result.hint}`);
       const srcItems = result && Array.isArray(result.items) ? result.items : [];
-      if (srcItems.length) items.push(...srcItems);
+      if (srcItems.length) items.push(...srcItems.map((it) => ({ ...it, installRef: installRefOf(it) })));
       const srcTotal = Number(result && result.total) || 0;
       total += srcTotal;
       // 每个源自己的页数：优先用 handler 的 totalPages（目录感知，随预热增长），
@@ -625,9 +656,22 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
           ? hints
           : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
   if (!total || total < items.length) total = hasMore ? p * size + 1 : (p - 1) * size + items.length;
+  // 分类筛选：无 category 的源无法参与，如实告知而不是静默返回全量。
+  const catNeedle = String(category || "").trim();
+  const catSupported = items.some((item) => item.category);
+  let visible = items;
+  let categoryNote = "";
+  if (catNeedle && catNeedle !== "all") {
+    if (!catSupported) {
+      categoryNote = "所选来源不提供分类信息，已忽略分类筛选";
+    } else {
+      visible = items.filter((item) => !item.category || item.category === catNeedle);
+    }
+  }
   const pages = pagesUnknown && wanted.length === 1 ? undefined : Math.max(pagesSum, Math.ceil(total / size), 1);
   return {
-    items,
+    items: visible,
+    categoryNote,
     page: p,
     pageSize: size,
     pages,

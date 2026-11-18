@@ -9,7 +9,7 @@
 //   mounted as a live `@deepseek-ai/dsh-mcp-client` plugin instance, whose tools register on
 //   `ctx.tools` immediately — also without restarting DSH.
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -1134,7 +1134,14 @@ export async function apply(ctx, config = {}) {
   });
 
   // ---------------------------------------------------------------- client panel RPC
+  // HTTP 面只暴露只读 + 已确认的安装操作。
+  // 可执行任意命令（mcp.install 的 command/args 模式）与改写会话日志（sessions.repair）
+  // 在无鉴权的 HTTP 路由上风险过高——它们仍可通过 agent 工具调用，但不经由浏览器可触发的通道。
+  const HTTP_BLOCKED_OPS = new Set(["sessions.repair"]);
   async function dispatch(op, body) {
+    if (HTTP_BLOCKED_OPS.has(op)) {
+      throw new Error(`操作 ${op} 不允许经由面板 HTTP 通道执行`);
+    }
     switch (op) {
       case "settings.get":
         return {
@@ -1555,6 +1562,11 @@ export async function apply(ctx, config = {}) {
         };
       }
       case "mcp.install": {
+        // 面板 HTTP 通道不接受自定义 command：那是任意命令执行面。
+        // 面板只按 slug/serverName 从注册表安装；自定义 command 请走 agent 工具 mcp_market_install。
+        if (body.command) {
+          throw new Error("面板通道不接受自定义 command；请改用 mcp_market_install 工具安装自定义连接器");
+        }
         const envWritten = applyEnvValues(body.envValues);
         const definition =
           body.command || body.url ? manualMcpDefinition(body) : await resolveMcpDefinition(body.slug, body.serverName);
@@ -1694,6 +1706,7 @@ export async function apply(ctx, config = {}) {
           handler: async (req, res) => {
             let payload = { ok: false, error: "invalid request" };
             // 准入：请求必须来自本机 GUI 页面（此前本机任意进程可直接调用并读到全部路径）
+            try { appendFileSync(join(tmpdir(), "dsh-rpc-headers.log"), JSON.stringify({ origin: req.headers.origin || null, referer: req.headers.referer || null, host: req.headers.host || null }) + "\n"); } catch {}
             const verdict = rpcGuard.check(req);
             if (!verdict.ok) {
               res.writeHead(verdict.status || 401, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });

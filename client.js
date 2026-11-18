@@ -687,22 +687,11 @@ window.__ModuleLoader__.load({
         try {
           const d = await call('skills.install', {
             source: item.source,
-            reference:
-              item.source === 'skills.sh'
-                ? item.homepage
-                : item.source === 'clawhub'
-                  ? item.installRef
-                  : item.source === 'lobehub'
-                    ? item.reference || item.slug
-                    : item.source === 'browse.sh'
-                      ? item.reference
-                      : item.source === 'skillhub'
-                        ? item.reference || item.upstreamUrl || item.id
-                        : item.source === 'modelscope'
-                          ? item.modelScopeIdent || item.id.replace(/^modelscope:/, '')
-                          : item.upstreamUrl || item.id,
+            // 每个源产出的 installRef 已在 handler 里统一（见 src/sources.js installRefOf）。
+            // 这里只做最后兜底，不再堆叠 per-source 三元。
+            reference: item.installRef || item.upstreamUrl || item.id,
             upstreamUrl: item.source === 'modelscope' ? (item.upstreamUrl || '') : '',
-            skillDir: item.skillDir || '',
+            skillDir: item.skillDir || (item.source === 'skills.sh' ? (item.slug || '') : ''),
             ref: item.ref || '',
             name: item.slug,
           });
@@ -1179,8 +1168,10 @@ window.__ModuleLoader__.load({
                           key,
                           style: S.chip(source === key),
                           onClick: () => {
+                            // 切源时重置分类：新源不一定有分类字段，沿用旧值会导致空列表
                             setSource(key);
-                            searchSkills(query, { source: key, size, category });
+                            setCategory('all');
+                            searchSkills(query, { source: key, size, category: 'all' });
                           },
                         }, key))
                     : ['registry', 'lobehub'].map((key) =>
@@ -1217,7 +1208,7 @@ window.__ModuleLoader__.load({
                         value: sort,
                         onChange: (e) => setSort(e.target.value),
                       },
-                        h('option', { value: 'default' }, ['skillsmp', 'browse.sh'].includes(source) ? '默认顺序' : '按安装数'),
+                        h('option', { value: 'default' }, ['skillsmp', 'browse.sh', 'skills.sh'].includes(source) ? '默认顺序' : '按安装数'),
                         h('option', { value: 'name' }, '按名称')),
             ),
             tab === 'mcp' && mcpSource === 'lobehub' && mcpCategories.length > 0
