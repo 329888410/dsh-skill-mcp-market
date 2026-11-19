@@ -18,20 +18,10 @@ import {
   installViaTrustToolsCli,
 } from "./cli-install.js";
 
-/**
- * 枚举一个技能根目录下所有可能的技能路径。
- * 布局有两种：一层 <root>/<slug>/ 与 clawhub CLI 的两层 <root>/@<owner>/<slug>/。
- * 列表、卸载、详情必须共用这一套判定，否则会出现「看得见却删不掉」。
- */
-function skillCandidates(root, slug) {
-  const key = kebab(slug) || String(slug || "");
-  if (!key) return [];
-  return [
-    join(root, key, "SKILL.md"),
-    join(root, `${key}.md`),
-    join(root, `@${key}`, "SKILL.md"),
-  ];
-}
+// （已删除 skillCandidates：0 引用，且它的 @<key> 猜测与真实布局 @<owner>/<slug> 不符。
+//   「列表/卸载/详情/编辑共用同一套判定」这一职责实际由 resolveSkillFile 承担；
+//   listInstalledSkills 靠目录枚举（它要的是全部技能，不是定位单个）。）
+
 
 export async function listInstalledSkills(dirs) {
   const out = [];
@@ -580,12 +570,12 @@ export async function uninstallSkill({ slug, dirs, trashDir, agentsHomeSkillsDir
 /** Rewrite an installed skill's `name`, `description` and body in place, preserving every
  *  other frontmatter key exactly as written. */
 export async function updateSkill({ dirs, slug, name, description, body }) {
-  let file = "";
-  for (const dir of dirs || []) {
-    for (const candidate of [join(dir, slug, "SKILL.md"), join(dir, `${slug}.md`)]) {
-      if (existsSync(candidate)) file = candidate;
-    }
-  }
+  // 定位必须与列表/详情/开关/卸载共用同一套判定（resolveSkillFile）：
+  // 0.5.97 统一那三处时漏了这里，导致 clawhub 两层布局（@owner/slug）的技能
+  // 「看得见、删得掉、改不了」——实测 updateSkill 抛「未找到技能」。
+  // 顺带修正：旧代码用裸 slug 拼路径，不做 kebab，slug 含空格/大写时也定位不到。
+  const found = await resolveSkillFile(dirs, slug);
+  const file = found ? found.path : "";
   if (!file) throw new Error(`未找到技能 ${slug}`);
   const raw = await readFile(file, "utf8");
   const fmEnd = raw.indexOf("\n---", 3);

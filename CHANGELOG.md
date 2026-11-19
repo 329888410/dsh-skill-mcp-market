@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.107
+
+- **修复 clawhub 两层布局技能「看得见、删得掉、改不了」；兑现 P0-2 清理死函数（TDD 10 项）**
+  - 缺陷：`updateSkill` 只试 `<dir>/<slug>/SKILL.md` 与 `<dir>/<slug>.md` 两条扁平路径，而 clawhub CLI 装到 `<dir>/@<owner>/<slug>/SKILL.md`。实测该技能在 listInstalledSkills / readSkillBody / toggleSkillFile / uninstallSkill 四种操作下都可达，唯独 `updateSkill` 抛「未找到技能 my-tool」——面板表现为编辑 clawhub 技能后保存失败。
+  - 根因：0.5.97 的提交「unify nested @owner layout across uninstall/detail/toggle」统一了三处，漏了第四处。现改为复用同文件的 `resolveSkillFile`，四种操作回到同一套判定；顺带修正它用裸 slug 拼路径（不做 kebab）导致含空格/大写 slug 也定位不到的问题。
+  - 删除 `skillCandidates`（P0-2 承诺兑现）：0 引用，且其 `@<key>/SKILL.md` 猜测与真实布局 `@<owner>/<slug>/SKILL.md` 不符——它无法承担注释里宣称的「共用判定」职责，该职责实际由 `resolveSkillFile` 承担。留着它比没有更糟：注释会让人以为已统一。
+  - 测试 `test-nested-update.mjs`：两层布局四操作可达性一致性、真实写入且保留其它 frontmatter 键（license 等）、不搬动位置不产生扁平副本、一层布局回归保护、缺失技能仍抛错。
+  - 遗留（本轮不动，已如实登记）：`enrichSkillsSh`(src/enrich.js)、`readEnvironmentVariable`(src/env.js)、`SORT_KEYS`(src/sort-capability.js) 三个导出零引用；另有 17 个导出仅本文件使用，应收紧为内部函数而非 export。
 ## 0.5.106
 
 - **修复回收站操作的结果提示被列表刷新覆盖；补齐 0.5.101 承诺的能力表一致性测试（TDD）**
