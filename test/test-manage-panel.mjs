@@ -104,5 +104,28 @@ console.log('Test 7: 首次进入技能子页签自动拉取回收站（旧行�
 }
 
 console.log('');
+console.log('Test 8: 回收站操作的结果提示不得被列表刷新覆盖（实测 notice 被吞）');
+{
+  // 症状：handler 先 setNotice(已恢复…) 再 await loadTrash()/loadMcpTrash()，
+  // 而这两个 loader 内部也 setNotice(回收站共 N 项) → 用户最终只看到刷新提示。
+  // 锁法：handler 体内最后一次 setNotice 必须排在 loader await 之后。
+  const cases = [
+    ['restoreTrashEntry', 'await loadTrash();'],
+    ['restoreMcpTrashEntry', 'await loadMcpTrash();'],
+    ['emptyMcpTrash', 'await loadMcpTrash();'],
+  ];
+  for (const item of cases) {
+    const name = item[0], loader = item[1];
+    const start = c.indexOf('const ' + name + ' = async');
+    if (start < 0) { check(name + ' 存在', false, '未找到'); continue; }
+    const cut = c.indexOf('\n      };', start);
+    const body = c.slice(start, cut > start ? cut : start + 1200);
+    const loaderAt = body.indexOf(loader);
+    const noticeAt = body.lastIndexOf('setNotice(');
+    check(name + ' 结果提示排在刷新之后', loaderAt < 0 || noticeAt > loaderAt, 'loader@' + loaderAt + ' lastNotice@' + noticeAt);
+  }
+}
+
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

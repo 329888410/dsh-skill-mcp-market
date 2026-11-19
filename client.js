@@ -936,11 +936,12 @@ window.__ModuleLoader__.load({
         setNotice('');
         try {
           const r = await call('mcp.restore', { path: entry.path });
+          await loadMcpTrash();
+          await loadInstalled();
+          // 同上：结果提示排在刷新之后，否则被「MCP 回收站共 N 项」覆盖
           setNotice(r.aliased
             ? `已恢复为 ${r.serverName}（同名定义已存在，改用别名避免覆盖）`
             : `已恢复 ${r.serverName}，连接器已重新挂载`);
-          await loadMcpTrash();
-          await loadInstalled();
         } catch (e) {
           setError(`恢复失败：${e.message || e}`);
         } finally {
@@ -954,8 +955,8 @@ window.__ModuleLoader__.load({
         setNotice('');
         try {
           const r = await call('mcp.trashEmpty', { confirm: true });
-          setNotice(`已清空 MCP 回收站，删除 ${r.removed} 项（不可恢复）`);
           await loadMcpTrash();
+          setNotice(`已清空 MCP 回收站，删除 ${r.removed} 项（不可恢复）`);
         } catch (e) {
           setError(`清空失败：${e.message || e}`);
         } finally {
@@ -969,9 +970,11 @@ window.__ModuleLoader__.load({
         setNotice('');
         try {
           const r = await call('skills.restore', { path: entry.path });
-          setNotice(`已恢复 ${r.slug} → ${r.restoredTo}`);
           await loadTrash();
           await loadInstalled();
+          // 结果提示必须最后写：loadTrash 内部也会 setNotice（回收站共 N 项），
+          // 先写结果就会被刷新提示覆盖，用户看不到恢复到了哪里。
+          setNotice(`已恢复 ${r.slug} → ${r.restoredTo}`);
         } catch (e) {
           setError(`恢复失败：${e.message || e}`);
         } finally {

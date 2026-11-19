@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.106
+
+- **修复回收站操作的结果提示被列表刷新覆盖；补齐 0.5.101 承诺的能力表一致性测试（TDD）**
+  - 缺陷：`restoreTrashEntry` / `restoreMcpTrashEntry` / `emptyMcpTrash` 先 `setNotice(已恢复…)` 再 `await loadTrash()/loadMcpTrash()`，而这两个 loader 内部也 `setNotice(回收站共 N 项)` → 用户最终只看到刷新提示，看不到恢复结果。上一轮实测点「恢复」后 notice 抓取为空即此现象（当时误记为「推测被覆盖，未改」）。现把结果提示移到刷新之后，并加 Test 8 顺序锁（3 个 handler 全锁）。
+  - 补齐承诺：0.5.101 CHANGELOG 与代码注释都写着「由测试锁定两处一致」，但当时并未写该测试。新增 `test-sort-options` Test 6，解析并逐源比对 client.js 的 `CAPS` 表与 `src/sort-capability.js` 的 `CAPABILITIES` 表（键顺序与源集合都锁）。当前两表零漂移，测试首次运行即通过——它防的是未来的漂移。
+  - 修测试自身缺陷：parity 解析正则只认单引号键，而 `CAPABILITIES` 用双引号 → 服务端表解析出 0 条的假失败；改为接受两种引号。
+  - 本轮只改 client.js 与测试文件，未触碰 sources.js/extra-sources.js/skillhub.js；离线 16 套件全绿（test-total-pages 需 >120s，单独复跑 8/8）。
 ## 0.5.105
 
 - **修复 0.5.104 引入的面板白屏（TDZ 回归），并新增全文件 TDZ 静态锁**

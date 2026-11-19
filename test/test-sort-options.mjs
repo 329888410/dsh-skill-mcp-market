@@ -90,5 +90,32 @@ console.log('Test 5: UI 下拉必须提供新排序项');
 }
 
 console.log('');
+console.log('Test 6: client 的 CAPS 表与 src/sort-capability.js 逐源一致（兑现 0.5.101 CHANGELOG 承诺）');
+{
+  const fsx = await import('node:fs');
+  const cap = fsx.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'sort-capability.js'), 'utf8');
+  const client = fsx.readFileSync(path.resolve(import.meta.dirname, '..', 'client.js'), 'utf8');
+  const parse = (text, re) => {
+    const m = text.match(re);
+    if (!m) return null;
+    const out = {};
+    for (const line of m[1].split('\n')) {
+      const e = /^\s*["']?([\w.-]+)["']?:\s*\[([^\]]*)\]/.exec(line);
+      if (e) out[e[1]] = e[2].split(',').map((x) => x.trim().replace(/["']/g, '')).filter(Boolean);
+    }
+    return out;
+  };
+  const srv = parse(cap, /const CAPABILITIES = \{([\s\S]*?)\n\};/);
+  const cli = parse(client, /const CAPS = \{([\s\S]*?)\n\s*\};/);
+  check('两表都能解析', !!srv && !!cli);
+  if (srv && cli) {
+    const keys = [...new Set([...Object.keys(srv), ...Object.keys(cli)])];
+    const drift = keys.filter((k) => (srv[k] || []).join(',') !== (cli[k] || []).join(','));
+    check('每个源的排序键列表逐字一致', drift.length === 0, drift.map((k) => k + ': srv=' + (srv[k] || []).join('|') + ' cli=' + (cli[k] || []).join('|')).join(' ; '));
+    check('源集合大小一致', Object.keys(srv).length === Object.keys(cli).length, Object.keys(srv).length + ' vs ' + Object.keys(cli).length);
+  }
+}
+
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed, ' + skipped + ' skipped');
 process.exit(failed ? 1 : 0);
