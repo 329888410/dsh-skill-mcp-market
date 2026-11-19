@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.112
+
+- **修复 0.5.111 自身的 CI 红灯：Test 2b 的桩用了 Windows 特定非法路径，在 ubuntu 上反而可创建**
+  - CI 归因（门运行器的 annotation 直接点名）：`test-safe-temp.mjs :: FAIL 返回值是绝对路径  Q:\nonexistent-vol-dsh/.dsh/tmp`。生产代码没问题，问题在测试自己。
+  - 机制：ubuntu 上反斜杠是**合法文件名字符**，`Q:\nonexistent-vol-dsh` 不是非法盘符而是一个相对路径；`mkdirSync(..., {recursive:true})` 于是真的建出了它，兜底成功返回该相对路径 → `path.isAbsolute` 判 false。Windows 上同一字面量才真的创建失败。
+  - 修法：桩的非法 HOME 按平台选 —— Windows 用不存在盘符，POSIX 用 `/dev/null/impossible`（字符设备下创建子目录必然 ENOTDIR，创建一定失败）。
+  - 另加防假绿断言「确实走到最后退路」：若桩在某平台没生效、兜底意外成功，前面三条断言照样会全过而测不到靶心；现在必须证明返回值来自 `cwd/.dsh-tmp`。
+  - 全门套件扫描确认这是唯一的无守卫 Windows 字面量（其余平台相关代码都有 `process.platform` 判定）。
 ## 0.5.111
 
 - **修复 safeTempDir 的潜伏缺陷：三条分支的 mkdirSync 从未生效（`fs` 命名空间从未导入，ReferenceError 被同行 catch 静默吞掉）**

@@ -30,11 +30,17 @@ console.log('Test 2b: 三条分支全失败时，兜底不得返回不存在的�
   // tmpdir 导入替换成返回破损值的桩、并把 dshHome 指向非法卷，写进临时副本再 import ——
   // 三条分支同时失败，确定性地逼出兜底，跨平台一致。
   const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'home.js'), 'utf8');
+  // 非法 HOME 必须按平台选：Windows 用不存在的盘符（mkdirSync 失败），
+  // POSIX 用 /dev/null/impossible（字符设备下创建子目录必然 ENOTDIR）。
+  // 教训：0.5.111 的 CI 红灯正是本测试自己造成的 —— ubuntu 上 'Q:\\nonexistent-vol-dsh'
+  // 的反斜杠是合法文件名字符，mkdirSync 真的建出了这个**相对**目录，兜底于是成功返回，
+  // isAbsolute 判假。桩路径必须让「创建失败」在每个平台上都成立。
+  const badHome = process.platform === 'win32' ? 'Q:\\\\nonexistent-vol-dsh' : '/dev/null/impossible';
   const stubbed = src
     .replace('import { tmpdir } from "node:os";', 'const tmpdir = () => "undefined\\\\temp";')
-    .replace('import { homedir } from "node:os";', 'const homedir = () => "Q:\\\\nonexistent-vol-dsh";');
+    .replace('import { homedir } from "node:os";', 'const homedir = () => ' + JSON.stringify(badHome) + ';');
   check('桩替换到位（tmpdir 与 homedir 都被替换）',
-    /const tmpdir = \(\) =>/.test(stubbed) && /const homedir = \(\) =>/.test(stubbed),
+    /const tmpdir = \(\) =>/.test(stubbed) && new RegExp('const homedir = \\(\\) =>').test(stubbed),
     'home.js 的导入行格式变了，请同步本测试');
   const tmp = fs.mkdtempSync(path.join(safeTempDir(), 'dsh-stub-'));
   const file = path.join(tmp, 'home-stub.mjs');
@@ -50,6 +56,10 @@ console.log('Test 2b: 三条分支全失败时，兜底不得返回不存在的�
   check('兜底绝不返回不可创建的目录', ok === true, d);
   check('返回值是绝对路径', path.isAbsolute(d), d);
   check('不含 undefined 字面量', !/[\\/]undefined[\\/]|[\\/]undefined$/.test(d), d);
+  // 防假绿：必须证明三条分支真的全失败、走到了最后退路（cwd/.dsh-tmp）。
+  // 若桩没生效（例如某平台上非法路径其实可创建），兜底会成功返回，
+  // 上面三条断言照样全过 —— 那就测不到本次修复的靶心。
+  check('确实走到最后退路（证明三条分支全失败）', d.endsWith('.dsh-tmp') || d.endsWith(String.fromCharCode(46) + 'dsh-tmp'), d);
   fs.rmSync(tmp, { recursive: true, force: true });
   // 桩走到最后退路时会在 cwd 创建 .dsh-tmp（HOME/温度全不可用的病态场景）——
   // 测试必须自清理，否则每次跑套件都在仓库根目录留一个空目录。
