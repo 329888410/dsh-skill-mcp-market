@@ -1546,10 +1546,12 @@ export async function apply(ctx, config = {}) {
           return { results: [{ ok: false, serverName: definition.serverName, missing, error: "missing environment values" }] };
         }
         const installedNow = await mcp.install(definition);
-        const probe = await mcp.probe(definition.serverName, 8000);
+        // 只做 2s 快速确认；未发布工具时返回 pending，由面板轮询 mcp.list 出实时进度
+        const probe = await mcp.probe(definition.serverName, 2000);
         return {
           results: [{
             ok: Boolean(probe.ok),
+            pending: probe.pending === true,
             serverName: definition.serverName,
             toolCount: (probe.tools || []).length,
             tools: probe.tools || [],

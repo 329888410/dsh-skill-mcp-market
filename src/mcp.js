@@ -278,10 +278,13 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     const saved = await save(next);
     unmount(name);
     await mount({ ...saved, filePath: saved.filePath, dir: saved.dir });
-    const probe = await probeTools(name, 8000);
-    return { ok: probe.ok, serverName: name, tools: probe.tools, error: probe.ok ? undefined : probe.error };
+    const probe = await probeTools(name, 2000);
+    return { ok: probe.ok, pending: probe.pending === true, serverName: name, tools: probe.tools, error: probe.ok ? undefined : probe.error };
   }
 
+  // 探针预算只是「快速确认」，不是终局判定：npx 型连接器首次运行要先下载包
+  // （实测 playwright-mcp 冷启动 ~94s），8s 内没工具不代表失败。返回 pending=true
+  // 让调用方继续轮询 mcp.list，由实时状态做最终结论。
   async function probeTools(name, timeoutMs) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
@@ -289,7 +292,14 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
       if (tools.length > 0) return { ok: true, tools };
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    return { ok: false, tools: [], error: "已保存并重连，但服务器还没有发布工具" };
+    return {
+      ok: false,
+      pending: true,
+      tools: [],
+      error: mounted.has(name)
+        ? "已挂载，服务器还在启动中（npx 型连接器首次运行需先下载依赖）"
+        : "MCP 客户端未挂载",
+    };
   }
 
   async function probe(serverName, timeoutMs = 8000) {
@@ -305,9 +315,10 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
       serverName: name,
       tools: [],
       waitedMs: Date.now() - started,
+      pending: true,
       error: mounted.has(name)
-        ? "the MCP client is mounted but has not published tools yet; check the server command, network, and DSH logs"
-        : "the MCP client is not mounted",
+        ? "已挂载，服务器还在启动中（npx 型连接器首次运行需先下载依赖）"
+        : "MCP 客户端未挂载",
     };
   }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.103
+
+- **修复 MCP 安装的假阴性告警，改为实时启动进度（TDD 17 项）**
+  - 根因（playwright-mcp 实测）：installedAt 08:29:55 → npx 缓存写入 08:31:29，冷启动下载约 94s；而探针预算写死 8000ms，必然在包下载完成前宣布「未连上」，连接器随后自行挂载 25 个工具。
+  - 旧文案 `the MCP client is mounted but has not published tools yet; check the server command, network, and DSH logs` 把用户推向检查命令/网络的错误方向；现改为中文「已挂载，服务器还在启动中（npx 型连接器首次运行需先下载依赖）」。
+  - 探针语义升级：`probe()` / `probeTools()` 超时不再等于终局失败，返回 `pending:true` 交调用方继续确认；面板 `mcp.install` 阻塞从 8s 降到 2s（热缓存秒回），CLI 通道仍可显式传 `probeTimeoutMs`。
+  - 客户端新增 `waitForTools()`：拿到 pending 后每 600ms 轮询 `mcp.list` 的实时工具表，最长 120s，渲染确定性进度条（已等待秒数 + 百分比），终局由轮询结果判定；单次轮询失败自动等下一轮，定时器必清理。
+  - 前提已实测：RPC 分发真并发（慢查询进行中 settings.get 仅 4ms 返回），故轮询不会排队等待安装请求。
+  - 零新增 op（复用 mcp.list/mcp.install/mcp.update，test-rpc-surface 与 test-install-progress 双重锁定）。
+
 ## 0.5.102
 
 - **「已安装」面板更名为「管理」，拆分为 SKILL 技能 / MCP 连接器 两个子页签（TDD，27 项新测试）**

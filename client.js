@@ -235,6 +235,8 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState('');
       const [error, setError] = useState('');
       const [notice, setNotice] = useState('');
+      // MCP 安装/保存的实时进度：{ serverName, waitedMs, tools } | null
+      const [installProgress, setInstallProgress] = useState(null);
       const [skills, setSkills] = useState([]);
       const [mcps, setMcps] = useState([]);
       const [installed, setInstalled] = useState([]);
@@ -617,7 +619,18 @@ window.__ModuleLoader__.load({
               url: draft.url,
             },
           });
-          setNotice(result.ok ? `已保存并重连 ${detail.slug}，${result.tools.length} 个工具` : `已保存，但未连上：${result.error || ''}`);
+          if (result.ok) {
+            setNotice(`已保存并重连 ${detail.slug}，${result.tools.length} 个工具`);
+          } else if (result.pending) {
+            // 已挂载但还在启动：轮询实时工具表给终局（npx 冷启动可远超 8s）
+            setNotice(`已保存 ${detail.slug}，正在重启连接器…`);
+            const final = await waitForTools(detail.slug);
+            if (final.ok) setNotice(`已保存并重连 ${detail.slug}，${final.toolCount} 个工具（等待 ${Math.round(final.waitedMs / 1000)}s）`);
+            else if (final.timedOut) setNotice(`${detail.slug} 超过 ${Math.round(MAX_PROGRESS_MS / 1000)}s 仍未发布工具，请稍后刷新查看`);
+            else setNotice(`已保存，但未连上：${result.error || ''}`);
+          } else {
+            setNotice(`已保存，但未连上：${result.error || ''}`);
+          }
           setDetail(null);
           await loadInstalled();
         } catch (e) {
@@ -731,6 +744,36 @@ window.__ModuleLoader__.load({
         }
       };
 
+      // 探针只是快速确认；真正的终局由轮询 mcp.list 的实时工具表给出。
+      // RPC 分发实测并发（慢查询进行中 settings.get 仍 4ms 返回），轮询不会排队等待。
+      const MAX_PROGRESS_MS = 120000;
+      const POLL_INTERVAL_MS = 600;
+      const waitForTools = (serverName) => new Promise((resolve) => {
+        const started = Date.now();
+        const timer = setInterval(async () => {
+          const waitedMs = Date.now() - started;
+          setInstallProgress({ serverName, waitedMs, tools: 0 });
+          if (waitedMs > MAX_PROGRESS_MS) {
+            clearInterval(timer);
+            setInstallProgress(null);
+            resolve({ ok: false, timedOut: true, waitedMs });
+            return;
+          }
+          try {
+            const d = await call('mcp.list', {});
+            const hit = (d.items || []).find((x) => x.serverName === serverName);
+            const tools = (hit && hit.tools) || [];
+            if (tools.length > 0) {
+              clearInterval(timer);
+              setInstallProgress(null);
+              resolve({ ok: true, toolCount: tools.length, waitedMs });
+            } else {
+              setInstallProgress({ serverName, waitedMs, tools: 0 });
+            }
+          } catch { /* 单次轮询失败就等下一轮 */ }
+        }, POLL_INTERVAL_MS);
+      });
+
       const doInstallMcp = async (item, envValues) => {
         setBusy(`install:${item.slug}`);
         setError('');
@@ -745,6 +788,13 @@ window.__ModuleLoader__.load({
           } else if (r.ok) {
             setEnvPrompt(null);
             setNotice(`已连接 ${r.serverName}，新增 ${r.toolCount} 个工具${(r.envWritten || []).length ? `（已写入环境变量 ${r.envWritten.join(', ')}）` : ''}`);
+          } else if (r.pending) {
+            // 已挂载但还没发布工具：npx 首次运行要先下载依赖，继续轮询出真实结果
+            setNotice(`已保存 ${r.serverName}，正在启动…（${r.error || '首次运行需下载依赖'}）`);
+            const final = await waitForTools(r.serverName);
+            if (final.ok) setNotice(`已连接 ${r.serverName}，新增 ${final.toolCount} 个工具（等待 ${Math.round(final.waitedMs / 1000)}s）`);
+            else if (final.timedOut) setNotice(`${r.serverName} 超过 ${Math.round(MAX_PROGRESS_MS / 1000)}s 仍未发布工具，请稍后在「管理 → MCP 连接器」刷新查看，或检查启动命令`);
+            else setNotice(`已保存 ${r.serverName}，但未连上：${r.error || ''}`);
           } else {
             setNotice(`已保存 ${r.serverName}，但未连上：${r.error || ''}`);
           }
@@ -1323,6 +1373,23 @@ window.__ModuleLoader__.load({
               : null,
             error ? h('div', { style: S.err }, error) : null,
             notice ? h('div', { style: S.status }, notice) : null,
+            installProgress
+              ? h('div', { style: { ...S.row, gap: 10, alignItems: 'center' } },
+                  h('span', { style: { fontSize: 12, whiteSpace: 'nowrap' } },
+                    `${installProgress.serverName} 正在启动，已等待 ${Math.round(installProgress.waitedMs / 1000)}s`),
+                  // 确定性进度条：按已等待时长 / 预算推进（npx 首次运行需下载依赖，故给足预算）
+                  h('div', { style: { flex: 1, height: 6, borderRadius: 3, background: 'var(--dsh-surface-raised, #eaeef2)', overflow: 'hidden' } },
+                    h('div', {
+                      style: {
+                        height: '100%',
+                        width: Math.min(100, Math.round((installProgress.waitedMs / MAX_PROGRESS_MS) * 100)) + '%',
+                        background: 'var(--dsh-accent, #3b82f6)',
+                        transition: 'width 0.6s linear',
+                      },
+                    })),
+                  h('span', { style: { fontSize: 11, opacity: 0.65, whiteSpace: 'nowrap' } },
+                    `${Math.min(100, Math.round((installProgress.waitedMs / MAX_PROGRESS_MS) * 100))}% / 上限 ${Math.round(MAX_PROGRESS_MS / 1000)}s`))
+              : null,
             envPrompt
               ? h('div', { style: S.card },
                   h('div', { style: S.title }, `${envPrompt.slug} 需要环境变量`),
