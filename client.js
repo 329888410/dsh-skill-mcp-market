@@ -91,6 +91,17 @@ window.__ModuleLoader__.load({
         cursor: 'pointer',
         color: 'inherit',
       }),
+      // 管理面板内的二级页签：下划线式，与主 tab 的药丸形成层级差
+      subTab: (active) => ({
+        padding: '4px 10px',
+        border: '0',
+        borderBottom: '2px solid ' + (active ? 'var(--dsh-accent, #3b82f6)' : 'transparent'),
+        background: 'transparent',
+        fontWeight: active ? 700 : 500,
+        fontSize: 12,
+        cursor: 'pointer',
+        color: 'inherit',
+      }),
       body: {
         flex: 1,
         overflow: 'auto',
@@ -209,6 +220,17 @@ window.__ModuleLoader__.load({
     }
     function Market(props) {
       const [tab, setTab] = useState('skills');
+      // 管理面板子页签：记忆上次停留页（参照 dsh-skill-mcp-panel 的 last-tab 模式），
+      // localStorage 不可用时静默退化为技能页。
+      const MANAGE_TAB_KEY = 'dsh-market:manage-tab';
+      const readManageTab = () => {
+        try { return localStorage.getItem(MANAGE_TAB_KEY) === 'mcp' ? 'mcp' : 'skill'; } catch { return 'skill'; }
+      };
+      const [manageTab, setManageTab] = useState(readManageTab);
+      const switchManageTab = (next) => {
+        setManageTab(next);
+        try { localStorage.setItem(MANAGE_TAB_KEY, next); } catch { /* 隐私模式等场景静默 */ }
+      };
       const [query, setQuery] = useState('');
       const [busy, setBusy] = useState('');
       const [error, setError] = useState('');
@@ -243,7 +265,9 @@ window.__ModuleLoader__.load({
       const [category, setCategory] = useState('all');
       const [pageJump, setPageJump] = useState('');
       const [mcpPageJump, setMcpPageJump] = useState('');
-      const [installedFilter, setInstalledFilter] = useState('');
+      // 过滤词按子页签拆开：旧实现一个词同时过滤技能与 MCP，切页签互相污染
+      const [manageSkillFilter, setManageSkillFilter] = useState('');
+      const [manageMcpFilter, setManageMcpFilter] = useState('');
       const [collapsedGroups, setCollapsedGroups] = useState(() => {
       // searchSkills/searchMcps 的 useCallback 依赖是 []，直接读 state 会闭包住首帧的值；
 
@@ -516,10 +540,12 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         setError('');
         setNotice('');
+        // 旧实现：任何 tab 都 loadInstalled + else 分支必打一次 MCP 市场搜索（3-40s 的无谓查询）。
+        // 收紧为按需：installed 数据只在管理页需要；searchMcps 只在 MCP 市场页需要。
         loadSettings().catch((e) => setError(String(e.message || e)));
-        loadInstalled().catch((e) => setError(String(e.message || e)));
+        if (tab === 'manage') loadInstalled().catch((e) => setError(String(e.message || e)));
         if (tab === 'skills') searchSkills('', { source, size });
-        else searchMcps('', { size });
+        else if (tab === 'mcp') searchMcps('', { size });
       }, [tab, loadSettings, loadInstalled, searchSkills, searchMcps]);
 
       // 排序变了 → 重新拉取当前 tab 的数据（不同排序返回不同顺序/结果）
@@ -821,6 +847,14 @@ window.__ModuleLoader__.load({
           setTrashBusy('');
         }
       };
+      // 回收站是技能侧的常驻区块：进入管理-技能子页签自动拉一次（失败不打扰用户，
+      // 手动「读取回收站」按钮仍在原位兜底）。必须定义在 loadTrash 之后——
+      // useEffect 的依赖数组在渲染时求值，提前引用 const 会触发 TDZ（实测白屏）。
+      useEffect(() => {
+        if (tab === 'manage' && manageTab === 'skill' && trashList === null && !trashBusy) {
+          loadTrash().catch(() => {});
+        }
+      }, [tab, manageTab, trashList, trashBusy, loadTrash]);
 
       const restoreTrashEntry = async (entry) => {
         setTrashBusy(`restore:${entry.path}`);
@@ -1006,12 +1040,14 @@ window.__ModuleLoader__.load({
       };
       const categoryLabel = (code) => CATEGORY_LABELS[code] || code;
       const disabledSet = new Set(((settings && settings.settings && settings.settings.disabledSkills) || []).map((x) => String(x).toLowerCase()));
-      const filterText = installedFilter.trim().toLowerCase();
-      const filteredInstalled = filterText
-        ? installed.filter((i) => (i.name || i.slug || '').toLowerCase().includes(filterText) || (i.description || '').toLowerCase().includes(filterText))
+      // 两个子页签各用各的过滤词
+      const skillFilterText = manageSkillFilter.trim().toLowerCase();
+      const mcpFilterText = manageMcpFilter.trim().toLowerCase();
+      const filteredInstalled = skillFilterText
+        ? installed.filter((i) => (i.name || i.slug || '').toLowerCase().includes(skillFilterText) || (i.description || '').toLowerCase().includes(skillFilterText))
         : installed;
-      const filteredMounted = filterText
-        ? mounted.filter((i) => (i.title || i.serverName || '').toLowerCase().includes(filterText) || (i.description || '').toLowerCase().includes(filterText))
+      const filteredMounted = mcpFilterText
+        ? mounted.filter((i) => (i.title || i.serverName || '').toLowerCase().includes(mcpFilterText) || (i.description || '').toLowerCase().includes(mcpFilterText))
         : mounted;
       // 单张已装技能卡片（分组渲染时复用）
       const renderInstalledCard = (item) => {
@@ -1272,7 +1308,7 @@ window.__ModuleLoader__.load({
           h('div', { style: S.head },
             h('button', { style: S.tab(tab === 'skills'), onClick: () => setTab('skills') }, 'SKILL 技能'),
             h('button', { style: S.tab(tab === 'mcp'), onClick: () => setTab('mcp') }, 'MCP 连接器'),
-            h('button', { style: S.tab(false), onClick: () => setTab('installed') }, '已安装'),
+            h('button', { style: S.tab(tab === 'manage'), onClick: () => setTab('manage') }, '管理'),
             h('button', { style: S.tab(tab === 'settings'), onClick: () => setTab('settings') }, '路径'),
             h('div', { style: { flex: 1 } }),
             h('span', { style: S.status }, busy ? `处理中：${busy}` : '')),
@@ -1409,7 +1445,13 @@ window.__ModuleLoader__.load({
                        tab === 'skills' ? pageJump : mcpPageJump,
                        tab === 'skills' ? setPageJump : setMcpPageJump, tab === 'skills' ? false : true))))
               : null,
-            tab === 'installed' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, flex: 1, width: '100%', alignItems: 'stretch' } },
+            tab === 'manage' ? h('div', { 'data-manage-tab': manageTab, style: { display: 'flex', flexDirection: 'column', gap: 12, flex: 1, width: '100%', alignItems: 'stretch' } },
+              // 二级页签：技能侧（上传/列表/回收站）与 MCP 侧各自成页；
+              // 记忆上次停留页，aria 属性兼作 test-manage-panel 的结构锚点。
+              h('div', { style: { ...S.row, gap: 2, borderBottom: '1px solid var(--dsh-border, #d0d7de)', marginBottom: 2 }, role: 'tablist' },
+                h('button', { type: 'button', style: S.subTab(manageTab === 'skill'), 'aria-selected': manageTab === 'skill', onClick: () => switchManageTab('skill') }, `SKILL 技能 (${installed.length})`),
+                h('button', { type: 'button', style: S.subTab(manageTab === 'mcp'), 'aria-selected': manageTab === 'mcp', onClick: () => switchManageTab('mcp') }, `MCP 连接器 (${mounted.length})`)),
+              manageTab === 'skill' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, width: '100%' } },
               // 上传技能：拖拽文件夹或点按钮选文件夹。宿主 @deepseek-ai 包没有 showOpenDialog
               // 暴露给插件，面板是 web 页面，用 <input type=file webkitdirectory>（Chromium
               // 弹原生文件夹对话框，效果与 workbuddy 相同）。拖拽事件里 dataTransfer.files
@@ -1574,16 +1616,14 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, '或拖拽技能文件夹到这里（根目录或一级子目录必须含 SKILL.md）'),
-              filterText
-                ? h('div', { style: S.row },
-                    h('input', {
-                      style: { ...S.input, flex: 1 },
-                      placeholder: '搜索已安装的技能 / MCP（名称、描述）',
-                      value: installedFilter,
-                      onChange: (e) => setInstalledFilter(e.target.value),
-                    }),
-                    h('button', { style: S.btn(), onClick: () => setInstalledFilter('') }, '清除'))
-                : null,
+              h('div', { style: S.row },
+                h('input', {
+                  style: { ...S.input, flex: 1 },
+                  placeholder: '搜索已装技能（名称、描述）',
+                  value: manageSkillFilter,
+                  onChange: (e) => setManageSkillFilter(e.target.value),
+                }),
+                manageSkillFilter ? h('button', { style: S.btn(), onClick: () => setManageSkillFilter('') }, '清除') : null),
               h('div', { style: { ...S.title, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `已装技能（${filteredInstalled.length}）`,
                 nativeDirs.length > 0
@@ -1608,6 +1648,31 @@ window.__ModuleLoader__.load({
                 h('span', { style: { ...S.status, fontSize: 12, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `（可在资源管理器中直接查看 / 编辑技能文件）`)),
               h('div', { style: S.grid }, installedSkills),
               h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
+                `回收站（${trashList ? trashList.items.length : '?'}）`,
+                h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: trashBusy === 'list', onClick: loadTrash }, trashBusy === 'list' ? '读取中…' : '读取回收站'),
+                trashList && trashList.items.length > 0
+                  ? h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: trashBusy === 'empty', onClick: emptyTrashAll }, trashBusy === 'empty' ? '清空中…' : '清空回收站')
+                  : null,
+                h('span', { style: { ...S.status, fontSize: 12 } }, '删除即移入 .trash，可随时恢复')),
+              trashList && trashList.items.length > 0
+                ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 240, overflow: 'auto', width: '100%' } },
+                    trashList.items.map((item) => h('div', { key: item.path, style: { ...S.row, fontSize: 11, gap: 8 } },
+                      h('span', { style: { fontWeight: 600, minWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.slug),
+                      h('span', { style: { opacity: 0.7 } }, item.kind === 'file' ? '单文件' : '目录'),
+                      h('span', { style: { flex: '1', opacity: 0.6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.stamp || item.name),
+                      h('button', { style: { ...S.btn(), padding: '0 6px', height: 22, fontSize: 11 }, disabled: trashBusy === `restore:${item.path}`, onClick: () => restoreTrashEntry(item) }, trashBusy === `restore:${item.path}` ? '恢复中…' : '恢复'))))
+                : (trashList ? h('div', { style: S.status }, '回收站是空的。') : null),
+              )) : null,
+              manageTab === 'mcp' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, width: '100%' } },
+              h('div', { style: S.row },
+                h('input', {
+                  style: { ...S.input, flex: 1 },
+                  placeholder: '搜索已装 MCP（名称、描述）',
+                  value: manageMcpFilter,
+                  onChange: (e) => setManageMcpFilter(e.target.value),
+                }),
+                manageMcpFilter ? h('button', { style: S.btn(), onClick: () => setManageMcpFilter('') }, '清除') : null),
+              h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `已装 MCP（${filteredMounted.length}）`,
                 h('button', {
                   style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
@@ -1626,22 +1691,8 @@ window.__ModuleLoader__.load({
                   },
                 }, '打开目录')),
               h('div', { style: S.grid }, installedMcps),
-              h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
-                `回收站（${trashList ? trashList.items.length : '?'}）`,
-                h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: trashBusy === 'list', onClick: loadTrash }, trashBusy === 'list' ? '读取中…' : '读取回收站'),
-                trashList && trashList.items.length > 0
-                  ? h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: trashBusy === 'empty', onClick: emptyTrashAll }, trashBusy === 'empty' ? '清空中…' : '清空回收站')
-                  : null,
-                h('span', { style: { ...S.status, fontSize: 12 } }, '删除即移入 .trash，可随时恢复')),
-              trashList && trashList.items.length > 0
-                ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 240, overflow: 'auto', width: '100%' } },
-                    trashList.items.map((item) => h('div', { key: item.path, style: { ...S.row, fontSize: 11, gap: 8 } },
-                      h('span', { style: { fontWeight: 600, minWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.slug),
-                      h('span', { style: { opacity: 0.7 } }, item.kind === 'file' ? '单文件' : '目录'),
-                      h('span', { style: { flex: '1', opacity: 0.6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.stamp || item.name),
-                      h('button', { style: { ...S.btn(), padding: '0 6px', height: 22, fontSize: 11 }, disabled: trashBusy === `restore:${item.path}`, onClick: () => restoreTrashEntry(item) }, trashBusy === `restore:${item.path}` ? '恢复中…' : '恢复'))))
-                : (trashList ? h('div', { style: S.status }, '回收站是空的。') : null),
-            )) : null,
+              ) : null,
+            ) : null,
             tab === 'settings' && settings
               ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
                   h('div', { style: S.status }, '每行一个目录；技能列表的第一个目录是安装目标。保存后立即重挂，无需重启。'),

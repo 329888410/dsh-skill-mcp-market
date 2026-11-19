@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.102
+
+- **「已安装」面板更名为「管理」，拆分为 SKILL 技能 / MCP 连接器 两个子页签（TDD，27 项新测试）**
+  - 信息架构参照 Fishquito7/dsh-skill-mcp-panel 的 CombinedPanelPage 模式（src/client.ts:5680-5909）：子页签选择记 localStorage（键 dsh-market:manage-tab，读写 try/catch 静默退化）、容器 data-manage-tab、页签行 role=tablist + aria-selected。
+  - 归属划分（用户拍板）：上传区与回收站只进 SKILL 子页签；MCP 子页签纯净（搜索 + 已装 MCP 卡片）。回收站改为进入技能子页签自动拉取，手动按钮保留兜底。
+  - 修复既有缺陷 1：「已安装」按钮选中态写死 S.tab(false)，进入后永不高亮 → 现为 S.tab(tab === 'manage')。
+  - 修复既有缺陷 2：tab effect 的 else 分支使进入任何非技能 tab 都打一次 MCP 市场搜索（3-40s）→ 收紧为仅 tab === 'mcp'；installed 数据仅进管理页时加载。
+  - 修复既有缺陷 3：installedFilter 一个词同时过滤技能与 MCP，互相污染 → 拆为 manageSkillFilter / manageMcpFilter。
+  - 实测教训（已加 TDZ 回归锁）：useEffect 依赖数组在渲染时求值，把引用 loadTrash 的 effect 放在其 const 定义之前会抛 ReferenceError 白屏——静态测试抓不到，profile 实装才暴露。
+  - 零新增服务端 op（test-manage-panel Test 6 锁定）；UI 证据 docs/evidence/（before + after-skill + after-mcp）。
+
 ## 0.5.101
 
 - **按官方原生能力扩展排序：新增 按星级 / 最新 / 最近更新 / 热门（TDD 197 项）**
