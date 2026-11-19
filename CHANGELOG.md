@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.105
+
+- **修复 0.5.104 引入的面板白屏（TDZ 回归），并新增全文件 TDZ 静态锁**
+  - 根因：MCP 回收站的自动加载 effect 插在了 `const loadMcpTrash` 之前。`useEffect` 的依赖数组在渲染时求值，提前引用 const 触发 `ReferenceError: Cannot access 'loadMcpTrash' before initialization`，整个面板 slot 白屏（live 控制台复现，截图为证）。
+  - 这是同一类错误的第二次发生：0.5.102 曾为技能侧加过顺序断言，但「逐条点名」的测试没覆盖 0.5.104 新增的那个 effect。
+  - 新增 `test/test-tdz-order.mjs`：扫描 client.js 全部依赖数组，断言每个标识符的最早声明行早于引用行（支持解构，忽略同名 helper 局部变量遮蔽——lint 自身的 `size` 误报已实测修正）；另附两个回收站 effect 的顺序锚点。
+  - 修复本身：effect 移至 `loadMcpTrash` 定义之后；离线回归 208 项全绿。
+
 ## 0.5.104
 
 - **MCP 子页签新增连接器回收站（列出 / 恢复 / 清空），TDD 29 项真实文件系统往返测试**

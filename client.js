@@ -909,13 +909,6 @@ window.__ModuleLoader__.load({
         }
       }, [tab, manageTab, trashList, trashBusy, loadTrash]);
 
-      // MCP 子页签同理：首次进入自动拉一次回收站（定义在 loadMcpTrash 之后，避免 TDZ）
-      useEffect(() => {
-        if (tab === 'manage' && manageTab === 'mcp' && mcpTrashList === null && !mcpTrashBusy) {
-          loadMcpTrash().catch(() => {});
-        }
-      }, [tab, manageTab, mcpTrashList, mcpTrashBusy, loadMcpTrash]);
-
       const loadMcpTrash = async () => {
         setMcpTrashBusy('list');
         setError('');
@@ -929,6 +922,13 @@ window.__ModuleLoader__.load({
           setMcpTrashBusy('');
         }
       };
+      // MCP 子页签同理：首次进入自动拉一次回收站。必须定义在 loadMcpTrash 之后——
+      // useEffect 的依赖数组在渲染时求值，提前引用 const 会触发 TDZ 白屏（0.5.104 实测回归）。
+      useEffect(() => {
+        if (tab === 'manage' && manageTab === 'mcp' && mcpTrashList === null && !mcpTrashBusy) {
+          loadMcpTrash().catch(() => {});
+        }
+      }, [tab, manageTab, mcpTrashList, mcpTrashBusy, loadMcpTrash]);
 
       const restoreMcpTrashEntry = async (entry) => {
         setMcpTrashBusy(`restore:${entry.path}`);
