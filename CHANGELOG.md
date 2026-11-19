@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.5.100
+## 0.5.101
 
-- **按官方原生能力扩展排序：新增 按星级 / 最新 / 最近更新 / 热门（TDD 145 项）**
+- **按官方原生能力扩展排序：新增 按星级 / 最新 / 最近更新 / 热门（TDD 197 项）**
   - 实测能力矩阵（同批次对比法 + 字段单调性双重验证，避开下载量计数器漂移造成的假阳性）：
     - clawhub browse `sort=`：downloads / stars / newest / updated / trending / name 均为服务端全盘排序；**installs 不单调**（数据质量差）→ 用 downloads 代替
     - skillhub `sortBy=`：downloads / stars / updated 服务端全盘；`sortBy=name` 上游返回空数组（bug）→ name 本地排
