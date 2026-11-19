@@ -5,8 +5,8 @@
 // 3) searchSkills 必须接受并真正应用 category（切页前过滤）。
 // 4) 客户端切源时必须重置分类，避免陈旧条件导致空列表。
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 import { listInstalledSkills } from '../src/skills.js';
 import { searchSkills, makeCache } from '../src/sources.js';
 
@@ -29,7 +29,7 @@ console.log('Test 1: TrustTools 传上游的参数名必须是 search');
 console.log('');
 console.log('Test 2: listInstalledSkills 能识别 @owner/slug 两层目录');
 {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-inst-'));
+  const root = fs.mkdtempSync(path.join(safeTempDir(), 'dsh-inst-'));
   const mk = (rel) => {
     const d = path.join(root, rel);
     fs.mkdirSync(d, { recursive: true });
@@ -50,7 +50,7 @@ console.log('Test 3: searchSkills 接受 category 并在切页前过滤');
 {
   const sig = fs.readFileSync(path.join(W, 'src/sources.js'), 'utf8');
   check('signature declares category', /export async function searchSkills\(\{[^}]*category/.test(sig));
-  const cache = makeCache(path.join(os.tmpdir(), 'dsh-cat-' + Date.now()));
+  const cache = makeCache(path.join(safeTempDir(), 'dsh-cat-' + Date.now()));
   let r1, r2, err = null;
   try {
     r1 = await searchSkills({ query: '', source: 'lobehub', page: 1, pageSize: 24, cache });

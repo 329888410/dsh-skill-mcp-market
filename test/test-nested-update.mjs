@@ -8,14 +8,14 @@
 // 面板表现：用户编辑一个 clawhub CLI 装的技能并保存 → 报错，改不动。
 // 修法：复用同文件已有的 resolveSkillFile（它已处理一层与两层两种布局）。
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 import { listInstalledSkills, updateSkill, toggleSkillFile, uninstallSkill } from '../src/skills.js';
 
 let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + String(d).slice(0, 90) + ']' : '')); } };
 
-const root = fs.mkdtempSync(path.join(os.tmpdir() || '.', 'dsh-nested-upd-'));
+const root = fs.mkdtempSync(path.join(safeTempDir(), 'dsh-nested-upd-'));
 const slugDir = path.join(root, '@acme', 'my-tool');
 fs.mkdirSync(slugDir, { recursive: true });
 const file = path.join(slugDir, 'SKILL.md');
@@ -58,7 +58,7 @@ console.log('Test 2: 更新真实写入嵌套文件，且保留其它 frontmatte
 console.log('');
 console.log('Test 3: 一层布局（回归保护，不得被改坏）');
 {
-  const flat = fs.mkdtempSync(path.join(os.tmpdir() || '.', 'dsh-flat-upd-'));
+  const flat = fs.mkdtempSync(path.join(safeTempDir(), 'dsh-flat-upd-'));
   const fdir = path.join(flat, 'flat-skill');
   fs.mkdirSync(fdir, { recursive: true });
   fs.writeFileSync(path.join(fdir, 'SKILL.md'), '---\nname: flat-skill\ndescription: d1\n---\n\nb1\n', 'utf8');

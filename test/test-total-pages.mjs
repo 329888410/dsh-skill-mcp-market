@@ -5,8 +5,8 @@
 // 规格：单源若不知道自己有多少页 → totalPages 必须是 undefined，客户端走窗口式 +「可继续加载」；
 //       只有真正耗尽游标（done=true）才给精确值。
 import { searchSkills, makeCache } from '../src/sources.js';
-import os from 'node:os';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 
 let passed = 0, failed = 0;
 const check = (name, cond, detail = '') => {
@@ -14,7 +14,7 @@ const check = (name, cond, detail = '') => {
   else { failed++; console.log('  \u2717 ' + name + (detail ? '  ' + detail : '')); }
 };
 
-const dir = path.join(os.tmpdir(), 'dsh-tp-' + Date.now());
+const dir = path.join(safeTempDir(), 'dsh-tp-' + Date.now());
 const cache = makeCache(dir);
 const fakeRows = Array.from({ length: 600 }, (_, i) => ({
   id: 'fake-' + i, slug: 'fake-skill-' + i, displayName: 'Fake ' + i,

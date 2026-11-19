@@ -8,6 +8,7 @@
 //   回收站与上传区只属于技能侧（Q2 已拍板：SKILL 子页签底部）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 import { execSync } from 'node:child_process';
 
 const W = path.resolve(import.meta.dirname, '..');

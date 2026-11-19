@@ -3,15 +3,15 @@
 // 症状：catalogue 已 28800 条仍 done=false，warm-up 永不终止 → 内存与 API 无界增长。
 import { warmClawHubCatalog } from '../src/extra-sources.js';
 import { makeCache } from '../src/sources.js';
-import os from 'node:os';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 
 let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  \u2713 ' + n); } else { failed++; console.log('  \u2717 ' + n + (d ? '  ' + d : '')); } };
 
 console.log('\nTest 1: warmClawHubCatalog respects a row budget and terminates');
 {
-  const dir = path.join(os.tmpdir(), 'dsh-wb-' + Date.now());
+  const dir = path.join(safeTempDir(), 'dsh-wb-' + Date.now());
   const cache = makeCache(dir);
   const t0 = Date.now();
   const r = await warmClawHubCatalog(cache, { budget: 300 });
@@ -24,7 +24,7 @@ console.log('\nTest 1: warmClawHubCatalog respects a row budget and terminates')
 
 console.log('\nTest 2: default budget is finite (not 99999 / not infinite)');
 {
-  const dir = path.join(os.tmpdir(), 'dsh-wb2-' + Date.now());
+  const dir = path.join(safeTempDir(), 'dsh-wb2-' + Date.now());
   const cache = makeCache(dir);
   const t0 = Date.now();
   const r = await warmClawHubCatalog(cache);

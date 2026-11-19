@@ -9,14 +9,14 @@
 // 恢复必须直接 reconcile()，不能只靠目录 watcher：watch(dir) 非 recursive，
 //   .trash 内的变化不触发回调，且宿主重启时 startWatching 尚未安装。
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 import { createMcpManager } from '../src/mcp.js';
 
 let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + d.slice(0, 90) + ']' : '')); } };
 
-const root = fs.mkdtempSync(path.join(os.tmpdir() || '.', 'dsh-mcp-trash-'));
+const root = fs.mkdtempSync(path.join(safeTempDir(), 'dsh-mcp-trash-'));
 const mcpDir = path.join(root, 'mcp');
 fs.mkdirSync(mcpDir, { recursive: true });
 // stub ctx: mount must not reach the real shipped client

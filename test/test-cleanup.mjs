@@ -7,6 +7,7 @@
 //   P2-6 CHANGELOG 不得宣称已被推翻的「安全修复」
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 
 let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + d : '')); } };

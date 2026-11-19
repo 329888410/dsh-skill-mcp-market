@@ -9,6 +9,7 @@
 //   → 客户端轮询 mcp.list 能拿到实时进度，无需服务端长阻塞。
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 import { execSync } from 'node:child_process';
 
 const W = path.resolve(import.meta.dirname, '..');

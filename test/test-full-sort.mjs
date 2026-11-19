@@ -15,8 +15,8 @@
 //   skills.sh  search API 返回已按 installs 降序（4431266,14,14…）；sitemap browse 无 installs。
 import { searchSkills, makeCache, supportsSort } from '../src/sources.js';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 
 let passed = 0, failed = 0, skipped = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + d + ']' : '')); } };
@@ -50,7 +50,7 @@ console.log('Test 1: supportsSort 与上游真实能力一致');
   check('skillsmp NOT installCount (CLI 无此 sort)', supportsSort('skillsmp', 'installCount') === false);
 }
 
-const cache = makeCache(path.join(os.tmpdir(), 'dsh-fs-' + Date.now()));
+const cache = makeCache(path.join(safeTempDir(), 'dsh-fs-' + Date.now()));
 const sz = 12;
 const vals = (items) => items.map((i) => Number(i.installs) || 0);
 
@@ -118,11 +118,11 @@ console.log('Test 5: skillsmp 按安装数必须被诚实拒绝（保持上游�
 console.log('');
 console.log('Test 6: 缓存中毒回归——同 cache 先 name 后默认，默认必须不被污染');
 {
-  const c2 = makeCache(path.join(os.tmpdir(), 'dsh-fs2-' + Date.now()));
+  const c2 = makeCache(path.join(safeTempDir(), 'dsh-fs2-' + Date.now()));
   try {
     const sorted = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: c2, sort: 'name' });
     const plain = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: c2, sort: '' });
-    const fresh = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: makeCache(path.join(os.tmpdir(), 'dsh-fs3-' + Date.now())), sort: '' });
+    const fresh = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: makeCache(path.join(safeTempDir(), 'dsh-fs3-' + Date.now())), sort: '' });
     check('plain == fresh（未被 name 排序污染）', plain.items.map((i) => i.id).join('|') === fresh.items.map((i) => i.id).join('|'));
   } catch (e) { skip('poisoning test（skillsmp 不可达）'); }
 }
@@ -134,7 +134,7 @@ console.log('Test 7: 聚合模式（source=all）的排序不得被能力降级�
   // 聚合时 dispatcher 必须仍对合并结果排序（各 handler 也应收到 sort 以便取各自的头部条目）。
   let merged = null, plain = null, errored = false;
   try {
-    const c4 = makeCache(path.join(os.tmpdir(), 'dsh-agg-' + Date.now()));
+    const c4 = makeCache(path.join(safeTempDir(), 'dsh-agg-' + Date.now()));
     merged = await searchSkills({ query: 'agent', source: 'all', page: 1, pageSize: 24, cache: c4, sort: 'installCount' });
     plain = await searchSkills({ query: 'agent', source: 'all', page: 1, pageSize: 24, cache: c4, sort: '' });
   } catch (e) { errored = true; }

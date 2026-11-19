@@ -17,9 +17,10 @@ function opt(name, dflt) {
 }
 
 const fs0 = await import('node:fs');
-const os0 = await import('node:os');
+
 const path0 = await import('node:path');
-const cacheDir = fs0.mkdtempSync(path0.join(os0.tmpdir(), 'dsh-market-test-'));
+const { safeTempDir } = await import('../src/home.js');
+const cacheDir = fs0.mkdtempSync(path0.join(safeTempDir(), 'dsh-market-test-'));
 const cache = makeCache(cacheDir);
 console.error('[test] cache dir:', cacheDir);
 const query = opt('--query', '');

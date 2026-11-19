@@ -4,6 +4,7 @@
 //       LOAD_MORE_CAPABLE 只有定义、没有任何引用；而 skill_market_search 工具默认仍是 all 聚合（活的）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 
 const W = path.resolve(import.meta.dirname, '..');
 const read = (f) => fs.readFileSync(path.join(W, f), 'utf8');

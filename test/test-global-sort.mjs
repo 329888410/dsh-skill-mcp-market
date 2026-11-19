@@ -4,8 +4,8 @@
 //   1) 确定性契约（始终跑）：用合成的有序全集验证「窗口 -> 排序 -> 切页」的切片契约。
 //   2) 真实上游（可选）：能连上就验证真源；连不上跳过，绝不让 CI 因网络失败。
 import { searchSkills, makeCache } from '../src/sources.js';
-import os from 'node:os';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 
 let passed = 0, failed = 0, skipped = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + d : '')); } };
@@ -32,7 +32,7 @@ console.log('Test 1: 窗口 -> 全局排序 -> 切页 契约（合成数据）')
 console.log('');
 console.log('Test 2: 真实上游跨页单调（连不上则跳过）');
 {
-  const dir = path.join(os.tmpdir(), 'dsh-gs-' + Date.now());
+  const dir = path.join(safeTempDir(), 'dsh-gs-' + Date.now());
   const cache = makeCache(dir);
   const SOURCES = ['trusttools', 'skillhub', 'modelscope'];
   const SIZE = 12;

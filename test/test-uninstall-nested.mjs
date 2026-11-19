@@ -3,15 +3,15 @@
 // 症状：lgd-skill-review 装在 <root>/@owner/<slug>/，uninstallSkill 只试 <root>/<slug>，
 // 于是 RPC 返回 { ok:false, removed: [] }，面板点卸载没有任何反应。
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 import { listInstalledSkills, uninstallSkill, skillFileToggleable, toggleSkillFile } from '../src/skills.js';
 import { readSkillBody } from '../src/provider.js';
 
 let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + d : '')); } };
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-uninst-'));
+const root = fs.mkdtempSync(path.join(safeTempDir(), 'dsh-uninst-'));
 const trash = path.join(root, '.trash');
 const mk = (rel) => {
   const d = path.join(root, rel);

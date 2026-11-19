@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.108
+
+- **测试基础设施加固：消除 agent 进程空 env 下的垃圾目录生成，修复两处恒红/间歇红的陈旧套件**
+  - 事故根因：agent 工具进程环境变量为空，`os.tmpdir()` 返回相对串 `'undefined\\temp'`，`path.join` 后按 cwd 解析 → 在用户工作区造出 13 处无关垃圾目录树。生产代码 `src/home.js` 的 `safeTempDir()` 早已过滤此值并兜底 `~/.dsh/tmp`，但 21 个测试文件直接用了 `os.tmpdir()`。本版将全部测试统一迁移到 `safeTempDir()`。
+  - 新增 `test-temp-hygiene.mjs`（7 项）：门禁三件事——test/ 目录禁止裸调用 `tmpdir()`；所有 `mkdtempSync` 父目录必须来自 `safeTempDir()`；`safeTempDir()` 返回绝对真实路径。连带 `test-sources.mjs` 动态 import 也一并修复。
+  - `test-warmup.mjs` 重写为 0.5.91 诚实契约（12 项）：原 3 条断言（`done===true`、`totalPages` 为数字、`rows>2000`）与 warm 循环 `while (!done && rows.length < budget)`、budget=1200、page=50 的数学事实**互斥**——rows 上限≈1250 永不超 2000，done 在 28k 无界流下恒 false，totalPages 按 0.5.91 设计在 done=false 时为 `undefined`。该套件自 18 个版本前就恒红，因不在 CI 门内无人发现。现锁真实形态：有界预算 + 无界游标 → `totalPages === undefined` 是**正确答案**。
+  - `test-sort-honesty.mjs` 稳定性判据修复：原循环只比「相邻两次 total 相等」判目录就绪，但 highlights 只有 ~48 行、可连续假稳定，而全量 sitemap（~2 万行）恰在两查询之间落盘 → 间歇假红（2026-11-19 实测 1 次；上游同负载延迟 3.3s→38s 跨越等待窗口）。改为「数据集规模 ≥1000 行且连续两次相等」，否则跳过本项而非误报。
 ## 0.5.107
 
 - **修复 clawhub 两层布局技能「看得见、删得掉、改不了」；兑现 P0-2 清理死函数（TDD 10 项）**

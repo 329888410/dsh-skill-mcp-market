@@ -4,6 +4,7 @@
 // 结果「修复会话」按钮整个失效（实测连 dryRun 预演都被拒）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 
 let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + d : '')); } };

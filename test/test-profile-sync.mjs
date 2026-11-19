@@ -3,6 +3,7 @@
 // 症状回归：profile 的 client.js 停留在 0.5.66 之前 → 吸顶头部丢失 + 分页器无省略号。
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 import { execSync } from 'node:child_process';
 
 const W = path.resolve(import.meta.dirname, '..');

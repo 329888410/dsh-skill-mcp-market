@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // test-security.mjs — TDD: 落盘路径与外部环境写入必须拒绝不可信输入。
 import path from 'node:path';
-import os from 'node:os';
+import { safeTempDir } from '../src/home.js';
 import { kebab } from '../src/frontmatter.js';
 
 let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + d : '')); } };
 
 // 平台中立：CI 跑在 ubuntu-latest，不能有盘符
-const ROOT = path.join(os.tmpdir(), 'dsh-skills-root');
+const ROOT = path.join(safeTempDir(), 'dsh-skills-root');
 const skills = await import('../src/skills.js');
 const { safeInstallSlug, resolveInsideRoot } = skills;
 const resolveInside = (root, slug) => resolveInsideRoot(root, safeInstallSlug(slug));

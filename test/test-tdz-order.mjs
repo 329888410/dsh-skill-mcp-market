@@ -8,6 +8,7 @@
 // 所以这里扫描全文件所有依赖数组，不再逐条点名。
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 
 const W = path.resolve(import.meta.dirname, '..');
 const src = fs.readFileSync(path.join(W, 'client.js'), 'utf8');

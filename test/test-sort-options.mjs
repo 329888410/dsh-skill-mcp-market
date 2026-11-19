@@ -10,8 +10,8 @@
 //   browse.sh: 一次全量479→本地排 installCount/updated/name
 //   skillsmp: API被Cloudflare挡→诚实不支持任何 sort
 import { searchSkills, makeCache, supportsSort } from '../src/sources.js';
-import os from 'node:os';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 
 let passed = 0, failed = 0, skipped = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + d + ']' : '')); } };
@@ -36,7 +36,7 @@ console.log('Test 1: supportsSort 能力矩阵与实测一致');
   check('skillsmp nothing', supportsSort('skillsmp', 'stars') === false && supportsSort('skillsmp', 'installCount') === false);
 }
 
-const cache = makeCache(path.join(os.tmpdir(), 'dsh-so-' + Date.now()));
+const cache = makeCache(path.join(safeTempDir(), 'dsh-so-' + Date.now()));
 const sz = 12;
 const desc = (arr) => arr.every((v, k, a) => k === 0 || a[k - 1] >= v);
 

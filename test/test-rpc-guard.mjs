@@ -4,6 +4,7 @@
 // 本套件不再测试任何「来源判定」，只测真正生效的 confirm 契约。
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeTempDir } from '../src/home.js';
 import { makeRpcGuard, DESTRUCTIVE_OPS } from '../src/rpc-guard.js';
 
 let passed = 0, failed = 0;
