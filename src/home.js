@@ -1,5 +1,5 @@
 // Path resolution and persisted market settings.
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -45,17 +45,22 @@ export function safeTempDir() {
   const envCandidates = [process.env.DSH_TMP, process.env.TEMP, process.env.TMP, process.env.TMPDIR]
     .filter((v) => typeof v === "string" && v.trim() && !v.includes("undefined"));
   for (const c of envCandidates) {
-    try { fs.mkdirSync(c, { recursive: true }); if (fs.existsSync(c)) return c; } catch { /* next */ }
+    try { mkdirSync(c, { recursive: true }); if (existsSync(c)) return c; } catch { /* next */ }
   }
   const std = tmpdir();
   const stdLooksReal = std && !std.includes("undefined") && !std.includes("null");
   if (stdLooksReal) {
-    try { fs.mkdirSync(std, { recursive: true }); if (fs.existsSync(std)) return std; } catch { /* next */ }
+    try { mkdirSync(std, { recursive: true }); if (existsSync(std)) return std; } catch { /* next */ }
   }
   // 最后兜底：用户目录下的 .dsh/tmp（一定可写，因为整个插件就装在 ~/.dsh 下）
   const fallback = join(dshHome(), "tmp");
-  try { fs.mkdirSync(fallback, { recursive: true }); } catch { /* ignore */ }
-  return fallback;
+  // 兜底也必须真的创建出来；创建失败（如 HOME 指向非法卷）时绝不能 return 一个不存在的目录，
+  // 否则调用方的 mkdtempSync 会 ENOENT —— 这正是 0.5.110 CI 红灯的确切成因。
+  try { mkdirSync(fallback, { recursive: true }); if (existsSync(fallback)) return fallback; } catch { /* fall through */ }
+  // 最后一条真实退路：当前工作目录下的 .dsh-tmp（进程能跑就说明 cwd 可解析）。
+  const last = join(process.cwd(), ".dsh-tmp");
+  try { mkdirSync(last, { recursive: true }); } catch { /* last resort also failed */ }
+  return last;
 }
 
 export function defaultSettings() {

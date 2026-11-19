@@ -19,6 +19,43 @@ console.log('Test 1: safeTempDir 返回真实可用的目录');
 }
 
 console.log('');
+console.log('Test 2b: 三条分支全失败时，兜底不得返回不存在的目录（0.5.110 CI 实测回归）');
+{
+  // 0.5.110 CI：ubuntu runner 报 mkdtemp '/home/runner/.dsh/tmp/dsh-mcp-trash-XXXXXX' ENOENT。
+  // 根因：safeTempDir 的最后兜底 join(dshHome(),'tmp') 在 mkdirSync 失败后**仍然 return**，
+  // 违反 Test 1 锁定的「存在或可创建」契约。5 个套件直接 mkdtempSync(safeTempDir()) 全部暴露。
+  //
+  // 为什么用源码桩而不是改 env：Windows 上 os.tmpdir() 由系统目录决定，env 掐不掉它；
+  // 覆盖 SystemRoot 会让子进程 node 直接起不来（实测 exit 134）。所以把 home.js 的
+  // tmpdir 导入替换成返回破损值的桩、并把 dshHome 指向非法卷，写进临时副本再 import ——
+  // 三条分支同时失败，确定性地逼出兜底，跨平台一致。
+  const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'home.js'), 'utf8');
+  const stubbed = src
+    .replace('import { tmpdir } from "node:os";', 'const tmpdir = () => "undefined\\\\temp";')
+    .replace('import { homedir } from "node:os";', 'const homedir = () => "Q:\\\\nonexistent-vol-dsh";');
+  check('桩替换到位（tmpdir 与 homedir 都被替换）',
+    /const tmpdir = \(\) =>/.test(stubbed) && /const homedir = \(\) =>/.test(stubbed),
+    'home.js 的导入行格式变了，请同步本测试');
+  const tmp = fs.mkdtempSync(path.join(safeTempDir(), 'dsh-stub-'));
+  const file = path.join(tmp, 'home-stub.mjs');
+  fs.writeFileSync(file, stubbed, 'utf8');
+  const { safeTempDir: stubbedSafeTempDir } = await import('file:///' + file.split(String.fromCharCode(92)).join('/'));
+  const saved = {};
+  for (const k of ['DSH_TMP', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'DSH_HOME']) { saved[k] = process.env[k]; delete process.env[k]; }
+  let d;
+  try { d = stubbedSafeTempDir(); } finally {
+    for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  }
+  let ok = false; try { fs.mkdirSync(d, { recursive: true }); ok = fs.existsSync(d); } catch { ok = false; }
+  check('兜底绝不返回不可创建的目录', ok === true, d);
+  check('返回值是绝对路径', path.isAbsolute(d), d);
+  check('不含 undefined 字面量', !/[\\/]undefined[\\/]|[\\/]undefined$/.test(d), d);
+  fs.rmSync(tmp, { recursive: true, force: true });
+  // 桩走到最后退路时会在 cwd 创建 .dsh-tmp（HOME/温度全不可用的病态场景）——
+  // 测试必须自清理，否则每次跑套件都在仓库根目录留一个空目录。
+  try { fs.rmSync(path.resolve(import.meta.dirname, '..', '.dsh-tmp'), { recursive: true, force: true }); } catch {}
+}
+console.log('');
 console.log('Test 2: 模拟空 TEMP 环境仍返回合法路径');
 {
   // 复刻退化条件：TEMP/TMPDIR/TMP 全空时 os.tmpdir() 在 Windows 上拼 'undefined\\temp'

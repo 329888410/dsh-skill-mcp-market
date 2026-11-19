@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.111
+
+- **修复 safeTempDir 的潜伏缺陷：三条分支的 mkdirSync 从未生效（`fs` 命名空间从未导入，ReferenceError 被同行 catch 静默吞掉）**
+  - 0.5.110 的 CI 红灯由新门运行器精确归因到 `test-mcp-trash.mjs`：`ENOENT: mkdtemp '/home/runner/.dsh/tmp/dsh-mcp-trash-XXXXXX'`。根因不在测试，而在 `src/home.js`：它只 `import { existsSync }`，却调用 `fs.mkdirSync(...)` —— 该 ReferenceError 被同一行的 `catch { /* next */ }` / `catch { /* ignore */ }` 吞掉，所以 safeTempDir 的三条分支**从未真正创建过目录**，只是碰巧返回一个已存在的路径。
+  - 本地为何一直绿：`~/.dsh/tmp` 早被其它路径创建过，兜底返回值恰好存在。CI 的 ubuntu runner 上它不存在 → safeTempDir 直接返回不存在的目录 → 5 个直接 `mkdtempSync(safeTempDir())` 的套件（mcp-trash / nested-update / uninstall-nested / func-fixes / safe-temp）全部 ENOENT。
+  - 修复：改为正确导入 `mkdirSync`，三条分支都真的创建；兜底创建失败时**绝不返回不存在的目录**，退到 cwd 下的 `.dsh-tmp`（进程能跑说明 cwd 可解析）。生产调用点全部是 `join(safeTempDir(), …)` / `mkdtemp(safeTempDir(), …)`，只把它当父目录用，不依赖具体位置，故语义变化方向是纯改善（缓存目录 `dsh-market-cache` 从此能真正落盘，而非静默退化为纯内存）。
+  - 测试：`test-safe-temp.mjs` 新增 Test 2b——用源码桩把 `tmpdir`/`homedir` 替换成返回破损值的实现，三条分支同时失败，确定性逼出兜底（RED 时 `FAIL 兜底绝不返回不可创建的目录`，修复后 19/19 绿）。桩触发的 `.dsh-tmp` 由测试自清理，并加进 `.gitignore`。
+  - 为什么用源码桩而非改 env：Windows 上 `os.tmpdir()` 由系统目录决定、env 掐不掉；覆盖 `SystemRoot` 会让子进程 node 直接起不来（实测 exit 134）。第一版 2b 因此假绿，已纠正。
 ## 0.5.110
 
 - **修复 0.5.109 的 CI 红灯根因（上游不可达被误判为排序回归）；CI 门改为可自归因的运行器；四处 SKIP 守卫按 degraded 精确化**
