@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.110
+
+- **修复 0.5.109 的 CI 红灯根因（上游不可达被误判为排序回归）；CI 门改为可自归因的运行器；四处 SKIP 守卫按 degraded 精确化**
+  - 根因（子智能体审计 + 黑洞实测确认）：`searchSkills` 从不抛错——单源失败被吞进 `degraded[]` 并返回空 items（sources.js:541-543），所以各套件 `try { … } catch { skip() }` 的 catch 是**死代码**。GitHub Actions 出口 IP 常被 clawhub CDN / 中国三站限流 → 空 items 落到 `check(…, false)` → CI 判 FAIL，而本地全绿。0.5.109 的 publish 正是被这个假红拦住（npm 上至今无 0.5.109）。
+  - CI 门运行器 `test/run-gate.mjs`：取代 `a && b && c` 链（&& 链只给「Process completed with exit code 1」，而 Actions 日志下载端点需仓库 admin，实测 403 → 红灯无法归因）。新运行器逐套件打印 `[GATE] name PASS/FAIL/TIMEOUT/NO-SUMMARY`，并对红灯额外输出 `::error::`（GitHub 转成公开 check-run annotation）。判定优先级：被杀=TIMEOUT、非零退出=FAIL、退出0但无 summary 行=NO-SUMMARY（红，杜绝「没跑完=放行」）、有 summary 且 0 failed=PASS。空套件清单 exit 2（绝不放行空闸门）。逐套件超时 420s（CI 冷 npx 缓存会额外等 30–180s，300s 会误判 TIMEOUT）。
+  - 四处 SKIP 守卫精确化（子智能体 review 指出 `!items.length` 是「上游不可达」的超集，会掩盖「handler 回归返回空」这类真红）：
+    - `test-full-sort` Test 3 三处、`test-sort-options` Test 4：收紧为 `!items.length && degraded.length` 才 SKIP——空 items 但无 degraded = 回归，仍 FAIL。
+    - `test-warm-budget` Test 1/2：用 `!rows.length && !done` 区分——`done=false` 才是连续 3 错被吞（不可达，SKIP）；`done=true && rows=0` 是上游正常应答但首批即空（真数据症状，保留 FAIL）。
+    - `test-total-pages` Test 3：直接回退我加的 SKIP——黑洞实测 skills.sh 完全不可达时 items=0 但 totalPages=1（handler 抛错走 :541，pagesUnknown 从未置位，:582 算出 pages=max(0,0,1)=1），原断言本就 PASS，加 SKIP 只削弱检测力、零收益。
+  - `test-full-sort` browse.sh 断言加固（上一提交已含，此处随门运行器一并验证）：空响应 SKIP、有数据校验覆盖率过半，不再把上游偶发空判成回归。
+  - 验证：断网模拟三套件正确 SKIP；正常网络四套件全绿且不误 SKIP 正常数据路径；profile-sync 在无 profile 目录的 CI 模拟下 exit 0（skip）；离线 16 套件 273 项全绿。
+  - 附带发现（非本轮引入，登记待办）：`test-full-sort` Test 5(:130)/Test 6(:142) 在不可达时空数组相等 → 空转绿灯（漏报，非误红），属同类但方向相反，留待后续用 degraded 判据加固。
 ## 0.5.109
 
 - **排序 UI 诚实化（P1-5）+ 三处服务端排序线路缺陷修复；能力表成为单源**

@@ -78,19 +78,31 @@ console.log('Test 3: 绝对值下限——证明排的是全量而不是窗口')
 {
   try {
     const r = await searchSkills({ query: '', source: 'trusttools', page: 1, pageSize: sz, cache, sort: 'installCount' });
-    const top = Math.max(...vals(r.items));
-    // 窗口法实测首条 ~63,307；服务端全盘首条 446,924。取 200,000 为分界。
-    check('trusttools 首条 > 200,000（全盘）而非 ~63k（窗口）', top > 200000, 'got ' + top);
+    // searchSkills 从不抛错：单源失败被吞进 degraded 并返回空 items（sources.js:541-543）。
+    // 只有「空 items 且该源确实在 degraded[] 里」才是上游不可达 → SKIP；
+    // 空 items 但无 degraded = handler 回归（本应 FAIL），不能放过。
+    if (!r.items.length && r.degraded && r.degraded.length) { skip('trusttools absolute（上游不可达，见 degraded）'); }
+    else {
+      const top = Math.max(...vals(r.items));
+      // 窗口法实测首条 ~63,307；服务端全盘首条 446,924。取 200,000 为分界。
+      check('trusttools 首条 > 200,000（全盘）而非 ~63k（窗口）', top > 200000, 'got ' + top);
+    }
   } catch (e) { skip('trusttools absolute (' + String(e.message).slice(0, 30) + ')'); }
   try {
     const r = await searchSkills({ query: '', source: 'skillhub', page: 1, pageSize: sz, cache, sort: 'installCount' });
-    const top = Math.max(...vals(r.items));
-    check('skillhub 首条 > 1,000,000（全盘 dev-god≈12M）', top > 1000000, 'got ' + top);
+    if (!r.items.length && r.degraded && r.degraded.length) { skip('skillhub absolute（上游不可达，见 degraded）'); }
+    else {
+      const top = Math.max(...vals(r.items));
+      check('skillhub 首条 > 1,000,000（全盘 dev-god≈12M）', top > 1000000, 'got ' + top);
+    }
   } catch (e) { skip('skillhub absolute'); }
   try {
     const r = await searchSkills({ query: '', source: 'clawhub', page: 1, pageSize: sz, cache, sort: 'installCount' });
-    const top = Math.max(...vals(r.items));
-    check('clawhub 首条 > 400,000（全盘 self-improving≈494k）', top > 400000, 'got ' + top);
+    if (!r.items.length && r.degraded && r.degraded.length) { skip('clawhub absolute（上游不可达，见 degraded）'); }
+    else {
+      const top = Math.max(...vals(r.items));
+      check('clawhub 首条 > 400,000（全盘 self-improving≈494k）', top > 400000, 'got ' + top);
+    }
   } catch (e) { skip('clawhub absolute'); }
 }
 

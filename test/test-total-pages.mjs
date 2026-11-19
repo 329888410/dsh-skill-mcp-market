@@ -8,11 +8,12 @@ import { searchSkills, makeCache } from '../src/sources.js';
 import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
 
-let passed = 0, failed = 0;
+let passed = 0, failed = 0, skipped = 0;
 const check = (name, cond, detail = '') => {
   if (cond) { passed++; console.log('  \u2713 ' + name); }
   else { failed++; console.log('  \u2717 ' + name + (detail ? '  ' + detail : '')); }
 };
+const skip = (n, d = '') => { skipped++; console.log('  SKIP ' + n + (d ? '  [' + String(d).slice(0, 70) + ']' : '')); };
 
 const dir = path.join(safeTempDir(), 'dsh-tp-' + Date.now());
 const cache = makeCache(dir);
@@ -42,6 +43,9 @@ console.log('\nTest 2: 游标耗尽 → 精确总页数');
 console.log('\nTest 3: 有精确总数的源照常报数（skills.sh sitemap）');
 {
   const r = await searchSkills({ query: '', source: 'skills.sh', page: 1, pageSize: 24, cache });
+  // 不加空响应 SKIP：黑洞实测 skills.sh 完全不可达时 items=0 但 totalPages=1（handler 抛错
+  // 走 sources.js:541，pagesUnknown 从未置位，:582 算出 pages=max(0,0,1)=1），原断言本就 PASS。
+  // 加 SKIP 只会把「handler 回归返回空、totalPages 变 undefined」这类真红误判成 SKIP。
   check('skills.sh totalPages is a number', typeof r.totalPages === 'number' && r.totalPages >= 1, 'got ' + r.totalPages);
 }
 
@@ -51,5 +55,5 @@ console.log('\nTest 4: 聚合 all 模式仍给出可用的 pages');
   check('pages positive or unknown', r.pages === undefined || r.pages >= 1, 'got ' + r.pages);
 }
 
-console.log('\n' + passed + ' passed, ' + failed + ' failed');
+console.log('\n' + passed + ' passed, ' + failed + ' failed, ' + skipped + ' skipped');
 process.exit(failed ? 1 : 0);

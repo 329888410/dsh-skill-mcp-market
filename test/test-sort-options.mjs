@@ -72,9 +72,13 @@ console.log('Test 4: 卡片必须带上新排序字段（排序键与展示同�
 {
   try {
     const r = await searchSkills({ query: '', source: 'clawhub', page: 1, pageSize: 5, cache, sort: 'stars' });
-    const it = r.items[0] || {};
-    check('clawhub item.stars present', typeof it.stars === 'number', String(it.stars));
-    check('clawhub item.createdAt present', typeof it.createdAt === 'number', String(it.createdAt));
+    // 同 test-full-sort Test 3：只有 degraded 里的空 items 才是上游不可达；无 degraded 的空 = 回归。
+    if (!r.items.length && r.degraded && r.degraded.length) skip('clawhub fields（上游不可达，见 degraded）');
+    else {
+      const it = r.items[0] || {};
+      check('clawhub item.stars present', typeof it.stars === 'number', String(it.stars));
+      check('clawhub item.createdAt present', typeof it.createdAt === 'number', String(it.createdAt));
+    }
   } catch (e) { skip('fields'); }
 }
 
