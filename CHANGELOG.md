@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.109
+
+- **排序 UI 诚实化（P1-5）+ 三处服务端排序线路缺陷修复；能力表成为单源**
+  - 面板不再有内联 CAPS 副本：能力由 `settings.get` 的 `sortCapabilities` 下发（每源两套 browse/search 分支），面板 `capsFor()` 按「当前有无查询词」选分支。0.5.101 承诺「由测试锁定两处一致」→ 本版直接消灭副本，漂移在结构上不可能发生。零新增 op（新增 op 会同时打破三份白名单测试并扩大攻击面，且 settings.get 本就每次切 tab 触发）。
+  - 修「选了没反应」四连环（每一环单独存在都会复现同一现象）：
+    1. `effSort` 曾把 stars/newest/updated/trending 全塌成 `''`，服务端收不到排序意图；现原样透传选中键（default 仍映射 installCount，保持既有默认视图）。
+    2. `orderedSkills` 曾在服务端排好的页上再按 installs 本地重排；现加 `serverSorted` 守卫（default/installCount/name 仍可本地排）。
+    3. 切源不重置 sort，导致下发新源不支持的键；现按新源能力回落 default，并同步 `prevSortRef` 避免 sort effect 重复搜索。
+    4. MCP registry 面板给「按名称」，但 registry 分支根本不读 options.sort，那只是当前页重排、翻页即变回 —— 经用户拍板（严格诚实）删除该假选项，registry 只给「默认顺序」。
+  - 服务端线路事实修复（子智能体执行、lead 独立验收）：
+    - lobehub skills：矩阵键 `newest/updated` 被原样透传给 CLI，而上游词表是 `createdAt/updatedAt` → CLI exit1 Bad Request → 整源进 degraded、贡献 0 条（不是「没排序」，是源消失）。现加映射，实测 6 键全部返回结果；本地兜底 getter 同步激活（原先 :449-450 是死代码），stars 兜底改读 `ratingCount ?? ratingAvg`（上游行内根本没有 stars 字段，实测 24/24 行）。
+    - modelscope：`sortMode` 只放行 installCount/name，stars/newest/updated 落单页分支 → 只排当前页、跨页错乱。现扩到矩阵全 5 键走全量拉取；代价（首次慢 30–90s、缓存 6h、翻页只是切片）写进注释。
+    - 顺带抓到并修掉一个 off-by-one：全量拉取循环 `pg < pagesNeeded` 少拉最后一页（total=12000 时只取 10000/12000，差 11%），与它自己的 5000×9 注释矛盾；改 `pg <= pagesNeeded`，用 page=1000 边界判别验证。
+    - clawhub search：getter 按实测字段补齐（updated=顶层 updatedAt、newest=native.skill.createdAt、stars=native.skill.stats.stars；原先只有 installCount/name 两个 getter，其余键静默不排）。trending 在 search 行**无任何字段支撑**（score 是相关性分桶、rolling60DayInstalls 稀疏近零）→ 不造假 getter，改为路径感知：能力表在带查询时不给 trending。
+    - clawhub/modelscope 卡片此前不暴露星级与时间戳（排了但界面无法核验）→ 补展示字段，读法与 getter 同源。
+  - 测试：新增 `test-sort-server.mjs`（43 项，实网部分 DSH_LIVE_SORT=1 才跑，CI 不红）与 `test-sort-ui-honesty.mjs`（34 项，锁四连环与能力下发）；`test-sort-options` Test 6 从「比对两份表」重写为「证明副本不存在」。CI 门 24 套件、380 项全绿。
+  - `test-full-sort` 的 browse.sh 断言加固：旧断言只问「至少一条 >0」，把上游偶发空响应判成本仓库失败（本轮实测 1 次假红，同刻上游 479 条/459 条非零）。改为空响应 SKIP、有数据校验覆盖率过半。
 ## 0.5.108
 
 - **测试基础设施加固：消除 agent 进程空 env 下的垃圾目录生成，修复两处恒红/间歇红的陈旧套件**

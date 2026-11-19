@@ -90,30 +90,25 @@ console.log('Test 5: UI 下拉必须提供新排序项');
 }
 
 console.log('');
-console.log('Test 6: client 的 CAPS 表与 src/sort-capability.js 逐源一致（兑现 0.5.101 CHANGELOG 承诺）');
+console.log('Test 6: 面板不得再有内联能力副本；能力一律来自服务端 settings.get（0.5.101 承诺的最终形态）');
 {
-  const fsx = await import('node:fs');
-  const cap = fsx.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'sort-capability.js'), 'utf8');
-  const client = fsx.readFileSync(path.resolve(import.meta.dirname, '..', 'client.js'), 'utf8');
-  const parse = (text, re) => {
-    const m = text.match(re);
-    if (!m) return null;
-    const out = {};
-    for (const line of m[1].split('\n')) {
-      const e = /^\s*["']?([\w.-]+)["']?:\s*\[([^\]]*)\]/.exec(line);
-      if (e) out[e[1]] = e[2].split(',').map((x) => x.trim().replace(/["']/g, '')).filter(Boolean);
-    }
-    return out;
-  };
-  const srv = parse(cap, /const CAPABILITIES = \{([\s\S]*?)\n\};/);
-  const cli = parse(client, /const CAPS = \{([\s\S]*?)\n\s*\};/);
-  check('两表都能解析', !!srv && !!cli);
-  if (srv && cli) {
-    const keys = [...new Set([...Object.keys(srv), ...Object.keys(cli)])];
-    const drift = keys.filter((k) => (srv[k] || []).join(',') !== (cli[k] || []).join(','));
-    check('每个源的排序键列表逐字一致', drift.length === 0, drift.map((k) => k + ': srv=' + (srv[k] || []).join('|') + ' cli=' + (cli[k] || []).join('|')).join(' ; '));
-    check('源集合大小一致', Object.keys(srv).length === Object.keys(cli).length, Object.keys(srv).length + ' vs ' + Object.keys(cli).length);
-  }
+  // 0.5.101 用测试锁定「client CAPS ≡ server CAPABILITIES」；0.5.109 直接把副本删掉：
+  // 面板渲染 sortOptions(sortCaps.skills[source])，sortCaps 来自 settings.get 的 sortCapabilities，
+  // 单一事实源是 src/sort-capability.js —— 副本不存在了，漂移也不可能发生。
+  const fs2 = await import('node:fs');
+  const c = fs2.readFileSync(path.resolve(import.meta.dirname, '..', 'client.js'), 'utf8');
+  const cap = fs2.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'sort-capability.js'), 'utf8');
+  check('client.js 无内联 CAPS 表', !/const CAPS = \{/.test(c), '副本会与服务端矩阵漂移');
+  check('client.js 读 sortCaps.skills', /sortCaps\.skills\s*\?\s*sortCaps\.skills\[source\]/.test(c));
+  check('client.js 读 sortCaps.mcp', /sortCaps\.mcp\s*\?\s*sortCaps\.mcp\[mcpSource\]/.test(c));
+  check('loadSettings 落地能力表', /setSortCaps\(d\.sortCapabilities/.test(c));
+  check('能力未到只给默认顺序（不猜键）', /function sortOptions\(caps, defaultLabel\)[\s\S]{0,220}if \(caps\)/.test(c));
+  check('服务端 settings.get 附带能力表', /sortCapabilities/.test(fs2.readFileSync(path.resolve(import.meta.dirname, '..', 'index.js'), 'utf8')));
+  // 服务端矩阵仍是实测事实源：抽查 4 个易漂移项
+  check('matrix: clawhub trending', /"clawhub": \[[^\]]*trending/.test(cap));
+  check('matrix: skillsmp name-only', /"skillsmp": \["name"\]/.test(cap));
+  check('matrix: trusttools no stars', /"trusttools": \[(?!.*stars)[^\]]*\]/.test(cap));
+  check('matrix: registry MCP 为空', /"registry": \[\]/.test(cap));
 }
 
 console.log('');

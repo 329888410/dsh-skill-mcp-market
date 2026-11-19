@@ -94,11 +94,12 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
       downloads: Number(raw.downloads ?? raw.stats?.downloads ?? raw.metrics?.rolling60DayInstalls ?? 0) || 0,
       installs: Number(raw.downloads ?? raw.stats?.downloads ?? raw.metrics?.rolling60DayInstalls ?? 0) || 0,
       category: raw.category || "",
-      // 新排序键的展示字段：stars/newest/updated 来自 browse 的 stats 与时间戳，
-      // search 端点没有这些字段时保持 0（排序由上游负责，卡片不显示即可）。
-      stars: Number(raw.stars ?? raw.stats?.stars ?? 0) || 0,
-      createdAt: Number(raw.createdAt) || 0,
-      updatedAt: Number(raw.updatedAt) || 0,
+      // 排序键的展示字段必须与 getter **同源**，否则「排了但看起来没排」：
+      // browse 行量在 stats.*；search 行（实测 21 键）stars/createdAt 只挂在 native.skill.* 里，
+      // 顶层没有 stars/createdAt → 旧写法在 search 卡片上恒为 0，按 stars 排完看起来像没排。
+      stars: Number(raw.stars ?? raw.stats?.stars ?? raw.native?.skill?.stats?.stars) || 0,
+      createdAt: Number(raw.createdAt ?? raw.native?.skill?.createdAt) || 0,
+      updatedAt: Number(raw.updatedAt ?? raw.metrics?.updatedAt) || 0,
       installable: Boolean(reference),
       // 搜索端点无分页；浏览端点支持 limit。让客户端据此决定「加载更多」是否可用
       paged: mode === "browse",
@@ -106,6 +107,25 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
   });
   return { source: "clawhub", items, total: items.length };
 }
+
+// clawhub search 端点的本地排序表（实测 q=react 首行 21 键：
+//   canonicalUrl,displayName,downloads,featured,icon,install,links,metrics,native,official,
+//   ownerHandle,publisher,score,slug,source,sourceIdentity,summary,trust,updatedAt,version,owner
+// 支撑情况（同一批 10 行实测）：
+//   installCount → 顶层 downloads（10/10，number）
+//   updated      → 顶层 updatedAt（10/10，epoch ms）
+//   newest       → native.skill.createdAt（仅 5/10 有 native；缺失行按 0 沉底）
+//   stars        → native.skill.stats.stars（同上 5/10；顶层 stars/stats.stars 在 search 行上恒空，
+//                  :99 那套 `raw.stars ?? raw.stats?.stars` 只对 browse 行有效）
+//   trending     → 无字段支撑：score 是相关性分桶（除前两条外全等），metrics.rolling60DayInstalls
+//                  稀疏近零 → 故意不提供 getter，保持上游序（矩阵与线路的这一格仍不一致，已上报 lead）。
+export const CLAWHUB_SEARCH_SORT_GETTERS = {
+  installCount: (r) => r.downloads ?? r.metrics?.rolling60DayInstalls,
+  name: (r) => r.displayName || r.slug,
+  updated: (r) => Number(r.updatedAt) || 0,
+  newest: (r) => Number(r.native?.skill?.createdAt) || 0,
+  stars: (r) => Number(r.native?.skill?.stats?.stars) || 0,
+};
 
 const CLAWHUB_CATALOG_KEY = "clawhub_catalog_v1";
 const CLAWHUB_CATALOG_TTL = 6 * 3600 * 1000;
@@ -196,11 +216,9 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
       }
     }
     // 单源排序责任在 handler（dispatcher 只对多源聚合排序）：
-  // search 结果的上游字段是 downloads；name 用 displayName/slug。
-  sortRawRows(merged, sort, {
-    installCount: (r) => r.downloads ?? r.metrics?.rolling60DayInstalls,
-    name: (r) => r.displayName || r.slug,
-  });
+  // search 端点的 URL 不接受 sort（实测只认 q/page/limit），所以只能在已取回的窗口内本地排。
+  // getter 必须逐键有真实字段支撑，无支撑的键一律不给 getter → sortRawRows 原样返回上游序。
+  sortRawRows(merged, sort, CLAWHUB_SEARCH_SORT_GETTERS);
   const slicedRows = merged.slice((p - 1) * size, p * size);
     const out = mapClawHubRows(slicedRows, q, "search", slicedRows.length);
     out.total = merged.length >= wanted ? wanted + 1 : merged.length;
@@ -255,7 +273,7 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
  * 排序键与卡片展示字段一一对应（sortKeyOf 的 handler 侧同族），杜绝「排了但看起来没排」。
  * name 升序（localeCompare），其余降序；未提供 getter 的键不动（保持上游序）。
  */
-function sortRawRows(rows, sort, getters = {}) {
+export function sortRawRows(rows, sort, getters = {}) {
   if (!Array.isArray(rows) || !rows.length) return rows;
   const key = String(sort || "");
   const g = getters[key];
@@ -405,6 +423,45 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
 //   install: npx -y @lobehub/market-cli skills install <identifier> --dir <path>
 // The CLI auto-downloads via npx; no pre-install or authentication required.
 // `view` requires a token and is not used.
+// 矩阵键 → skills 子命令 --sort 词表（实测词表见上，2026-11-19 用 4 次 CLI 探测确认）。
+// installCount/stars/name 两侧同名且实测 exit0；newest/updated 必须改名；
+// 其余（trending/relevance…）不在词表 → 返回空串表示「不传 --sort」。
+const LOBEHUB_SKILLS_SORT_MAP = {
+  installCount: "installCount",
+  stars: "stars",
+  name: "name",
+  newest: "createdAt",
+  updated: "updatedAt",
+};
+
+/** 该源请求的排序键映射成上游 CLI 认识的键；词表外返回 ""（保持上游默认序）。 */
+export function lobehubSkillSortArg(sort) {
+  return LOBEHUB_SKILLS_SORT_MAP[String(sort || "").trim()] || "";
+}
+
+// skills 行的实测字段（24/24 齐全）：
+//   author,category,commentCount,createdAt,description,github,homepage,icon,identifier,
+//   installCount,isFeatured,isOfficial,isValidated,license,name,ratingAvg,ratingCount,
+//   resourcesCount,updatedAt,version
+// 键名取映射后的上游 --sort 值，createdAt/updatedAt 实测是 "MM/DD/YYYY HH:mm:ss" 本地串，
+// Number() 会读成 NaN → 必须 Date.parse（该格式在 V8 下可解析）。
+export const LOBEHUB_SKILL_SORT_GETTERS = {
+  installCount: (r) => r.installCount ?? r.downloads ?? r.installs,
+  name: (r) => r.name || r.identifier,
+  createdAt: (r) => Date.parse(r.createdAt) || 0,
+  updatedAt: (r) => Date.parse(r.updatedAt) || 0,
+  // 上游按 stars 排，但**行内没有 stars 字段**（实测），旧的 (r) => r.stars 恒 undefined
+  // → 本地兜底排不动。用同向的 ratingCount（缺失再退 ratingAvg）代替，不假装 r.stars 存在。
+  stars: (r) => Number(r.ratingCount ?? r.ratingAvg) || 0,
+};
+
+/** 是否有本地兜底（决定 sortRawRows 是否执行）。矩阵键与映射后的上游键都接受。 */
+export function lobehubSkillLocalSortApplies(sort) {
+  const raw = String(sort || "").trim();
+  const key = LOBEHUB_SKILLS_SORT_MAP[raw] || raw;
+  return typeof LOBEHUB_SKILL_SORT_GETTERS[key] === "function";
+}
+
 export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
@@ -412,7 +469,13 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   // 实测（勿凭旧注释）：CLI --sort installCount --order desc 是服务端全盘排序，
   // p1 min(2295) ≥ p2 max(2235)，跨页全局单调。旧注释「跨页仍无序」是错的，
   // 旧实现 sortMode 下反而不传 --sort、退化成 50 条窗口近似——已纠正：始终透传 --sort。
-  const sortMode = sortKey === "installCount" || sortKey === "name";
+  //
+  // 但透传前必须映射：skills 子命令的 --sort 只认
+  //   createdAt|stars|installCount|name|relevance|ratingAverage|commentCount|updatedAt
+  // 旧实现把矩阵键原样塞进 CLI，newest/updated 不在词表 → CLI exit 1
+  // "Search failed: Bad Request" → sources.js 的 catch 把整个 lobehub 记进 degraded，
+  // 用户看到的不是「排序没生效」而是 lobehub 贡献 0 条（整源消失）。
+  const sortArg = lobehubSkillSortArg(sortKey);
   const fetchPage = p;
   const fetchSize = size;
   const cacheKey = `lobehub_skills_search:${query.trim()}:${sortKey}:${fetchPage}:${fetchSize}`;
@@ -425,9 +488,10 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const q = String(query || "").trim();
   const args = ["skills", "search"];
   if (q) args.push("--q", q);
-  // installCount/stars/name 都是服务端字段，透传即可；relevance 为默认序
-  if (sortKey) args.push("--sort", sortKey);
-  if (sortKey) args.push("--order", "desc");
+  // installCount/stars/name 原样透传（实测 exit0）；newest/updated 见上映射；
+  // 词表外的键（如 trending）→ sortArg 为空 → 不传 --sort，保持上游默认序，绝不冒整源消失的风险。
+  if (sortArg) args.push("--sort", sortArg);
+  if (sortArg) args.push("--order", "desc");
   args.push("--page", String(fetchPage), "--page-size", String(fetchSize), "--output", "json");
   // First npx run auto-downloads the CLI (~30 s); subsequent runs are cached.
   // 180 s covers the worst-case cold start without hanging the UI.
@@ -441,15 +505,10 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
   // 服务端已按请求排序（实测全局单调）；这里只做防御性校验排序，不改变服务端序——
   // 若 CLI 未按请求排序（版本差异），本地兜底仍保证单调。
-  if (sortMode) {
-    sortRawRows(rawItems, sortKey, {
-      installCount: (r) => r.installCount ?? r.downloads ?? r.installs,
-      stars: (r) => r.stars,
-      name: (r) => r.name || r.identifier,
-      newest: (r) => r.createdAt,
-      updated: (r) => r.updatedAt,
-    });
-  }
+  // 实测兜底是必要的：单页 installCount 序列出现 …,1982,1901,1905,1873,…（上游排序偏软）。
+  // getter 的键名必须与**映射后**的上游键一致，否则 newest/updated 那两行永远是死代码。
+  const sortMode = lobehubSkillLocalSortApplies(sortArg);
+  if (sortMode) sortRawRows(rawItems, sortArg, LOBEHUB_SKILL_SORT_GETTERS);
   const pageItems = rawItems;
   const items = pageItems.map((raw) => ({
     id: `lobehub:${raw.identifier || ""}`,
@@ -593,6 +652,25 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
 // Data.TotalCount（实测 88k+ 条、页与页不重复）。技能正文挂在 SourceURL 的 GitHub 地址上。
 const MODELSCOPE_SKILLS_URL = "https://modelscope.cn/api/v1/dolphin/skills";
 
+// 矩阵（sort-capability.js:31）对 modelscope 声称 installCount/stars/newest/updated/name。
+// 上游没有任何服务端 sort，所以「支持」= 全量拉取后本地排。少一个键进全量分支，
+// 就是那一键只在单页内有序（跨页错乱），即「声称支持、线路不生效」。
+export const MODELSCOPE_FULL_SORT_KEYS = ["installCount", "stars", "newest", "updated", "name"];
+
+/** 该排序键是否需要全量拉取 + 本地排 + 切页；false = 保持上游分页（快，一次调用）。 */
+export function modelScopeSortMode(sort) {
+  return MODELSCOPE_FULL_SORT_KEYS.includes(String(sort || "").trim());
+}
+
+// 排序键 → 上游行字段（实测列名）：DownloadCount / SourceStar|Likes / GmtCreate / GmtModify|LastSyncTime / DisplayName|Name
+export const MODELSCOPE_SORT_GETTERS = {
+  installCount: (r) => r.DownloadCount,
+  stars: (r) => r.SourceStar ?? r.Likes,
+  newest: (r) => Date.parse(r.GmtCreate) || Number(r.GmtCreate) || 0,
+  updated: (r) => Date.parse(r.GmtModify || r.LastSyncTime) || 0,
+  name: (r) => r.DisplayName || r.Name,
+};
+
 export async function searchModelScope({ query = "", page = 1, pageSize = 24, cache, sort = "" } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
@@ -600,7 +678,12 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   // 上游无 sort（实测 9 种参数名全部被忽略），但 PageSize 可到 20000（实测）。
   // 排序模式 = 全量拉取（88,993 条 ÷ 20000 = 5 次调用，缓存 6h）后在完整集合上本地排 + 切页。
   // 旧实现取 500 条窗口本地排——对全量属于近似，禁止。
-  const sortMode = sort === "installCount" || sort === "name";
+  //
+  // 旧 sortMode 只认 installCount/name，于是矩阵 :31 声称支持的 stars/newest/updated
+  // 落到「单页分支」：只取一页 → 只对这一页排 → 用户看到「按星级」却跨页错乱。
+  // 现在 5 个键一律走全量分支。代价（明确记账）：这 3 个键从「单页快但错」变成
+  // 「首次慢（5000×9 全量拉取，实测约 30–90 s）后正确」；fullKey 缓存 6h，翻页只是切片。
+  const sortMode = modelScopeSortMode(sort);
   // 非排序模式：保持上游分页（快，一次调用）。
   // 排序模式：上游无服务端 sort，必须拉全量（88,993 ÷ 20000 ≈ 5 次）在完整集合上排。
   const cacheKey = `modelscope:search:${q.toLowerCase()}:${p}:${size}:${sort || ''}`;
@@ -635,8 +718,11 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
       const first = await fetchOne(1, MS_PAGE, 90000);
       rows = first.rows;
       total = first.total;
+      // 注意边界：pagesNeeded 是**需要的页数**，循环必须含它（旧写法 pg < pagesNeeded
+      // 少拉最后一页，实测差一整页 5000 条 ≈ 可达集合的 11%，与上面注释「5000×9」自相矛盾，
+      // 排序集合因此并非声称的「上游可返回的全部行」）。空页仍由 break 兜住。
       const pagesNeeded = Math.min(MS_MAX_PAGES, Math.ceil(Math.min(total || 1, MS_PAGE * MS_MAX_PAGES) / MS_PAGE));
-      for (let pg = 2; pg < pagesNeeded; pg += 1) {
+      for (let pg = 2; pg <= pagesNeeded; pg += 1) {
         try {
           const nx = await fetchOne(pg, MS_PAGE, 90000);
           if (!nx.rows.length) break;
@@ -657,13 +743,7 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   const msDepthHint = sortMode && total > rows.length
     ? `ModelScope 上游分页深度上限约 ${rows.length.toLocaleString()} 条（目录共 ${total.toLocaleString()} 条），排序覆盖上游可返回的全部行`
     : "";
-  sortRawRows(usableRows, sort, {
-    installCount: (r) => r.DownloadCount,
-    stars: (r) => r.SourceStar ?? r.Likes,
-    newest: (r) => Date.parse(r.GmtCreate) || Number(r.GmtCreate) || 0,
-    updated: (r) => Date.parse(r.GmtModify || r.LastSyncTime) || 0,
-    name: (r) => r.DisplayName || r.Name,
-  });
+  sortRawRows(usableRows, sort, MODELSCOPE_SORT_GETTERS);
   const pageRows = sortMode ? usableRows.slice((p - 1) * size, p * size) : usableRows;
   const items = pageRows.map((raw) => {
     const owner = raw.Path || raw.Owner || "";
@@ -689,6 +769,14 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
       skillDir,
       downloads: Number(raw.DownloadCount || 0),
     installs: Number(raw.DownloadCount || 0),
+      // 展示字段与 MODELSCOPE_SORT_GETTERS 同源（stars=SourceStar|Likes，时间戳同 :665-668 的读法）：
+      // 此前 modelscope 卡片不带这几个字段，「按星级/按最新」排完在界面上无从核验。
+      // 字段名沿用 clawhub 的既有约定（:100-101 的 createdAt/updatedAt），不另造新名。
+      stars: Number(raw.SourceStar ?? raw.Likes) || 0,
+      // 兼容两种上游格式（epoch ms 或日期串，实测未定）：先 Date.parse 再退 Number，
+      // 与 MODELSCOPE_SORT_GETTERS 同一读法，避免「卡片显示 0 但确实按时间排了」。
+      createdAt: Number(Date.parse(raw.GmtCreate) || raw.GmtCreate) || 0,
+      updatedAt: Number(Date.parse(raw.GmtModify || raw.LastSyncTime) || raw.GmtModify) || 0,
       tags: Array.isArray(raw.Tags) ? raw.Tags : [],
       installable: true,
       modelScopeIdent: ident,

@@ -6,6 +6,23 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
     const { useState, useEffect, useCallback, useRef } = React;
+    // 排序键中文标签。能力表本身来自服务端 settings.get 的 sortCapabilities —— 面板不再内联 CAPS 副本。
+    // LABEL 刻意留在面板侧：test-sort-options Test 5 锁 '按星级'/'最新'/'最近更新' 字面量。
+    const SORT_LABEL = {
+      installCount: '按安装数', stars: '按星级', newest: '最新',
+      updated: '最近更新', trending: '热门', name: '按名称', ratingAverage: '评分最高',
+    };
+    // caps=null 表示能力尚未到达 → 只给「默认顺序」，绝不猜键（猜键等于把硬编码换个位置）。
+    // 按当前是否有查询词选择该源的能力分支（与 settings.get 的 browse/search 两套对应）。
+    function capsFor(entry, hasQuery) {
+      if (!entry) return null;
+      return Array.isArray(entry) ? entry : (hasQuery ? entry.search : entry.browse);
+    }
+    function sortOptions(caps, defaultLabel) {
+      const out = [h('option', { key: 'default', value: 'default' }, defaultLabel || '默认顺序')];
+      if (caps) for (const k of caps) out.push(h('option', { key: k, value: k }, SORT_LABEL[k] || k));
+      return out;
+    }
 
     const RPC = '/api/dsh-market/rpc';
 
@@ -242,6 +259,7 @@ window.__ModuleLoader__.load({
       const [installed, setInstalled] = useState([]);
       const [mounted, setMounted] = useState([]);
       const [settings, setSettings] = useState(null);
+      const [sortCaps, setSortCaps] = useState(null);
       const [skillDraft, setSkillDraft] = useState('');
       const [mcpDraft, setMcpDraft] = useState('');
       // { slug, missing: string[] } — the connector needs values before it can start
@@ -399,6 +417,7 @@ window.__ModuleLoader__.load({
       const loadSettings = useCallback(async () => {
         const d = await call('settings.get');
         setSettings(d);
+        setSortCaps(d.sortCapabilities || null);
         setSkillDraft((d.settings.skillDirs || []).join('\n'));
         setMcpDraft((d.settings.mcpDirs || []).join('\n'));
         setNativeDirs(d.settings.dshNativeSkillDirs || []);
@@ -412,7 +431,10 @@ window.__ModuleLoader__.load({
         const pageNo = (options && options.page) || 1;
         const append = Boolean(options && options.append);
         // 只有「首页」进缓存；翻页是增量追加，缓存它没有意义还会撑爆内存
-        const effSort = sort === 'default' ? 'installCount' : (sort === 'name' ? 'name' : '');
+        // 旧写法把 stars/newest/updated/trending 全塌成 ''，服务端根本收不到排序意图 →「选了没反应」。
+        // 现在原样下发选中的键；default 仍映射 installCount（保持既有默认视图语义）。
+        const reqSort = options && options.sort !== undefined ? options.sort : sort;
+        const effSort = reqSort === 'default' ? 'installCount' : reqSort;
         const cacheKey = append ? '' : `sk|${src}|${q}|${cat}|${pageNo}|${effSort}`;
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
         // 命中缓存：立即渲染旧结果，不白屏；后台再刷新
@@ -1036,9 +1058,16 @@ window.__ModuleLoader__.load({
         }
       };
 
+      // 本地兜底只处理面板自己能算的键（default/installCount/name）。
+      // 选了 stars/newest/updated/trending 且该源能力表支持时，服务端已经排好整页；
+      // 这里若再按 installs 重排，就等于把服务端排序抹掉 → 现象仍是「选了没反应」。
+      const skillCaps = capsFor(sortCaps && sortCaps.skills ? sortCaps.skills[source] : null, Boolean(String(query || '').trim()));
+      const serverSorted = sort !== 'default' && sort !== 'installCount' && sort !== 'name'
+        && Array.isArray(skillCaps) && skillCaps.includes(sort);
       const orderedSkills = skills.slice().sort((a, b) => {
-        if (sort === 'name') return String(a.name || a.slug).localeCompare(String(b.name || b.slug));
         if (b.installable !== a.installable) return (b.installable === false ? 0 : 1) - (a.installable === false ? 0 : 1);
+        if (serverSorted) return 0;
+        if (sort === 'name') return String(a.name || a.slug).localeCompare(String(b.name || b.slug));
         return (b.installs || 0) - (a.installs || 0);
       });
       const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 10);
@@ -1317,7 +1346,14 @@ window.__ModuleLoader__.load({
                             // 切源时重置分类：新源不一定有分类字段，沿用旧值会导致空列表
                             setSource(key);
                             setCategory('all');
-                            searchSkills(query, { source: key, size, category: 'all' });
+                            // 切源时若旧源支持的排序键新源不支持，必须回落 default：
+                            // 否则 sort 残留（如在 clawhub 选 trending 再切 skillsmp）会下发一个无效键。
+                            const nextCaps = capsFor(sortCaps && sortCaps.skills ? sortCaps.skills[key] : null, Boolean(String(query || '').trim()));
+                            const curKey = sort === 'default' ? 'installCount' : sort;
+                            const keep = sort === 'default' || (nextCaps != null && nextCaps.includes(curKey));
+                            const nextSort = keep ? sort : 'default';
+                            if (!keep) { prevSortRef.current = 'default'; setSort('default'); }
+                            searchSkills(query, { source: key, size, category: 'all', sort: nextSort });
                           },
                         }, key))
                     : ['registry', 'lobehub'].map((key) =>
@@ -1344,38 +1380,19 @@ window.__ModuleLoader__.load({
                           searchMcps(query, { sort: next, page: 1 });
                         },
                       },
-                        h('option', { value: 'default' }, mcpSource === 'lobehub' ? '按安装数' : '默认顺序'),
-                        mcpSource === 'lobehub'
-                          ? h('option', { value: 'installCount' }, '安装最多')
-                          : h('option', { value: 'name' }, '按名称'),
-                        mcpSource === 'lobehub' ? h('option', { value: 'ratingAverage' }, '评分最高') : null)
+                        // 同上：MCP 两个市场的能力表也来自服务端（sortCapabilities.mcp）。
+                        // registry 服务端完全不读 sort → 表为空 → 只给「默认顺序」，
+                        // 不再给「按名称」这种只重排当前页、翻页就变回去的假选项。
+                        ...sortOptions(capsFor(sortCaps && sortCaps.mcp ? sortCaps.mcp[mcpSource] : null, Boolean(String(query || '').trim()))))
                     : h('select', {
                         style: { ...S.input, flex: '0 0 120px', height: 30 },
                         value: sort,
                         onChange: (e) => setSort(e.target.value),
                       },
-                        // 排序项按该源的实测原生能力生成（与 src/sort-capability.js 矩阵一致，
-                        // 由 test-sort-options 的 Test 5 锁定）。不支持的键不下发，避免「选了没反应」。
-                        ...(() => {
-                          const CAPS = {
-                            'skills.sh': ['installCount', 'name'],
-                            clawhub: ['installCount', 'stars', 'newest', 'updated', 'trending', 'name'],
-                            skillsmp: ['name'],
-                            trusttools: ['installCount', 'name'],
-                            'browse.sh': ['installCount', 'updated', 'name'],
-                            lobehub: ['installCount', 'stars', 'newest', 'updated', 'name'],
-                            skillhub: ['installCount', 'stars', 'updated', 'name'],
-                            modelscope: ['installCount', 'stars', 'newest', 'updated', 'name'],
-                          };
-                          const LABEL = {
-                            installCount: '按安装数', stars: '按星级', newest: '最新',
-                            updated: '最近更新', trending: '热门', name: '按名称',
-                          };
-                          const caps = CAPS[source] || ['name'];
-                          const items = [h('option', { key: 'default', value: 'default' }, '默认顺序')];
-                          for (const k of caps) items.push(h('option', { key: k, value: k }, LABEL[k] || k));
-                          return items;
-                        })()),
+                        // 排序项由服务端能力表生成（settings.get → sortCapabilities.skills）。
+                        // 单一事实源是 src/sort-capability.js；面板不再有内联副本，
+                        // 也就不存在「面板显示了服务端不认的键」这类漂移。
+                        ...sortOptions(capsFor(sortCaps && sortCaps.skills ? sortCaps.skills[source] : null, Boolean(String(query || '').trim())))),
             ),
             tab === 'mcp' && mcpSource === 'lobehub' && mcpCategories.length > 0
               ? h('div', { style: S.row },

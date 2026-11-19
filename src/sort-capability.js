@@ -22,6 +22,9 @@ export const SORT_KEYS = ["installCount", "stars", "newest", "updated", "trendin
 
 const CAPABILITIES = {
   "skills.sh": ["installCount", "name"],
+  // clawhub：browse（空查询）路径 6 键全部服务端全盘排序（实测 sort=downloads/stars/newest/updated/trending/name）；
+  // search（带查询）路径 trending 无字段支撑（score 是相关性分桶、rolling60DayInstalls 稀疏近零），
+  // 其余键由 handler 的本地 getter 覆盖（stars/newest 取自 native.skill.*，updated 取顶层 updatedAt）。
   "clawhub": ["installCount", "stars", "newest", "updated", "trending", "name"],
   "skillsmp": ["name"],
   "trusttools": ["installCount", "name"],
@@ -40,8 +43,44 @@ export function supportsSort(source, sort) {
   return Array.isArray(list) && list.includes(key);
 }
 
-/** 该源支持的排序键（供 UI 生成下拉；面板侧另有内联矩阵，由测试锁定两处一致）。 */
-export function sortKeysFor(source) {
+/**
+ * 该源支持的排序键（供 UI 生成下拉；能力表只存在于服务端，面板经 settings.get 读取）。
+ * options.hasQuery=true 时按「带查询」路径收紧——两条路径的上游能力不同（实测）：
+ *   clawhub search 端点不认 sort，trending 在 search 行上无任何字段支撑
+ *   （score 是相关性分桶、metrics.rolling60DayInstalls 稀疏近零）→ 带查询时不给 trending。
+ *   browse 路径 6 键全部服务端全盘排序，trending 成立。
+ */
+export function sortKeysFor(source, options = {}) {
   const list = CAPABILITIES[String(source || "")];
-  return Array.isArray(list) ? list.slice() : ["name"];
+  let keys = Array.isArray(list) ? list.slice() : ["name"];
+  if (options.hasQuery && String(source || "") === "clawhub") keys = keys.filter((k) => k !== "trending");
+  return keys;
+}
+
+/**
+ * MCP 两个市场的排序能力，与技能源分开建模（线路事实不同）：
+ *   registry  — index.js 的 registry 分支根本不读 options.sort（searchMcpRegistryPage 无 sort 参数），
+ *               卡片也没有 installs/rating 字段 → 服务端不排、本地也无字段可排 → 诚实为空。
+ *               用户 2026-11-19 拍板：registry 只显示「默认顺序」，不给会「选了没反应」的假选项。
+ *   lobehub   — MCP 侧走 @lobehub/market-cli mcp search --sort（lobehub-market.js:143，仅带查询时透传），
+ *               行字段有 installCount/ratingAvg/ratingCount/createdAt/updatedAt；无查询时本地兜底
+ *               （lobehub-market.js:172-177）只认 installCount/ratingAverage/createdAt。
+ *               取交集里真正生效的两个键：installCount、ratingAverage。
+ */
+const MCP_CAPABILITIES = {
+  "registry": [],
+  "lobehub": ["installCount", "ratingAverage"],
+};
+
+/**
+ * MCP 源支持的排序键（供面板生成 MCP 下拉）。
+ * hasQuery 同样改变能力：lobehub 的 --sort 只在带查询时透传上游
+ * （lobehub-market.js:143 if (sort && hasQuery)），无查询时 CLI 拒收 --sort、
+ * 本地兜底只重排当前页 → 跨页无序，诚实起见无查询时 lobehub 也不给排序项。
+ */
+export function sortKeysForMcp(source, options = {}) {
+  const list = MCP_CAPABILITIES[String(source || "")];
+  let keys = Array.isArray(list) ? list.slice() : [];
+  if (!options.hasQuery && String(source || "") === "lobehub") keys = [];
+  return keys;
 }

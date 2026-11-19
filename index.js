@@ -24,7 +24,8 @@ import { skillMetaFromText, kebab } from "./src/frontmatter.js";
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
 import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryDefinitionByName, searchMcpRegistryPage } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
-import { makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
+import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
+import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 import { makeRpcGuard } from "./src/rpc-guard.js";
@@ -1117,6 +1118,21 @@ export async function apply(ctx, config = {}) {
             disabledSkills: settings.disabledSkills,
           },
           skillProvider: { mounted: Boolean(disposeProvider), error: skillProviderError || undefined },
+          // 排序能力表随 settings.get 下发：面板每次切 tab 都会 loadSettings()，
+          // 故能力常驻最新且零额外往返。单源仍是 sort-capability.js，面板不再内联副本。
+          sortCapabilities: {
+            keys: SORT_KEYS,
+            // 每个源给两套：browse（空查询）与 search（带查询）。clawhub 的 trending、
+            // lobehub MCP 的全部排序只在特定路径成立，见 sort-capability.js 注释。
+            skills: Object.fromEntries(ALL_SOURCES.map((src) => [src, {
+              browse: sortKeysFor(src),
+              search: sortKeysFor(src, { hasQuery: true }),
+            }])),
+            mcp: {
+              registry: { browse: sortKeysForMcp("registry"), search: sortKeysForMcp("registry", { hasQuery: true }) },
+              lobehub: { browse: sortKeysForMcp("lobehub"), search: sortKeysForMcp("lobehub", { hasQuery: true }) },
+            },
+          },
           shipped: {
             mcpClient: resolveShipped(SHIPPED.mcpClient, settings.shippedRoot) || "NOT FOUND",
             skillFilesystem: resolveShipped(SHIPPED.skillFilesystem, settings.shippedRoot) || "NOT FOUND",
