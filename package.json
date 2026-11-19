@@ -54,7 +54,7 @@
     "url": "https://github.com/kuailexiaozixin/dsh-skill-mcp-market/issues"
   },
   "scripts": {
-    "test": "node test/test-safe-temp.mjs && node test/test-uninstall-nested.mjs && node test/test-func-fixes.mjs && node test/test-rpc-surface.mjs && node test/test-cleanup.mjs && node test/test-rpc-guard.mjs && node test/test-security.mjs && node test/test-scan-block.mjs && node test/test-sort-honesty.mjs && node test/test-total-pages.mjs && node test/test-dead-all.mjs && node test/test-warm-budget.mjs && node test/test-global-sort.mjs && node test/test-profile-sync.mjs",
+    "test": "node test/test-full-sort.mjs && node test/test-sort-options.mjs && node test/test-safe-temp.mjs && node test/test-uninstall-nested.mjs && node test/test-func-fixes.mjs && node test/test-rpc-surface.mjs && node test/test-cleanup.mjs && node test/test-rpc-guard.mjs && node test/test-security.mjs && node test/test-scan-block.mjs && node test/test-sort-honesty.mjs && node test/test-total-pages.mjs && node test/test-dead-all.mjs && node test/test-warm-budget.mjs && node test/test-global-sort.mjs && node test/test-profile-sync.mjs",
     "test:paging": "node test/test-paging.mjs"
   }
 }

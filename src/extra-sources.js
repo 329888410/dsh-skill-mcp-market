@@ -89,10 +89,16 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
       homepage: `https://clawhub.ai${raw.canonicalUrl || `/${reference}`}`,
       upstreamUrl: "",
       installRef: reference,
-      downloads: Number(raw.downloads || raw.metrics?.rolling60DayInstalls || 0) || 0,
-      // 面板排序/卡片统一读 item.installs；clawhub 上游叫 downloads，不映射则「按安装数」对 clawhub 也是 0。
-      installs: Number(raw.downloads || raw.metrics?.rolling60DayInstalls || 0) || 0,
+      // browse 端点的量在 stats.downloads，search 端点在 raw.downloads；两处都要读，
+      // 否则 browse 的 installs 恒为 0（实测卡片与排序全瞎）。
+      downloads: Number(raw.downloads ?? raw.stats?.downloads ?? raw.metrics?.rolling60DayInstalls ?? 0) || 0,
+      installs: Number(raw.downloads ?? raw.stats?.downloads ?? raw.metrics?.rolling60DayInstalls ?? 0) || 0,
       category: raw.category || "",
+      // 新排序键的展示字段：stars/newest/updated 来自 browse 的 stats 与时间戳，
+      // search 端点没有这些字段时保持 0（排序由上游负责，卡片不显示即可）。
+      stars: Number(raw.stars ?? raw.stats?.stars ?? 0) || 0,
+      createdAt: Number(raw.createdAt) || 0,
+      updatedAt: Number(raw.updatedAt) || 0,
       installable: Boolean(reference),
       // 搜索端点无分页；浏览端点支持 limit。让客户端据此决定「加载更多」是否可用
       paged: mode === "browse",
@@ -106,15 +112,16 @@ const CLAWHUB_CATALOG_TTL = 6 * 3600 * 1000;
 
 // 浏览端点每屏 50 条并带 nextCursor（JSON 字符串），顺着它累积成本地目录再按页切片：
 // 这样第 2 页、第 20 页拿到的都是真正的新条目，而不是上游的第一屏。
-async function extendClawHubCatalog(cache, need) {
-  let state = cache ? await cache.get(CLAWHUB_CATALOG_KEY, CLAWHUB_CATALOG_TTL) : undefined;
+async function extendClawHubCatalog(cache, need, sortBy = "") {
+  const catKey = sortBy ? `${CLAWHUB_CATALOG_KEY}:${sortBy}` : CLAWHUB_CATALOG_KEY;
+  let state = cache ? await cache.get(catKey, CLAWHUB_CATALOG_TTL) : undefined;
   if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false };
   const seen = new Set(state.rows.map((raw) => String(raw.id ?? raw.slug ?? "")));
   let guard = 0;
   while (!state.done && state.rows.length < need) {
     guard += 1;
     const cursor = state.cursor ? `&cursor=${encodeURIComponent(state.cursor)}` : "";
-    const data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=50${cursor}`);
+    const data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=50${sortBy ? `&sort=${encodeURIComponent(sortBy)}` : ""}${cursor}`);
     const rows = Array.isArray(data.items) ? data.items : Array.isArray(data.results) ? data.results : [];
     for (const raw of rows) {
       const key = String(raw.id ?? raw.slug ?? "");
@@ -126,16 +133,16 @@ async function extendClawHubCatalog(cache, need) {
     if (rows.length === 0 || !next || next === state.cursor) state.done = true;
     else state.cursor = next;
   }
-  if (cache) await cache.put(CLAWHUB_CATALOG_KEY, state);
+  if (cache) await cache.put(catKey, state);
   return state;
 }
 
-export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache }) {
+export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
   const q = String(query || "").trim();
   // 同一 (query,page,size) 5 分钟内复用：clawhub 一次搜索要并发打 1–6 个上游页。
-  const cKey = `clawhub:search:${q.toLowerCase()}:${p}:${size}`;
+  const cKey = `clawhub:search:${q.toLowerCase()}:${p}:${size}:${sort || ""}`;
   if (cache) {
     const hit = await cache.get(cKey, 5 * 60 * 1000);
     if (hit && Array.isArray(hit.items) && hit.items.length) return { ...hit, source: "clawhub" };
@@ -188,7 +195,13 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
         merged.push(raw);
       }
     }
-    const slicedRows = merged.slice((p - 1) * size, p * size);
+    // 单源排序责任在 handler（dispatcher 只对多源聚合排序）：
+  // search 结果的上游字段是 downloads；name 用 displayName/slug。
+  sortRawRows(merged, sort, {
+    installCount: (r) => r.downloads ?? r.metrics?.rolling60DayInstalls,
+    name: (r) => r.displayName || r.slug,
+  });
+  const slicedRows = merged.slice((p - 1) * size, p * size);
     const out = mapClawHubRows(slicedRows, q, "search", slicedRows.length);
     out.total = merged.length >= wanted ? wanted + 1 : merged.length;
     out.hasMore = merged.length >= wanted;
@@ -196,9 +209,19 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
 out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length / size));
     return out;
   }
-  // 浏览：顺着 nextCursor 把目录累积到需要的深度，再本地切出这一页。
-    const need = Math.min(size * (p + 5), 3000); // 预载当前页+5页深度
-  const state = await extendClawHubCatalog(cache, need);
+  // 浏览：上游 browse 端点支持服务端全盘排序（实测 sort=downloads 跨 cursor 全局单调，首条≈494k）。
+  // 旧实现是「预载 N 条再本地排」——那是窗口近似，禁止；现在把 sort 透传给上游，
+  // 沿 nextCursor 累积到当前页深度即可保证全局序正确。
+  // 上游 sort 值实测：downloads/stars/newest/updated/trending/name 均服务端全盘排序；
+  // installs 不单调（数据质量差）→ 用 downloads 代替。
+  const browseSort = sort === "installCount" ? "downloads"
+    : sort === "stars" ? "stars"
+      : sort === "newest" ? "newest"
+        : sort === "updated" ? "updated"
+          : sort === "trending" ? "trending"
+            : sort === "name" ? "name" : "";
+  const need = Math.min(2000, size * (p + 2));
+  const state = await extendClawHubCatalog(cache, need, browseSort);
   const rows = state.rows;
   const matched = rows.slice((p - 1) * size, p * size);
   const out = mapClawHubRows(matched, q, "browse", matched.length);
@@ -227,17 +250,20 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
  * 之前 dispatcher 在 handler 切完页后才排序，导致「按安装数」跨页错乱（实测第2页 max > 第1页 max）。
  * 所有 handler 在自己 slice 之前调用本函数。
  */
-/** 就地排序原始上游行（按 installs 字段路径取值），供各 handler 复用。 */
-function sortRawRows(rows, sort, getInstalls, getName) {
+/**
+ * 就地排序原始上游行。getters 把排序键映射到该源的行字段——
+ * 排序键与卡片展示字段一一对应（sortKeyOf 的 handler 侧同族），杜绝「排了但看起来没排」。
+ * name 升序（localeCompare），其余降序；未提供 getter 的键不动（保持上游序）。
+ */
+function sortRawRows(rows, sort, getters = {}) {
   if (!Array.isArray(rows) || !rows.length) return rows;
-  if (sort === "installCount") {
-    const v = (r) => Number(getInstalls(r)) || 0;
-    return rows.sort((a, b) => v(b) - v(a));
+  const key = String(sort || "");
+  const g = getters[key];
+  if (!g) return rows;
+  if (key === "name") {
+    return rows.sort((a, b) => String(g(a) || "").localeCompare(String(g(b) || "")));
   }
-  if (sort === "name") {
-    return rows.sort((a, b) => String(getName(a) || "").localeCompare(String(getName(b) || "")));
-  }
-  return rows;
+  return rows.sort((a, b) => (Number(g(b)) || 0) - (Number(g(a)) || 0));
 }
 export async function warmClawHubCatalog(cache, options = {}) {
   // clawhub 的 browse 目录是 28k+ 且游标不封顶的流：上游既不返回 total，也永远爬不完。
@@ -281,26 +307,43 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
   const perPage = 10;
-  // 排序模式：上游无 sort，必须从第 1 页起取足够宽的窗口，全局排序后再切页。
-  // 否则各页只看到自己那一小段，跨页无序（实测 p1 max=55794 < p2 max=63023）。
-  const sortMode = sort === "installCount" || sort === "name";
-  // 窗口必须与页码无关：所有页都从同一份「第1页起的前 N 条」切出，跨页才连贯。
-  const perBatch = sortMode ? 60 : Math.ceil(size / perPage);
-  const first = sortMode ? 1 : (p - 1) * perBatch + 1;
+  // 上游有隐藏的服务端全盘排序端点 GET /api/skills?sort_by=install_count&direction=desc
+  // （实测首条 ui-ux-pro-max≈446,924，跨页全局单调；POST /search 的 sort 参数全部被忽略）。
+  // 旧实现是「取 60 页窗口本地排」——对 579,074 条全量属于近似，禁止。
+  // name 排序上游返回空数组（坏），故 name 仍走窗口 + 本地排。
+  const serverSort = sort === "installCount";
+  const sortMode = sort === "name";
+  // serverSort：上游 GET 端点固定 10 条/页且全局有序。面板第 p 页需要第 [(p-1)*size, p*size)
+  // 条，对应上游页 floor((p-1)*size/10)+1 .. ceil(p*size/10)，取回后按偏移量本地切。
+  const first = serverSort
+    ? Math.floor(((p - 1) * size) / perPage) + 1
+    : sortMode ? 1 : (p - 1) * Math.ceil(size / perPage) + 1;
+  const lastUpstream = serverSort
+    ? Math.ceil((p * size) / perPage)
+    : first + (sortMode ? 60 : Math.ceil(size / perPage)) - 1;
+  const perBatch = Math.max(1, lastUpstream - first + 1);
+  const sliceOffset = serverSort ? (p - 1) * size - (first - 1) * perPage : 0;
   const rows = [];
   const seen = new Set();
   let total = 0;
   for (let index = 0; index < perBatch; index += 1) {
     const upstreamPage = first + index;
-    const key = `trusttools:${String(query).trim().toLowerCase()}:${upstreamPage}`;
+    const key = `trusttools:${String(query).trim().toLowerCase()}:${upstreamPage}:${sort || ""}`;
     let data = cache ? await cache.get(key, 10 * 60 * 1000) : undefined;
     if (!data) {
-      data = await postJsonEscalating(
-        "https://ai.trusttools.cn/api/skills/search",
-        // 上游参数名是 search（不是 q）：传 q 会被忽略，永远返回默认列表。实测 search 才生效。
-        { search: query, page: upstreamPage, pageSize: perPage },
-        { timeoutMs: 25000 },
-      );
+      if (serverSort) {
+        // GET 端点固定 10 条/页（实测 pageSize 参数被忽略），排序由服务端对全量做
+        const qs = new URLSearchParams({ sort_by: "install_count", direction: "desc", page: String(upstreamPage), pageSize: String(perPage) });
+        if (String(query || "").trim()) qs.set("search", String(query).trim());
+        data = await getJsonEscalating(`https://ai.trusttools.cn/api/skills?${qs.toString()}`, { timeoutMs: 25000 });
+      } else {
+        data = await postJsonEscalating(
+          "https://ai.trusttools.cn/api/skills/search",
+          // 上游参数名是 search（不是 q）：传 q 会被忽略，永远返回默认列表。实测 search 才生效。
+          { search: query, page: upstreamPage, pageSize: perPage },
+          { timeoutMs: 25000 },
+        );
+      }
       if (cache) await cache.put(key, data);
     }
     const batch = Array.isArray(data.data) ? data.data : [];
@@ -316,9 +359,14 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     if (batch.length === 0 || added === 0) break; // catalogue exhausted or the page repeats
   }
   // 切页前排序：否则每页各自有序、跨页错乱
-  sortRawRows(rows, sort, (r) => r.install_count ?? r.download_count ?? r.installs, (r) => r.name || r.slug);
+  // installCount 由服务端全盘排序，不再本地重排（本地重排会打乱服务端的全量序）
+  sortRawRows(rows, sortMode ? sort : "", { name: (r) => r.name || r.slug });
   // 排序模式下窗口从第 1 页起，本地切出第 p 页；否则上游已给对页
-  const pageRows = sortMode ? rows.slice((p - 1) * size, p * size) : rows.slice(0, size);
+  const pageRows = serverSort
+    ? rows.slice(sliceOffset, sliceOffset + size)
+    : sortMode
+      ? rows.slice((p - 1) * size, p * size)
+      : rows.slice(0, size);
   const items = pageRows.map((raw) => {
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
     const path = String(raw.repo_path || "").replace(/\/SKILL\.md$/i, "");
@@ -361,11 +409,12 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
   const sortKey = String(sort || "").trim();
-  // CLI 的 --sort 只作用于它自己的分页窗口，跨页仍无序。
-  // 排序模式下固定从第 1 页取一个宽窗口，稍后本地排序再切页。
+  // 实测（勿凭旧注释）：CLI --sort installCount --order desc 是服务端全盘排序，
+  // p1 min(2295) ≥ p2 max(2235)，跨页全局单调。旧注释「跨页仍无序」是错的，
+  // 旧实现 sortMode 下反而不传 --sort、退化成 50 条窗口近似——已纠正：始终透传 --sort。
   const sortMode = sortKey === "installCount" || sortKey === "name";
-  const fetchPage = sortMode ? 1 : p;
-  const fetchSize = sortMode ? Math.min(50, size * 20) : size;
+  const fetchPage = p;
+  const fetchSize = size;
   const cacheKey = `lobehub_skills_search:${query.trim()}:${sortKey}:${fetchPage}:${fetchSize}`;
   const cached = cache ? await cache.get(cacheKey, 30 * 60 * 1000) : undefined;
   if (cached) return { source: "lobehub", ...cached };
@@ -376,7 +425,9 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const q = String(query || "").trim();
   const args = ["skills", "search"];
   if (q) args.push("--q", q);
-  if (sort && !sortMode) args.push("--sort", sort);
+  // installCount/stars/name 都是服务端字段，透传即可；relevance 为默认序
+  if (sortKey) args.push("--sort", sortKey);
+  if (sortKey) args.push("--order", "desc");
   args.push("--page", String(fetchPage), "--page-size", String(fetchSize), "--output", "json");
   // First npx run auto-downloads the CLI (~30 s); subsequent runs are cached.
   // 180 s covers the worst-case cold start without hanging the UI.
@@ -388,9 +439,18 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
     throw new Error("lobehub search: CLI returned non-JSON output");
   }
   const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
-  // 本地排序：按安装量/名称，切页之前完成（sortMode 下窗口从第1页起）
-  sortRawRows(rawItems, sortMode ? sortKey : "", (r) => r.installCount ?? r.downloads ?? r.installs, (r) => r.name || r.identifier);
-  const pageItems = sortMode ? rawItems.slice((p - 1) * size, p * size) : rawItems;
+  // 服务端已按请求排序（实测全局单调）；这里只做防御性校验排序，不改变服务端序——
+  // 若 CLI 未按请求排序（版本差异），本地兜底仍保证单调。
+  if (sortMode) {
+    sortRawRows(rawItems, sortKey, {
+      installCount: (r) => r.installCount ?? r.downloads ?? r.installs,
+      stars: (r) => r.stars,
+      name: (r) => r.name || r.identifier,
+      newest: (r) => r.createdAt,
+      updated: (r) => r.updatedAt,
+    });
+  }
+  const pageItems = rawItems;
   const items = pageItems.map((raw) => ({
     id: `lobehub:${raw.identifier || ""}`,
     slug: raw.name || raw.identifier || "",
@@ -485,7 +545,7 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
-  const key = `skillsmp:${q || "all"}:${p}:${size}`;
+  const key = `skillsmp:${q || "all"}:${p}:${size}:${sort || ""}`;
   const cached = cache ? await cache.get(key, SKILLSMP_TTL) : undefined;
   if (cached && Array.isArray(cached.items) && cached.items.length) return { ...cached, source: "skillsmp" };
   const params = new URLSearchParams({ q, page: String(p), limit: String(Math.max(size, 10)) });
@@ -496,7 +556,8 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
     pythonFirst: true,
   });
   const rows = Array.isArray(data.skills) ? data.skills : [];
-  sortRawRows(rows, sort, (r) => r.installCount ?? r.downloads, (r) => r.name ?? r.skillName);
+  // skillsmp 能力：仅 name（API 被 Cloudflare 挡、CLI 无 installCount）。其他键保持上游序。
+  sortRawRows(rows, sort, { name: (r) => r.name ?? r.skillName });
   const items = rows.slice(0, size).map((raw) => {
     const { repo, branch, skillDir } = skillsmpTarget(raw);
     return {
@@ -536,33 +597,73 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
   const q = String(query || "").trim();
-  // 排序模式下上游无 --sort：取大窗口 -> 全局排序 -> 再切页，否则跨页无序
+  // 上游无 sort（实测 9 种参数名全部被忽略），但 PageSize 可到 20000（实测）。
+  // 排序模式 = 全量拉取（88,993 条 ÷ 20000 = 5 次调用，缓存 6h）后在完整集合上本地排 + 切页。
+  // 旧实现取 500 条窗口本地排——对全量属于近似，禁止。
   const sortMode = sort === "installCount" || sort === "name";
-  // 固定窗口：所有页都从同一份已排序全集切出（上游接受大 PageSize，实测 200 正常）
-  // 稳定窗口：固定取第 1 页起的前 N 条，全局排序后本地切页。
-  // 窗口不随页码变化，否则每页看到的子集不同、跨页无法保持一致。
-  const fetchSize = sortMode ? Math.min(500, size * 20) : size;
-  const fetchPage = sortMode ? 1 : p;
-  // cache key 必须含请求页 p：否则第2页会复用第1页缓存里的整窗结果
+  // 非排序模式：保持上游分页（快，一次调用）。
+  // 排序模式：上游无服务端 sort，必须拉全量（88,993 ÷ 20000 ≈ 5 次）在完整集合上排。
   const cacheKey = `modelscope:search:${q.toLowerCase()}:${p}:${size}:${sort || ''}`;
   const hit = cache ? await cache.get(cacheKey, 5 * 60 * 1000) : undefined;
   if (hit) return { ...hit, source: "modelscope" };
-  const body = { PageNumber: fetchPage, PageSize: fetchSize };
-  if (q) body.Query = q;
-  const response = await fetch(MODELSCOPE_SKILLS_URL, {
-    method: "PUT",
-    headers: { ...UA, "content-type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(25000),
-  });
-  if (!response.ok) throw new Error(`ModelScope HTTP ${response.status}`);
-  const payload = await response.json();
-  const data = payload.Data || {};
-  const rows = Array.isArray(data.SkillList) ? data.SkillList : [];
-  const total = Number(data.TotalCount) || 0;
-  // 切页前排序：在映射前对整页行排序（同一数组，非副本）
+  const fetchOne = async (pageNumber, pageSize, timeoutMs = 25000) => {
+    const response = await fetch(MODELSCOPE_SKILLS_URL, {
+      method: "PUT",
+      headers: { ...UA, "content-type": "application/json" },
+      body: JSON.stringify({ PageNumber: pageNumber, PageSize: pageSize, ...(q ? { Query: q } : {}) }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) throw new Error(`ModelScope HTTP ${response.status}`);
+    const payload = await response.json();
+    const data = payload.Data || {};
+    return { rows: Array.isArray(data.SkillList) ? data.SkillList : [], total: Number(data.TotalCount) || 0 };
+  };
+  let rows = [];
+  let total = 0;
+  if (sortMode) {
+    // 全量目录缓存 6 小时：排序是对完整集合做的，翻页只是切片，不再重复拉取。
+    const fullKey = `modelscope:full:${q.toLowerCase()}`;
+    const fullHit = cache ? await cache.get(fullKey, 6 * 3600 * 1000) : undefined;
+    if (fullHit && Array.isArray(fullHit.rows)) {
+      rows = fullHit.rows;
+      total = fullHit.total || rows.length;
+    } else {
+      // 上游分页深度上限实测为 offset≈45,000（PageSize=20000 时 page2 即空；
+      // PageSize=5000 时 page9 有数据、page10 空）。按 5000×9 拉取上游可达的全部行。
+      const MS_PAGE = 5000;
+      const MS_MAX_PAGES = 9;
+      const first = await fetchOne(1, MS_PAGE, 90000);
+      rows = first.rows;
+      total = first.total;
+      const pagesNeeded = Math.min(MS_MAX_PAGES, Math.ceil(Math.min(total || 1, MS_PAGE * MS_MAX_PAGES) / MS_PAGE));
+      for (let pg = 2; pg < pagesNeeded; pg += 1) {
+        try {
+          const nx = await fetchOne(pg, MS_PAGE, 90000);
+          if (!nx.rows.length) break;
+          rows = rows.concat(nx.rows);
+        } catch {
+          break; // partial catalogue is still far better than a 500-row window
+        }
+      }
+      if (cache && rows.length) await cache.put(fullKey, { rows, total });
+    }
+  } else {
+    const one = await fetchOne(p, size);
+    rows = one.rows;
+    total = one.total;
+  }
   const usableRows = rows.filter((raw) => raw && raw.Name);
-  sortRawRows(usableRows, sort, (r) => r.DownloadCount, (r) => r.DisplayName || r.Name);
+  // 上游分页深度上限（实测 offset≈45k）导致可达集合 < 全量时，如实告知用户排序覆盖范围。
+  const msDepthHint = sortMode && total > rows.length
+    ? `ModelScope 上游分页深度上限约 ${rows.length.toLocaleString()} 条（目录共 ${total.toLocaleString()} 条），排序覆盖上游可返回的全部行`
+    : "";
+  sortRawRows(usableRows, sort, {
+    installCount: (r) => r.DownloadCount,
+    stars: (r) => r.SourceStar ?? r.Likes,
+    newest: (r) => Date.parse(r.GmtCreate) || Number(r.GmtCreate) || 0,
+    updated: (r) => Date.parse(r.GmtModify || r.LastSyncTime) || 0,
+    name: (r) => r.DisplayName || r.Name,
+  });
   const pageRows = sortMode ? usableRows.slice((p - 1) * size, p * size) : usableRows;
   const items = pageRows.map((raw) => {
     const owner = raw.Path || raw.Owner || "";
@@ -593,7 +694,7 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
       modelScopeIdent: ident,
     };
   });
-  const result = { source: "modelscope", items, total: total || p * size + (rows.length >= size ? 1 : 0), hasMore: total ? p * size < total : rows.length >= size };
+  const result = { source: "modelscope", items, total: total || p * size + (rows.length >= size ? 1 : 0), hasMore: total ? p * size < total : rows.length >= size, ...(msDepthHint ? { hint: msDepthHint } : {}) };
   if (cache) await cache.put(cacheKey, result);
   return result;
 }

@@ -12,8 +12,12 @@ const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); }
 console.log('');
 console.log('Test 1: 没有安装数据的源必须声明不支持按安装数排序');
 {
-  check('skills.sh does NOT support installCount', supportsSort('skills.sh', 'installCount') === false);
+  // 实测：skills.sh search API 返回真实 installs（4,431,266 首条）→ 支持；
+  // sitemap browse 无 installs，但全 0 稳定排序保持上游序（Test 3 锁住不乱排）。
+  check('skills.sh supports installCount (search API has installs)', supportsSort('skills.sh', 'installCount') === true);
   check('skills.sh supports name', supportsSort('skills.sh', 'name') === true);
+  check('skillsmp NOT installCount (CLI 无此 sort)', supportsSort('skillsmp', 'installCount') === false);
+  check('browse.sh supports installCount (459/479 rows)', supportsSort('browse.sh', 'installCount') === true);
   check('trusttools supports installCount', supportsSort('trusttools', 'installCount') === true);
   check('modelscope supports installCount', supportsSort('modelscope', 'installCount') === true);
   check('skillhub supports installCount', supportsSort('skillhub', 'installCount') === true);

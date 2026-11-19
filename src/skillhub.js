@@ -50,32 +50,29 @@ function toItem(raw) {
 export async function searchSkills({ query = "", page = 1, pageSize = 20, category = "", cache, sort = "" } = {}) {
   const p = Math.max(1, page);
   const size = Math.min(50, Math.max(1, pageSize));
-  // 排序模式下上游无 sort：从第 1 页取宽窗口，本地排序后再切页，否则跨页无序
-  const sortMode = sort === "installCount" || sort === "name";
-  const fetchPage = sortMode ? 1 : p;
-  const fetchSize = sortMode ? 50 : size;
+  // 上游支持服务端全盘排序：sortBy=downloads（实测首条 dev-god≈12.1M，跨页全局单调）、stars、updated。
+  // sortBy=name 上游返回空数组（bug），故 name 只能本地排。旧实现取 50 条窗口本地排 installCount，
+  // 那是对 231,131 条全量的近似——禁止。
+  const serverSort = sort === "installCount" ? "downloads" : sort === "stars" ? "stars" : sort === "updated" ? "updated" : "";
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   if (category) params.set("category", category);
-  params.set("page", String(fetchPage));
-  params.set("pageSize", String(fetchSize));
+  params.set("page", String(p));
+  params.set("pageSize", String(size));
+  if (serverSort) params.set("sortBy", serverSort);
   // 同一查询 5 分钟内复用，避免重复打上游。
-  const searchKey = `skillhub:search:${query.toLowerCase()}:${category}:${fetchPage}:${fetchSize}:${sort || ""}`;
+  const searchKey = `skillhub:search:${query.toLowerCase()}:${category}:${p}:${size}:${sort || ""}`;
   let data = cache ? await cache.get(searchKey, 5 * 60 * 1000) : undefined;
   if (!data) {
     data = await getJson(`${BASE}?${params.toString()}`);
     if (cache && (Array.isArray(data.skills) || Array.isArray(data.items))) await cache.put(searchKey, data);
   }
   const rows = Array.isArray(data.skills) ? data.skills : Array.isArray(data.items) ? data.items : [];
-  if (sortMode) {
-    if (sort === "installCount") {
-      const k = (r) => Number(r.downloads ?? r.installCount ?? r.installs) || 0;
-      rows.sort((a, b) => k(b) - k(a));
-    } else {
-      rows.sort((a, b) => String(a.name || a.slug || "").localeCompare(String(b.name || b.slug || "")));
-    }
+  // 仅 name 本地排（上游 sortBy=name 返回空）；installCount/stars/updated 由服务端全盘排序
+  if (sort === "name") {
+    rows.sort((a, b) => String(a.name || a.slug || "").localeCompare(String(b.name || b.slug || "")));
   }
-  const pageRows = sortMode ? rows.slice((p - 1) * size, p * size) : rows;
+  const pageRows = rows;
   const items = pageRows.map(toItem);
   return {
     source: "skillhub",

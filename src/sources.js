@@ -6,6 +6,7 @@ import os from "node:os";
 import { dirname, join } from "node:path";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { enrichPageDescriptions, enrichSkillsShFast } from "./enrich.js";
+import { supportsSort as capabilitySupports, sortKeysFor } from "./sort-capability.js";
 import {
   searchClawHub,
   warmClawHubCatalog,
@@ -237,7 +238,10 @@ export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cach
 function sortSkillsShRows(rows, sort) {
   if (!Array.isArray(rows) || !rows.length) return rows;
   if (sort === "installCount") {
-    return rows.sort((a, b) => (Number(b.installCount ?? b.downloads) || 0) - (Number(a.installCount ?? a.downloads) || 0));
+    // search API 的字段就叫 installs（实测 id,source,skillId,name,installs）；
+    // 旧代码读 installCount ?? downloads → 恒 undefined → 排序静默退化成不排序。
+    const v = (r) => Number(r.installs ?? r.installCount ?? r.downloads) || 0;
+    return rows.sort((a, b) => v(b) - v(a));
   }
   if (sort === "name") {
     return rows.sort((a, b) => String(a.slug || a.name || "").localeCompare(String(b.slug || b.name || "")));
@@ -256,7 +260,7 @@ export async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cach
   const depth = Math.min(200, size * p);
   const url = `https://www.skills.sh/api/search?q=${encodeURIComponent(q)}&limit=${depth}`;
   // 上游每次现算：同一查询短时内复用结果，重复搜索从 ~3s 降到 ~0ms。
-  const searchKey = `skillssh:search:${q.toLowerCase()}:${depth}`;
+  const searchKey = `skillssh:search:${q.toLowerCase()}:${depth}:${sort || ""}`;
   let data = cache ? await cache.get(searchKey, 5 * 60 * 1000) : undefined;
   if (!data) {
     data = JSON.parse(await fetchText(url, 40000));
@@ -340,7 +344,7 @@ export async function resolveSkillsShInstall(url, cache) {
 
 // ------------------------------------------------------------------ browse.sh
 /** browse.sh exposes the whole catalogue with title, description, category and tags. */
-export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cache }) {
+export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
   let rows = cache ? await cache.get("browse_sh_api", 30 * 60 * 1000) : undefined;
@@ -368,11 +372,24 @@ export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cach
       upstreamUrl: "",
       skillDir: "",
       reference: raw.slug,
+      // 上游字段叫 installCount（实测 459/479 条有值），面板排序与卡片统一读 installs。
+      installs: Number(raw.installCount ?? raw.downloads ?? 0) || 0,
+      updated: raw.updated || "",
       installable: true,
       note: "通过官方 browse CLI 安装（npx browse skills add）",
     });
   }
   // browse.sh 一次返回整份目录（约 480 条），本地切片即可真正翻页。
+  // 排序在完整 matched 集合上做（不是窗口）：这就是真实全盘排序。
+  // 479 条一次全给 → 本地排 = 真实全盘排（不是窗口近似）。
+  // 上游原生字段：installCount、updated（实测 2026-05-19 等）。
+  if (sort === "installCount") {
+    matched.sort((a, b) => (Number(b.installs) || 0) - (Number(a.installs) || 0));
+  } else if (sort === "updated") {
+    matched.sort((a, b) => (Date.parse(b.updated || "") || 0) - (Date.parse(a.updated || "") || 0));
+  } else if (sort === "name") {
+    matched.sort((a, b) => String(a.name || a.slug || "").localeCompare(String(b.name || b.slug || "")));
+  }
   const items = pageSlice(matched, p, size);
   // Web API 无结果且带查询词 → 用官方 browse CLI（真 JSON）复核；仅 API 故障/无结果时启用。
   if (items.length === 0 && q) {
@@ -424,11 +441,7 @@ export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cach
 const fallbackCache = makeCache(join(safeTempDir(), "dsh-market-cache"));
 
 
-// ---------------------------------------------------------------- 排序能力声明
-// 「按安装数」只有在源确实提供安装量时才有意义。没有该字段的源若参与排序，
-// 会把它原本的上游顺序打乱成任意的第三种顺序（假排序）——比不排更差。
-// skills.sh 的卡片 installs 恒为 0（sitemap 不含安装量），因此不支持按安装数排序。
-const INSTALL_COUNT_CAPABLE = new Set(["clawhub", "trusttools", "lobehub", "skillhub", "modelscope", "skillsmp"]);
+// 排序能力矩阵见 src/sort-capability.js（唯一事实源，实测得出）。
 
 /** 该源的该项排序是否有真实数据支撑。 */
 
@@ -455,11 +468,8 @@ export function installRefOf(item) {
   return String(item.upstreamUrl || item.id || "");
 }
 
-export function supportsSort(source, sort) {
-  const key = String(sort || "");
-  if (key !== "installCount") return key === "name" || key === "";
-  return INSTALL_COUNT_CAPABLE.has(String(source || ""));
-}
+export const supportsSort = capabilitySupports;
+export { sortKeysFor };
 
 /** 排序与展示使用同一个取值口径，避免「排了但看起来没排」。 */
 export function sortKeyOf(item, sort) {

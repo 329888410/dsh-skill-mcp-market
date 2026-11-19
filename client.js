@@ -1208,8 +1208,28 @@ window.__ModuleLoader__.load({
                         value: sort,
                         onChange: (e) => setSort(e.target.value),
                       },
-                        h('option', { value: 'default' }, ['skillsmp', 'browse.sh', 'skills.sh'].includes(source) ? '默认顺序' : '按安装数'),
-                        h('option', { value: 'name' }, '按名称')),
+                        // 排序项按该源的实测原生能力生成（与 src/sort-capability.js 矩阵一致，
+                        // 由 test-sort-options 的 Test 5 锁定）。不支持的键不下发，避免「选了没反应」。
+                        ...(() => {
+                          const CAPS = {
+                            'skills.sh': ['installCount', 'name'],
+                            clawhub: ['installCount', 'stars', 'newest', 'updated', 'trending', 'name'],
+                            skillsmp: ['name'],
+                            trusttools: ['installCount', 'name'],
+                            'browse.sh': ['installCount', 'updated', 'name'],
+                            lobehub: ['installCount', 'stars', 'newest', 'updated', 'name'],
+                            skillhub: ['installCount', 'stars', 'updated', 'name'],
+                            modelscope: ['installCount', 'stars', 'newest', 'updated', 'name'],
+                          };
+                          const LABEL = {
+                            installCount: '按安装数', stars: '按星级', newest: '最新',
+                            updated: '最近更新', trending: '热门', name: '按名称',
+                          };
+                          const caps = CAPS[source] || ['name'];
+                          const items = [h('option', { key: 'default', value: 'default' }, '默认顺序')];
+                          for (const k of caps) items.push(h('option', { key: k, value: k }, LABEL[k] || k));
+                          return items;
+                        })()),
             ),
             tab === 'mcp' && mcpSource === 'lobehub' && mcpCategories.length > 0
               ? h('div', { style: S.row },

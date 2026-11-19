@@ -2,6 +2,23 @@
 
 ## 0.5.100
 
+- **按官方原生能力扩展排序：新增 按星级 / 最新 / 最近更新 / 热门（TDD 145 项）**
+  - 实测能力矩阵（同批次对比法 + 字段单调性双重验证，避开下载量计数器漂移造成的假阳性）：
+    - clawhub browse `sort=`：downloads / stars / newest / updated / trending / name 均为服务端全盘排序；**installs 不单调**（数据质量差）→ 用 downloads 代替
+    - skillhub `sortBy=`：downloads / stars / updated 服务端全盘；`sortBy=name` 上游返回空数组（bug）→ name 本地排
+    - lobehub CLI `--sort`：createdAt / stars / installCount / name / relevance / ratingAverage / commentCount / updatedAt 原生支持
+    - trusttools：仅 `sort_by=install_count` 有效；stars 被忽略、newest/updated/trending/name 返回 EMPTY → 诚实不支持
+    - modelscope：无任何服务端 sort（实测 9 种参数名全被忽略）→ 全量拉取（上游深度上限≈45k）后本地排 DownloadCount / SourceStar / GmtCreate / GmtModify
+    - browse.sh：一次全给 479 条 → 本地排 installCount / updated / name 即真实全盘
+    - skillsmp：API 被 Cloudflare 挡、CLI 仅 stars|recent → 诚实声明只支持 name
+  - 新增 `src/sort-capability.js` 作为能力矩阵唯一事实源（server 侧），dispatcher 的 supportsSort 改为委托它；删除旧的 INSTALL_COUNT_CAPABLE 单键表。
+  - `sortRawRows` 泛化为 getters 映射（键→字段），排序键与卡片展示字段一一对应；clawhub 卡片补 stars/createdAt/updatedAt，browse.sh 补 updated。
+  - UI 下拉改为按能力矩阵生成：默认顺序 + 该源支持的排序项（按安装数/按星级/最新/最近更新/热门/按名称）；不支持的键不下发，消除「选了没反应」。
+  - 修复本轮引入的回归：msDepthHint 声明被误插到 trusttools 函数内，导致 modelscope 抛 ReferenceError 静默返回 0 条（test-paging 抓到）。
+  - 测试：新增 test-full-sort(24)、test-sort-options(24)；全套 **197 项全绿**（16 套件，另 2 项因上游不可达 skip）。
+
+## 0.5.100
+
 - **恢复面板「修复会话」+ 清除 164 行死代码（TDD，离线 100 项全绿）**
   - **0.5.98 的功能破坏（本批修复）**：当时把 `sessions.repair` 加入 `HTTP_BLOCKED_OPS` 整体封禁，但面板正是它唯一的合法调用方——「修复会话」按钮（含 dryRun 预演）整个失效。防护应分层：该 op 已有 confirm 闸门 + dryRun 豁免，封禁多余且有害。`HTTP_BLOCKED_OPS` 清空；新增 `test-rpc-surface.mjs`(6) 锁住不变量：**面板调用的任何 op 都不得被服务端封禁**，防止再次「安全修复破坏功能」。
   - **死代码清除**：`sources.js` 删除 LobeHub MCP 遗留集群（searchLobeHubMcp / lobehubMcpConfig / extractMcpServers / decodeHtml / ENTITIES / lobehubSlugs / SKILLS_SH_INSTALL_RESOLVED_KEY，-100 行，纯删除零新增）；`skills.js` 删除精选目录遗留（curatedSkills / searchFromSources / CATALOG_FILE / catalogCache / HERE / fileURLToPath import，-64 行——catalog 目录本就不存在、files[] 也不打包它，curatedSkills 永远返回空数组）。每个符号删除前均经全仓引用扫描确认零调用方。
