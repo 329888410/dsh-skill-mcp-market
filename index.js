@@ -1610,6 +1610,15 @@ export async function apply(ctx, config = {}) {
         return { mcpDirs: settings.mcpDirs, items: await mcp.list() };
       case "mcp.toggle":
         return mcp.setEnabled(body.serverName, body.enabled);
+      case "mcp.trash":
+        return mcp.trashList();
+      case "mcp.restore": {
+        const entry = expandPath(String(body.path || ""));
+        if (!entry) throw new Error("请提供回收站条目路径");
+        return mcp.trashRestore({ path: entry });
+      }
+      case "mcp.trashEmpty":
+        return mcp.trashEmpty();
       case "mcp.uninstall":
         return mcp.uninstall(body.serverName);
       case "sessions.scan": {

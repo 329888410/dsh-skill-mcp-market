@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.104
+
+- **MCP 子页签新增连接器回收站（列出 / 恢复 / 清空），TDD 29 项真实文件系统往返测试**
+  - 数据面早就存在：`src/mcp.js` 的 `uninstall()` 一直把定义移入 `<mcpDir>/.trash/<name>-<stamp>.json`（实测该目录已积累 6 个条目），缺的只是 UI 与 RPC op —— 本改动零数据迁移。
+  - **不能复用 `skills.js` 的 `listTrash`/`restoreFromTrash`**（实测）：其 `TRASH_NAME=/^(.*)-(stamp)(\.md)?$/` 对 `.json` 条目 match=false，恢复时又强加 `.md` 后缀，而 `readDefs` 只认 `.json` —— 复用等于把恢复变成彻底丢失。故在 `src/mcp.js` 内自实现 `trashList/trashRestore/trashEmpty`。
+  - 恢复后**直接 `reconcile()`**，不依赖目录 watcher：`watch(dir)` 非 recursive，`.trash` 内的变化不会触发回调，只靠 watcher 会在「恢复完成」与「连接器上线」之间留下无人负责的窗口。
+  - 同名冲突不覆盖：恢复时若 `<name>.json` 已存在，另存为 `<name>-2.json` **并同步改写定义内的 serverName**，否则两个文件同名会被 `readDefs` 按 key 合并、静默遮蔽一个；UI 提示「已恢复为别名」。
+  - 路径安全：`trashRestore` 校验条目父目录必须等于某个 `<mcpDir>/.trash`，越界与非回收站路径一律拒绝（Test 5 锁定）。
+  - 新增 3 个 op：`mcp.trash`、`mcp.restore`、`mcp.trashEmpty`；后者登记进 `DESTRUCTIVE_OPS`，HTTP 面必须 `confirm:true`。`HTTP_BLOCKED_OPS` 保持为空（面板是唯一合法调用方）。
+  - 契约更新：`test-manage-panel` 原「MCP 段不含回收站」断言按具体标记拆分（技能回收站 `trashList` vs MCP 回收站 `mcpTrashList`），新增双向不泄漏断言；两个套件的 op 白名单登记新 op。
+  - 进入 MCP 子页签自动拉取回收站（与技能侧一致，定义在 loader 之后以免 TDZ）。
+
 ## 0.5.103
 
 - **修复 MCP 安装的假阴性告警，改为实时启动进度（TDD 17 项）**

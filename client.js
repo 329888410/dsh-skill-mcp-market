@@ -291,6 +291,9 @@ window.__ModuleLoader__.load({
       const [sessionBusy, setSessionBusy] = useState('');
       // 回收站：列出/恢复/清空（删除是移入 .trash，不是真删）
       const [trashList, setTrashList] = useState(null);
+      // MCP 连接器回收站：卸载已把定义写入 <mcpDir>/.trash，这里把它显性化并可恢复
+      const [mcpTrashList, setMcpTrashList] = useState(null);
+      const [mcpTrashBusy, setMcpTrashBusy] = useState('');
       const [trashBusy, setTrashBusy] = useState('');
       // 最近一次的查询结果缓存（按 tab+source+category+sort+query 作 key），
       // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
@@ -905,6 +908,60 @@ window.__ModuleLoader__.load({
           loadTrash().catch(() => {});
         }
       }, [tab, manageTab, trashList, trashBusy, loadTrash]);
+
+      // MCP 子页签同理：首次进入自动拉一次回收站（定义在 loadMcpTrash 之后，避免 TDZ）
+      useEffect(() => {
+        if (tab === 'manage' && manageTab === 'mcp' && mcpTrashList === null && !mcpTrashBusy) {
+          loadMcpTrash().catch(() => {});
+        }
+      }, [tab, manageTab, mcpTrashList, mcpTrashBusy, loadMcpTrash]);
+
+      const loadMcpTrash = async () => {
+        setMcpTrashBusy('list');
+        setError('');
+        try {
+          const d = await call('mcp.trash', {});
+          setMcpTrashList(d);
+          setNotice(`MCP 回收站共 ${d.items.length} 项`);
+        } catch (e) {
+          setError(`读取 MCP 回收站失败：${e.message || e}`);
+        } finally {
+          setMcpTrashBusy('');
+        }
+      };
+
+      const restoreMcpTrashEntry = async (entry) => {
+        setMcpTrashBusy(`restore:${entry.path}`);
+        setError('');
+        setNotice('');
+        try {
+          const r = await call('mcp.restore', { path: entry.path });
+          setNotice(r.aliased
+            ? `已恢复为 ${r.serverName}（同名定义已存在，改用别名避免覆盖）`
+            : `已恢复 ${r.serverName}，连接器已重新挂载`);
+          await loadMcpTrash();
+          await loadInstalled();
+        } catch (e) {
+          setError(`恢复失败：${e.message || e}`);
+        } finally {
+          setMcpTrashBusy('');
+        }
+      };
+
+      const emptyMcpTrash = async () => {
+        setMcpTrashBusy('empty');
+        setError('');
+        setNotice('');
+        try {
+          const r = await call('mcp.trashEmpty', { confirm: true });
+          setNotice(`已清空 MCP 回收站，删除 ${r.removed} 项（不可恢复）`);
+          await loadMcpTrash();
+        } catch (e) {
+          setError(`清空失败：${e.message || e}`);
+        } finally {
+          setMcpTrashBusy('');
+        }
+      };
 
       const restoreTrashEntry = async (entry) => {
         setTrashBusy(`restore:${entry.path}`);
@@ -1758,6 +1815,22 @@ window.__ModuleLoader__.load({
                   },
                 }, '打开目录')),
               h('div', { style: S.grid }, installedMcps),
+              h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
+                `MCP 回收站（${mcpTrashList ? mcpTrashList.items.length : '?'}）`,
+                h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: mcpTrashBusy === 'list', onClick: () => loadMcpTrash() }, '读取回收站'),
+                mcpTrashList && mcpTrashList.items.length > 0
+                  ? h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: mcpTrashBusy === 'empty', onClick: () => emptyMcpTrash() }, '清空')
+                  : null,
+                h('span', { style: { ...S.status, fontSize: 12 } }, '卸载即移入 .trash，可随时恢复')),
+              mcpTrashList && mcpTrashList.items.length > 0
+                ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 240, overflow: 'auto', width: '100%' } },
+                    mcpTrashList.items.map((item) => h('div', { key: item.path, style: { ...S.row, fontSize: 11, gap: 8 } },
+                      h('span', { style: { fontWeight: 600, minWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.serverName),
+                      h('span', { style: { opacity: 0.7 } }, item.transport || 'stdio'),
+                      h('span', { style: { opacity: 0.6 } }, item.deletedAt ? item.deletedAt.slice(0, 16).replace('T', ' ') : ''),
+                      h('span', { style: { flex: '1', opacity: 0.55, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title || ''),
+                      h('button', { style: { ...S.btn(), padding: '0 6px', height: 22, fontSize: 11 }, disabled: mcpTrashBusy === `restore:${item.path}`, onClick: () => restoreMcpTrashEntry(item) }, '恢复'))))
+                : (mcpTrashList ? h('div', { style: S.status }, 'MCP 回收站是空的。') : null),
               ) : null,
             ) : null,
             tab === 'settings' && settings

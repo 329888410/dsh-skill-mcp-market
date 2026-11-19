@@ -59,7 +59,11 @@ console.log('Test 4: 结构归属——回收站/上传区在技能子页签，M
     const mcpOnly = skillSeg.slice(cut > 0 ? cut : 4000);
     check('回收站在技能段内', skillOnly.includes('回收站（'), 'skillOnly 未见回收站');
     check('上传区在技能段内', skillOnly.includes('浏览文件夹'));
-    check('MCP 段不含回收站', !mcpOnly.slice(0, 3000).includes('回收站（'));
+    // 0.5.104：MCP 子页签现在有自己的「MCP 回收站」。旧断言的意图是「技能回收站不泄漏到 MCP 段」，
+    // 因此按具体标记判定：技能回收站用 trashList，MCP 回收站用 mcpTrashList。
+    check('MCP 段不含技能回收站', !mcpOnly.slice(0, 4000).includes('回收站（${trashList'));
+    check('MCP 段含自己的 MCP 回收站', mcpOnly.includes('MCP 回收站（'));
+    check('技能段不含 MCP 回收站', !skillOnly.includes('MCP 回收站（'));
     check('MCP 段不含上传区', !mcpOnly.slice(0, 3000).includes('浏览文件夹'));
     check('已装 MCP 卡片在 MCP 段', mcpOnly.includes('installedMcps') || mcpOnly.includes('filteredMounted'));
   }
@@ -84,9 +88,10 @@ console.log('Test 6: 语法与零新增 op');
   try { execSync('node --check client.js', { cwd: W, timeout: 20000, stdio: 'pipe' }); } catch { ok = false; }
   check('client.js 语法通过', ok);
   const ops = [...c.matchAll(/call\('([\w.]+)'/g)].map((m) => m[1]);
-  const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
+  // 0.5.104 起新增 MCP 回收站三 op（Test 5 的「零新增 op」承诺随之更新为「只增已登记的 op」）
+  const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','mcp.trash','mcp.restore','mcp.trashEmpty','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
   const unknown = [...new Set(ops)].filter((o) => !known.has(o));
-  check('未引入未知 op（本次零新增后端承诺）', unknown.length === 0, unknown.join(','));
+  check('未引入未登记 op', unknown.length === 0, unknown.join(','));
 }
 
 console.log('');

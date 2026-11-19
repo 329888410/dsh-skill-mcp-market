@@ -1,7 +1,7 @@
 // MCP connector manager: definitions on disk, live mounts through the shipped dsh-mcp-client plugin.
 import { readFile, readdir, rm } from "node:fs/promises";
 import { existsSync, watch } from "node:fs";
-import { join } from "node:path";
+import { join, dirname, basename, resolve } from "node:path";
 import { ensureDir, writeJson } from "./home.js";
 import { importShipped, pluginFrom, SHIPPED } from "./shipped.js";
 
@@ -322,6 +322,116 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     };
   }
 
+  // ------------------------------------------------------------- MCP 回收站
+  // uninstall() 把定义移到 <dir>/.trash/<serverName>-<stamp>.json。这里提供列出/恢复/清空。
+  // 不复用 skills.js 的 listTrash/restoreFromTrash：它们的 TRASH_NAME 正则只认 .md 后缀，
+  // 对 .json 条目解析失败，且恢复时强加 .md 后缀 —— readDefs 只认 .json，恢复即丢失。
+  const TRASH_FILE = /^(.*)-(\d{4}-\d{2}-\d{2}T[0-9-]+Z)\.json$/;
+  const trashRoots = () => dirs.map((dir) => join(dir, ".trash"));
+
+  async function trashList() {
+    const items = [];
+    for (const root of trashRoots()) {
+      if (!existsSync(root)) continue;
+      let names = [];
+      try {
+        names = await readdir(root);
+      } catch {
+        continue;
+      }
+      for (const file of names) {
+        if (!file.endsWith(".json") || file.startsWith(".")) continue;
+        const full = join(root, file);
+        const match = TRASH_FILE.exec(file);
+        let parsed = null;
+        try {
+          parsed = JSON.parse(await readFile(full, "utf8"));
+        } catch {
+          parsed = null;
+        }
+        items.push({
+          name: file,
+          path: full,
+          trashRoot: root,
+          kind: "file",
+          serverName: match ? match[1] : file.replace(/\.json$/, ""),
+          deletedAt: match ? match[2] : "",
+          title: parsed?.title || "",
+          transport: parsed?.transport || "",
+          bytes: Buffer.byteLength(JSON.stringify(parsed ?? {}), "utf8"),
+        });
+      }
+    }
+    items.sort((a, b) => String(b.deletedAt).localeCompare(String(a.deletedAt)));
+    return { items, total: items.length };
+  }
+
+  async function trashRestore({ path: entryPath } = {}) {
+    const full = String(entryPath || "");
+    if (!full || !existsSync(full)) throw new Error("回收站条目不存在");
+    const parent = resolve(dirname(full));
+    const root = trashRoots().find((r) => resolve(r) === parent);
+    if (!root) throw new Error("只能恢复 MCP 回收站（<目录>/.trash）内的条目");
+    const base = basename(full);
+    const match = TRASH_FILE.exec(base);
+    if (!match) throw new Error("回收站条目名不合法");
+    const dir = dirname(root);
+    const serverName = match[1];
+    let target = join(dir, `${serverName}.json`);
+    let finalName = serverName;
+    if (existsSync(target)) {
+      // 同名冲突：另存为别名，并把定义里的 serverName 一起改掉，
+      // 否则两个文件同名会被 readDefs 按 key 合并、静默遮蔽一个。
+      for (let index = 2; index < 1000; index += 1) {
+        const candidate = join(dir, `${serverName}-${index}.json`);
+        if (!existsSync(candidate)) {
+          target = candidate;
+          finalName = `${serverName}-${index}`;
+          break;
+        }
+      }
+    }
+    let raw = {};
+    try {
+      raw = JSON.parse(await readFile(full, "utf8"));
+    } catch {
+      throw new Error("回收站条目内容不是合法 JSON");
+    }
+    raw.serverName = finalName;
+    delete raw.filePath;
+    delete raw.dir;
+    await ensureDir(dir);
+    await writeJson(target, raw);
+    await rm(full, { force: true });
+    // 恢复后立刻 reconcile：watch(dir) 非 recursive，.trash 内的变化不会触发回调，
+    // 只靠 watcher 会让「恢复完成」与「连接器上线」之间出现无人负责的窗口。
+    await reconcile().catch((error) => logWarn(`MCP reconcile after restore failed: ${String(error?.message || error)}`));
+    return { ok: true, serverName: finalName, restoredTo: target, aliased: finalName !== serverName };
+  }
+
+  async function trashEmpty() {
+    let removed = 0;
+    for (const root of trashRoots()) {
+      if (!existsSync(root)) continue;
+      let names = [];
+      try {
+        names = await readdir(root);
+      } catch {
+        continue;
+      }
+      for (const file of names) {
+        if (!file.endsWith(".json")) continue;
+        try {
+          await rm(join(root, file), { force: true });
+          removed += 1;
+        } catch {
+          // 单个条目删不掉不影响其余
+        }
+      }
+    }
+    return { ok: true, removed };
+  }
+
   function startWatching() {
     for (const dir of dirs) {
       if (!existsSync(dir)) continue;
@@ -359,5 +469,5 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     for (const name of [...mounted.keys()]) unmount(name);
   }
 
-  return { init, dispose, list, install, uninstall, setEnabled, probe, detail, update, reconcile, mount, unmount, toolNamesFor, readDefs };
+  return { init, dispose, list, install, uninstall, setEnabled, probe, detail, update, reconcile, mount, unmount, toolNamesFor, readDefs, trashList, trashRestore, trashEmpty };
 }
