@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.121
+
+- **工具级禁用（差距清单 Task B，最高价值项）：从「整台连接器停用」细化到「只禁用其中几个工具」**
+  - 机制依据（都实测取证，非推测）：宿主 `ctx.tools.restrict({ deny })` 只接受 scoped ctx（`agent.ctx`），全局上下文调用直接抛错（`@deepseek-ai/dsh-tools/src/index.ts:165`）；返回精确 disposer。agent 枚举走 `ctx.get('agents').list()`（AgentRegistry.list() 存在，服务名 `agents` 由 dsh-agent 以 declare module 提供）。`restrict` 命名未知工具会抛错，因此施加前先与 `view(undefined).restrictableNames` 求交集。
+  - `src/tool-filter.js`（新增，204 行）：策略持久化到 `<market>/tool-filter.json`；为每个 agent 在其 scope 内挂一个临时插件，`apply(scoped)` 里调 `restrict`，用「生效名单签名」比对去重，变更时先 undo 再重施加；订阅 `agent/created` / `agent/disposed` 做增删；dispose 逐一撤销。**动态 `ctx.get('agents')` 而非静态 inject** —— 服务缺失时功能整体降级为 no-op，绝不因一个可选功能让插件挂不起来（测试锁住这条）。
+  - 两个只读/幂等 op：`mcp.tools.get`、`mcp.tools.set`（按服务器前缀合并 —— 只动 `mcp__<server>__*`，其它服务器与手工项原样保留；`replaceServerDeny` 有单元测试）。`mcp.detail` 在**所有 return 分支的共同上游**挂 `deniedTools`，lobehub 分支的 `{...local}` 也带得上。
+  - 面板：浮窗内每个工具前加 checkbox（勾掉 = 禁用该工具，从模型工具表消失、连 schema token 一起省），标签 `stopPropagation` 防误触展开参数；底部「已禁用 N 个 · M 个会话已生效」+「保存禁用列表」（按 dirty 门控）；旧服务端无 `toolDetails` 时 checkbox 置灰并说明。
+  - 顺带修正我自己的两处 RED 期错误：断言把 `deniedTools` 写在 `src/mcp.js`（架构上应在 index 层，toolFilter 活在 index；注入 manager 会为可选功能加耦合），以及 `applied` 曾用 `listAgents().length`（不是真实生效数，改为 `mountedCount()`）。
+  - 测试：新增 `test-tool-deny.mjs`（38 项，注册为第 33 个 CI 门套件）。**非正则锁**：用假 ctx 做真单元验证——restrict 被调用、未知名过滤、undo 触发、清空后不再 restrict、新 agent 被施加、文件落盘、`deniedFor` 前缀隔离。发现并修掉三处连带：新测试用裸 `tmpdir()` 触犯卫生锁（改 `safeTempDir`）、checkbox 让浮窗变长使 popup 窗口不够（2203→2990 实测重设）、`test-skill-subpanel-ui` 自己的 known Set 未登记两个新 op。
+  - 验证：离线 28 套件全绿；CI 门 33 套件。
 ## 0.5.120
 
 - **管理面板：加载态/空态诚实化、坏定义可见、工具浮窗检索（差距清单 Task A）**

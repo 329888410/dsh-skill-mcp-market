@@ -60,7 +60,7 @@ console.log('Test 4: 浮窗渲染工具清单与详情');
   // 锚换成唯一的 搜索工具名或描述（浮层内搜索框），遮罩在其上方约 1.1k
   const mapAt = c.indexOf('搜索工具名或描述');
   const s = mapAt - 2200;   // 遮罩在锚点上方 1523（实测）
-  const seg = c.slice(s, mapAt + 2800);   // tool.parameters 在锚点下方 2203（实测）
+  const seg = c.slice(s, mapAt + 4200);   // checkbox+保存行使卡片变长：parameters 现在锚点下方 ~3.4k（实测）
   check('浮窗存在（fixed 遮罩）', s > 0 && /position: 'fixed'/.test(seg));
   check('渲染工具名', /tool\.name/.test(seg));
   check('渲染工具描述', /tool\.description/.test(seg));

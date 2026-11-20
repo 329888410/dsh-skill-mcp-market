@@ -63,7 +63,7 @@ console.log('');
 console.log('Test 5: 零新增 op + 语法');
 {
   const ops = [...c.matchAll(/call\('([\w.]+)'/g)].map((x) => x[1]);
-  const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','mcp.probe','mcp.status','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','mcp.trash','mcp.restore','mcp.trashEmpty','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
+  const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','mcp.probe','mcp.status','mcp.tools.get','mcp.tools.set','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','mcp.trash','mcp.restore','mcp.trashEmpty','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
   const unknown = [...new Set(ops)].filter((o) => !known.has(o));
   check('未引入未知 op（进度复用 mcp.list）', unknown.length === 0, unknown.join(','));
   let ok = true;

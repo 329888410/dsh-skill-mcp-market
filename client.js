@@ -386,6 +386,9 @@ window.__ModuleLoader__.load({
       const [mcpToolOpen, setMcpToolOpen] = useState('');
       // 浮窗里的工具检索词（几十个工具的连接器需要筛）
       const [toolQuery, setToolQuery] = useState('');
+      // 工具级禁用草稿：打开浮窗时从 deniedTools 预勾，保存走 mcp.tools.set。
+      const [toolDenyDraft, setToolDenyDraft] = useState([]);
+      const [toolDenyApplied, setToolDenyApplied] = useState(0);
       // 无法解析的定义文件：readDefs 会跳过它们，面板必须说出来，否则用户以为连接器被删了
       const [mcpBroken, setMcpBroken] = useState([]);
       const [trashBusy, setTrashBusy] = useState('');
@@ -691,6 +694,20 @@ window.__ModuleLoader__.load({
 
       // 点卡片本体：读 mcp.detail 的 toolDetails（宿主 definition 的 name/description/parameters）。
       // 纯读操作，不连接、不重启连接器；未挂载时 toolDetails 为空，浮窗会如实说明原因。
+      const saveToolDeny = async (serverName, draft) => {
+        setBusy('saveToolDeny');
+        setError('');
+        try {
+          const r = await call('mcp.tools.set', { serverName, deny: draft });
+          setToolDenyApplied(Number(r.applied) || 0);
+          setNotice(`已保存：${(r.deny || []).length} 个工具被禁用，当前 ${r.applied || 0} 个会话已生效`);
+        } catch (e) {
+          setError(`保存禁用列表失败：${e.message || e}`);
+        } finally {
+          setBusy('');
+        }
+      };
+
       const openMcpTools = async (serverName) => {
         setBusy(`tools:${serverName}`);
         setError('');
@@ -706,6 +723,11 @@ window.__ModuleLoader__.load({
             mounted: Boolean(data.mounted),
             title: data.title || serverName,
           });
+          // deniedTools 可能是旧服务端（没有该字段）→ 空数组起步，checkbox 全不勾
+          const deniedOriginal = Array.isArray(data.deniedTools) ? data.deniedTools.slice() : [];
+          setMcpTools((prev) => (prev ? { ...prev, deniedOriginal } : prev));
+          setToolDenyDraft(deniedOriginal.slice());
+          setToolDenyApplied(0);
         } catch (e) {
           setError(`读取工具清单失败：${e.message || e}`);
         } finally {
@@ -1844,7 +1866,17 @@ window.__ModuleLoader__.load({
                         return h('div', { key: tool.name, style: { ...S.card, padding: 10 } },
                           h('div', { style: { ...S.row, justifyContent: 'space-between', cursor: 'pointer' },
                             onClick: () => setMcpToolOpen(open ? '' : tool.name) },
-                            h('span', { style: { fontWeight: 600, fontFamily: 'ui-monospace, monospace', fontSize: 12 } }, short),
+                            h('label', { style: { ...S.row, gap: 6, cursor: mcpTools.hasDetails ? 'default' : 'not-allowed' },
+                              onClick: (e) => e.stopPropagation(),
+                              title: mcpTools.hasDetails ? '取消勾选 = 禁用该工具（从模型工具表消失，真正省上下文）' : '旧服务端未提供工具详情，无法编辑禁用列表',
+                            },
+                              h('input', {
+                                type: 'checkbox',
+                                disabled: !mcpTools.hasDetails,
+                                checked: toolDenyDraft.includes(tool.name),
+                                onChange: () => setToolDenyDraft((prev) => (prev.includes(tool.name) ? prev.filter((x) => x !== tool.name) : [...prev, tool.name])),
+                              }),
+                              h('span', { style: { fontWeight: 600, fontFamily: 'ui-monospace, monospace', fontSize: 12 } }, short)),
                             h('span', { style: { ...S.status, fontSize: 11 } }, open ? '收起参数' : '展开参数')),
                           h('div', { style: { ...S.desc, marginTop: 4 } }, tool.description || '（上游未提供描述）'),
                           open
@@ -1852,7 +1884,18 @@ window.__ModuleLoader__.load({
                               style: { fontSize: 11, opacity: 0.85, whiteSpace: 'pre-wrap', margin: '8px 0 0', background: 'rgba(15, 23, 42, 0.04)', padding: 8, borderRadius: 6, maxHeight: 260, overflow: 'auto' },
                             }, tool.parameters ? JSON.stringify(tool.parameters, null, 2) : '（无参数 schema）')
                             : null);
-                      }))))
+                      }))),
+                    mcpTools.hasDetails && mcpTools.toolDetails.length > 0
+                      ? h('div', { style: { ...S.row, justifyContent: 'space-between', marginTop: 10 } },
+                          h('span', { style: { ...S.status, fontSize: 11 } },
+                            `已禁用 ${toolDenyDraft.length} 个`,
+                            toolDenyApplied > 0 ? ` · ${toolDenyApplied} 个会话已生效` : ''),
+                          h('button', {
+                            style: S.btn('primary'),
+                            disabled: busy === 'saveToolDeny' || toolDenyDraft.join('\u0000') === (mcpTools.deniedOriginal || []).join('\u0000'),
+                            onClick: () => saveToolDeny(mcpTools.serverName, toolDenyDraft),
+                          }, busy === 'saveToolDeny' ? '保存中…' : '保存禁用列表'))
+                      : null)
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,

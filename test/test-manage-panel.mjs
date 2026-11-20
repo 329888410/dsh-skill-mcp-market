@@ -90,7 +90,7 @@ console.log('Test 6: 语法与零新增 op');
   check('client.js 语法通过', ok);
   const ops = [...c.matchAll(/call\('([\w.]+)'/g)].map((m) => m[1]);
   // 0.5.104 起新增 MCP 回收站三 op（Test 5 的「零新增 op」承诺随之更新为「只增已登记的 op」）
-  const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','mcp.probe','mcp.status','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','mcp.trash','mcp.restore','mcp.trashEmpty','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
+  const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','mcp.probe','mcp.status','mcp.tools.get','mcp.tools.set','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','mcp.trash','mcp.restore','mcp.trashEmpty','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
   const unknown = [...new Set(ops)].filter((o) => !known.has(o));
   check('未引入未登记 op', unknown.length === 0, unknown.join(','));
 }

@@ -22,6 +22,7 @@ import { emptyTrash, installSkill, listInstalledSkills, listTrash, restoreFromTr
 import { fetchSkillMd, parseRepoRef } from "./src/github.js";
 import { skillMetaFromText, kebab } from "./src/frontmatter.js";
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
+import { createToolFilter, replaceServerDeny } from "./src/tool-filter.js";
 import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryDefinitionByName, searchMcpRegistryPage } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
 import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
@@ -430,6 +431,17 @@ export async function apply(ctx, config = {}) {
   });
   await mcp.init();
 
+  // 工具级禁用：策略文件与定义目录同根（market 目录），agent 作用域内用
+  // ctx.tools.restrict({deny}) 施加（宿主官方机制，见 src/tool-filter.js 头注释）。
+  // 服务缺失时 listAgents 返回空 → 功能整体降级，不影响插件其余部分。
+  const toolFilter = createToolFilter({
+    ctx,
+    file: join(dirname(settingsPath()), "tool-filter.json"),
+    log,
+  });
+  await toolFilter.load();
+  toolFilter.start();
+
   async function rebuildMcp() {
     mcp.dispose();
     mcp = createMcpManager({ ctx, dirs: settings.mcpDirs, shippedRoot: settings.shippedRoot, log });
@@ -437,6 +449,11 @@ export async function apply(ctx, config = {}) {
   }
 
   ctx.effect(() => () => {
+    try {
+      toolFilter.dispose();
+    } catch {
+      /* ignore */
+    }
     try {
       disposeProvider?.();
     } catch {
@@ -1491,6 +1508,10 @@ export async function apply(ctx, config = {}) {
       }
       case "mcp.detail": {
         const local = await mcp.detail(body.serverName);
+        // 面板据此在工具浮窗里给每个工具预勾选状态；纯读，不改定义。
+        // 必须在这里（所有 return 分支的共同上游）挂，lobehub 分支的 {...local} 才带得上。
+        const deniedTools = toolFilter.deniedFor(local.serverName);
+        local.deniedTools = deniedTools;
         if (body.source === "lobehub" || String(body.serverName || "").includes("lobehub")) {
           try {
             const view = await viewLobeHubMcp(body.serverName, { cache: marketCache });
@@ -1638,6 +1659,15 @@ export async function apply(ctx, config = {}) {
         // items 先算（内部跑 readDefs），broken 再同步取最近一次的坏定义清单。
         const items = await mcp.list();
         return { mcpDirs: settings.mcpDirs, items, broken: mcp.broken() };
+      }
+      case "mcp.tools.get":
+        // applied = 当前实际挂着过滤器的 agent 数（面板文案「N 个会话已生效」的来源）
+        return { deny: toolFilter.getDeny(), applied: toolFilter.mountedCount() };
+      case "mcp.tools.set": {
+        // 按服务器合并：只动 mcp__<serverName>__* 前缀项，其它服务器与手工项原样保留。
+        const name = normalizeServerName(body.serverName);
+        const result = await toolFilter.mergeServerDeny(name, Array.isArray(body.deny) ? body.deny : []);
+        return { ...result, serverName: name };
       }
       case "mcp.status":
         // 只读：连接生命周期（active/loading/failed/unloaded/unknown）。
