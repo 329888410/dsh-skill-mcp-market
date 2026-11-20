@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.124
+
+- **窄屏自适应（差距清单最后一项可独立落地的布局项）**
+  - 现状实测：client.js 完全没有窄屏处理（无 ResizeObserver / matchMedia / innerWidth），而技能工具行（input minWidth120 + select 96 + 按钮×2 ≈ 420px）、批量条（6 控件 ≈ 400px）、回收站头、确认按钮组都写死 `flexWrap:'nowrap'` —— 宿主左侧会话栏展开或手机远控时这些行横向溢出裁切。
+  - 双层判据（照抄参照 Issue #71 的结构，因为「窗口宽 ≠ 面板宽」是物理事实：面板挂在宿主主区里，900–1100px 窗口下面板可能只有 ~650px，只按窗口判断会漏）：视口 `matchMedia('(max-width:820px)')` 供首帧直接用（不闪一下），面板宽由 `ResizeObserver` 事后校准（阈值 560 = 工具行 ~420px + 滚动条与内边距余量）。`narrow = narrowViewport || narrowPanel`。
+  - 降级路径：无 `matchMedia` → 视口判据返回 false 不崩；无 `ResizeObserver` → 面板宽只测一次，视口判据兜后续变化（守卫内显式再读一次 clientWidth）。这是已知边界，注释写明「宿主侧栏拖拽不跟」，不假装全能。
+  - 只条件化真正会溢出的四处（工具行 / 批量条容器 / 确认按钮组 / 回收站头）。**卡片标题行与 S.btnRow 刻意保持 nowrap** —— 状态点掉到第二行会破坏 0.5.117 排版的意义，测试把这条锁住防止以后被「统一优化」掉。
+  - 测试：新增 `test-narrow-layout.mjs`（23 项，第 36 个 CI 门套件），含阈值合理性（视口 600–1000、面板 ≥480 的区间断言）、降级守卫、以及「哪些 nowrap 必须留着」的反向锁。过程中修掉我自己的 4 处断言形态错误（`new ResizeObserver(measure)` 非空括号、守卫窗口 220→420、`return () =>` 非裸 `return;`、重复声明 guard），以及 2 处实现锚点缩进不符（S.panel 是 8 空格、确认按钮组带 `: ` 前缀）。
+  - 验证：离线 31 套件全绿。
 ## 0.5.123
 
 - **修 0.5.115 的字段名缺陷：连接状态 phase 恒为 unknown**

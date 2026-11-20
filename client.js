@@ -20,6 +20,20 @@ window.__ModuleLoader__.load({
     }
     // 连接生命周期文案。unknown 是诚实态：探测不到就不假装知道（回退到旧的布尔语义）。
     const PHASE_LABEL = { active: '· 已连接', loading: '· 启动中', failed: '· 连接失败', unloaded: '· 未挂载', unknown: '' };
+    // ── 窄屏判据（参照 Issue #71 的双层结构）──────────────────────────────
+    // 「窗口宽 ≠ 面板宽」是这里的物理事实：面板挂在宿主主区里，左侧会话栏占掉一截，
+    // 900-1100px 的窗口下面板可能只有 ~650px。所以两层判据都留着：
+    // 视口宽供首帧直接用（不闪一下），面板宽由 ResizeObserver 事后校准。
+    const NARROW_VIEWPORT_WIDTH = 820;
+    // 面板阈值：技能工具行控件合计 ~420px（input minWidth120 + select 96 + 按钮×2 + gap），
+    // 低于 560 必然挤，留一档余量给滚动条与内边距。
+    const NARROW_PANEL_WIDTH = 560;
+    function readNarrowViewport() {
+      try {
+        if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+        return window.matchMedia('(max-width:' + NARROW_VIEWPORT_WIDTH + 'px)').matches === true;
+      } catch { return false; }
+    }
     // 工具检索：名称或描述命中即可。单一实现，标题计数/清单/无匹配提示共用，避免三处口径漂移。
     function toolMatches(tool, query) {
       if (!query) return true;
@@ -338,6 +352,36 @@ window.__ModuleLoader__.load({
       // 过滤词按子页签拆开：旧实现一个词同时过滤技能与 MCP，切页签互相污染
       const [manageSkillFilter, setManageSkillFilter] = useState('');
       const [manageMcpFilter, setManageMcpFilter] = useState('');
+      useEffect(() => {
+        // 视口判据：matchMedia 变化直接跟（首帧已经用过一次，这里只处理后续变化）。
+        let offMedia = null;
+        try {
+          if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+            const media = window.matchMedia('(max-width:' + NARROW_VIEWPORT_WIDTH + 'px)');
+            const onChange = () => setNarrowViewport(media.matches === true);
+            if (media && typeof media.addEventListener === 'function') {
+              media.addEventListener('change', onChange);
+              offMedia = () => media.removeEventListener('change', onChange);
+            } else if (media && typeof media.addListener === 'function') {
+              media.addListener(onChange);
+              offMedia = () => media.removeListener(onChange);
+            }
+          }
+        } catch { /* 拒绝 matchMedia 的环境只丢视口判据，面板判据仍在 */ }
+        const el = panelRef.current;
+        if (!el) return () => { if (offMedia) offMedia(); };
+        const measure = () => setNarrowPanel(el.clientWidth < NARROW_PANEL_WIDTH);
+        measure();
+        if (typeof ResizeObserver === 'undefined') {
+          // 没有 RO：面板宽只在首帧测一次，视口判据兜住后续窗口变化（宿主侧栏拖拽不跟，
+          // 属极端降级环境的已知边界，不假装全能）。
+          setNarrowPanel(el.clientWidth < NARROW_PANEL_WIDTH);
+          return () => { if (offMedia) offMedia(); };
+        }
+        const ro = new ResizeObserver(measure);
+        ro.observe(el);
+        return () => { ro.disconnect(); if (offMedia) offMedia(); };
+      }, []);
       // 状态筛选维度：all | on | off（值持久化，与折叠偏好同一风格）。
       const SKILL_STATE_KEY = 'dsh-skill-mcp-market.manage-skill-state';
       const [manageSkillState, setManageSkillState] = useState(() => {
@@ -357,6 +401,10 @@ window.__ModuleLoader__.load({
       // 就地错误：上传失败显示在浮层内（页面级 error 槽在视口上方，用户视线不在那）。
       const [uploadError, setUploadError] = useState('');
       const uploadRef = useRef(null);
+      // 窄屏自适应：视口判据首帧生效，面板判据由 ResizeObserver 校准（见模块级注释）。
+      const [narrowViewport, setNarrowViewport] = useState(readNarrowViewport);
+      const [narrowPanel, setNarrowPanel] = useState(false);
+      const panelRef = useRef(null);
       // 回收站默认折叠成一行（数量已在标题里），不再常驻占首屏。
       const TRASH_OPEN_KEY = 'dsh-skill-mcp-market.trash-open';
       // 浮层三路关闭：✕ 按钮（渲染里）、Escape、点击浮层外。监听只在打开时挂，关闭即摘除。
@@ -1403,6 +1451,8 @@ window.__ModuleLoader__.load({
         : mountedList;
       // 浮窗清单的唯一数据源：标题计数、列表渲染、无匹配提示都读它。
       const visibleTools = mcpTools ? mcpTools.toolDetails.filter((tool) => toolMatches(tool, toolQuery)) : [];
+      // 任一判据窄即窄屏：视口窄（手机远控）或面板窄（宿主侧栏挤占）。
+      const narrow = narrowViewport || narrowPanel;
       // 批量计数与动作的唯一口径：只算「筛选后仍可见」的选中项。
       const selectedVisible = filteredInstalled.filter((i) => selected.has(String(i.slug)));
       const exitBatch = () => { setBatchMode(false); setSelected(new Set()); setBatchConfirm(false); };
@@ -1735,7 +1785,7 @@ window.__ModuleLoader__.load({
           '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb { background: #444; border-radius: 6px; border: 2px solid #f3f4f6; }' +
           '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb:hover { background: #222; }' +
           '[data-dsh-market-root] [data-dsh-market-body] { scrollbar-width: thin; scrollbar-color: #444 #f3f4f6; }'),
-        h('div', { style: S.panel },
+        h('div', { ref: panelRef, style: S.panel },
           h('div', { style: S.head },
             h('button', { style: S.tab(tab === 'skills'), onClick: () => setTab('skills') }, 'SKILL 技能'),
             h('button', { style: S.tab(tab === 'mcp'), onClick: () => setTab('mcp') }, 'MCP 连接器'),
@@ -2117,7 +2167,7 @@ window.__ModuleLoader__.load({
                 uploadError ? h('div', { style: { ...S.err, wordBreak: 'break-word' } }, uploadError) : null,
               )
               : null,
-              h('div', { style: { ...S.row, gap: 8, flexWrap: 'nowrap' } },
+              h('div', { style: { ...S.row, gap: 8, flexWrap: narrow ? 'wrap' : 'nowrap' } },
                 h('input', {
                   style: { ...S.input, flex: 1, minWidth: 120 },
                   placeholder: '搜索已装技能（名称、描述）',
@@ -2179,7 +2229,7 @@ window.__ModuleLoader__.load({
                     // 复用技能容器的 position:relative（0.5.119 为上传浮层加的）→ 零位移浮条
                     style: {
                       position: 'absolute', left: 0, right: 0, top: 46, zIndex: 55,
-                      display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap',
+                      display: 'flex', alignItems: 'center', gap: 8, flexWrap: narrow ? 'wrap' : 'nowrap',
                       background: 'var(--dsh-surface, #ffffff)',
                       border: '1px solid var(--dsh-border, #d0d7de)',
                       borderRadius: 10, boxShadow: '0 8px 24px rgba(15, 23, 42, 0.16)',
@@ -2199,7 +2249,7 @@ window.__ModuleLoader__.load({
                     !batchConfirm
                       ? h('button', { style: { ...S.btn(), ...S.danger }, disabled: selectedVisible.length === 0,
                           onClick: () => setBatchConfirm(true) }, '批量卸载')
-                      : h('span', { style: { ...S.row, gap: 6, flexWrap: 'nowrap' } },
+                      : h('span', { style: { ...S.row, gap: 6, flexWrap: narrow ? 'wrap' : 'nowrap' } },
                           h('button', { style: { ...S.btn(), ...S.danger }, disabled: busy === 'batch',
                             onClick: () => { setBatchConfirm(false); runBatch('卸载', 'uninstall', selectedVisible); } },
                             `确认卸载 ${selectedVisible.length} 项`),
@@ -2212,7 +2262,7 @@ window.__ModuleLoader__.load({
                     ? '没有符合筛选条件的技能（试试清除筛选）。'
                     : '还没有已安装技能。点右上角「＋ 添加技能」上传。')
                 : h('div', { style: S.grid }, installedSkills),
-              h('div', { style: { ...S.row, gap: 8, marginTop: 6, flexWrap: 'nowrap' } },
+              h('div', { style: { ...S.row, gap: 8, marginTop: 6, flexWrap: narrow ? 'wrap' : 'nowrap' } },
                 h('button', {
                   type: 'button',
                   style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
