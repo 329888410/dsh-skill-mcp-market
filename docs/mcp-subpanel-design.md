@@ -65,10 +65,14 @@
 
 ### P2（明确不做，写明理由）
 
-- **工具级禁用**（参照 tool-filter.ts）：它从 ctx.tools 的 schema 清单里真删工具以省 token，需要宿主工具面
-  干预通道；dsh-market 的 fiber 是 `ctx.plugin(mcpClient,…)` 动态挂载，工具注册在 mcp-client 内部，
-  本插件没有合法的中间层去过滤它。硬做 = fork 宿主包，破坏插件边界。**结论：不在本面板做**；
-  用户侧替代 = 宿主 Settings 或未来宿主原生工具过滤。
+- **工具级禁用**（参照 tool-filter.ts）：~~本插件没有合法的中间层~~ —— **此判断已被后续取证推翻**（2026-11-20）。
+  宿主 `@deepseek-ai/dsh-tools` 提供官方机制 `ctx.tools.restrict(filter)`：按 agent 作用域施加 allow/deny 掩码，
+  掩码相交、被隐藏的工具连 schema token 一起省掉（README 原文），返回精确 disposer。约束是它**要求 scoped
+  context**（`agent.ctx`）——在全局 ctx 上调用会直接抛错（src/index.ts:165），所以正路是 `inject: ['agents']`
+  后用 `ctx.agents.list()/get(sessionId)` 拿到每个 agent 再对其 `agent.ctx.tools.restrict(...)` 施加，
+  参照面板的 applyTo/reapply 就是这个形状（tool-filter.ts:394-435）。
+  **结论修正**：不是「不可做」，而是「超出 P0–P1 范围」——它需要新的持久化（deny 列表存储）、
+  会话级覆盖与子代理例外三层语义，以及 restrictableNames 校验（命名未知工具会抛错）。列为 P2，按上述机制实现。
 - **OAuth**：参照面板 oauth.ts 35KB + scheduler 12KB，依赖宿主凭据体系（${credential:REF} 的 provider）。
   我们 ctx 未注入 credentials。**结论：不做**；需要 OAuth 的连接器引导用户走宿主文档路径。
 - **分组/多工作区作用域**：参照面板管理 patch 行所以有 scope 概念；我们的定义平面是 profile 全局
