@@ -314,6 +314,9 @@ window.__ModuleLoader__.load({
       // MCP 连接器回收站：卸载已把定义写入 <mcpDir>/.trash，这里把它显性化并可恢复
       const [mcpTrashList, setMcpTrashList] = useState(null);
       const [mcpTrashBusy, setMcpTrashBusy] = useState('');
+      // 已装 MCP 的工具清单浮窗：{ serverName, toolDetails, mounted } | null
+      const [mcpTools, setMcpTools] = useState(null);
+      const [mcpToolOpen, setMcpToolOpen] = useState('');
       const [trashBusy, setTrashBusy] = useState('');
       // 最近一次的查询结果缓存（按 tab+source+category+sort+query 作 key），
       // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
@@ -609,6 +612,30 @@ window.__ModuleLoader__.load({
           setDraft({ command: data.command, args: (data.args || []).join('\n'), url: data.url });
         } catch (e) {
           setError(String(e.message || e));
+        } finally {
+          setBusy('');
+        }
+      };
+
+      // 点卡片本体：读 mcp.detail 的 toolDetails（宿主 definition 的 name/description/parameters）。
+      // 纯读操作，不连接、不重启连接器；未挂载时 toolDetails 为空，浮窗会如实说明原因。
+      const openMcpTools = async (serverName) => {
+        setBusy(`tools:${serverName}`);
+        setError('');
+        try {
+          const data = await call('mcp.detail', { serverName });
+          setMcpToolOpen('');
+          // hasDetails 区分两件事：服务端根本没这个字段（旧版本，需重启）vs 真的一个工具都没有。
+          // 把前者说成「还没发布工具」是假陈述。
+          setMcpTools({
+            serverName,
+            toolDetails: Array.isArray(data.toolDetails) ? data.toolDetails : [],
+            hasDetails: Array.isArray(data.toolDetails),
+            mounted: Boolean(data.mounted),
+            title: data.title || serverName,
+          });
+        } catch (e) {
+          setError(`读取工具清单失败：${e.message || e}`);
         } finally {
           setBusy('');
         }
@@ -1254,14 +1281,19 @@ window.__ModuleLoader__.load({
       });
 
       const installedMcps = filteredMounted.map((item) =>
-        h('div', { key: `m-${item.serverName}`, style: S.card },
+        h('div', {
+          key: `m-${item.serverName}`,
+          style: { ...S.card, cursor: 'pointer' },
+          title: '查看工具清单',
+          onClick: () => openMcpTools(item.serverName),
+        },
           h('div', { style: S.title }, item.title || item.serverName),
           h('div', { style: S.meta },
             h('span', null, item.transport),
             h('span', { title: item.phase === 'failed' ? (item.phaseDetail || '连接失败') : '' },
               PHASE_LABEL[item.phase] || (item.mounted ? '· 已连接' : '· 未连接')),
             h('span', null, item.tools && item.tools.length ? `· ${item.tools.length} 个工具` : '')),
-          h('div', { style: S.row },
+          h('div', { style: S.row, onClick: (e) => e.stopPropagation() },
             h('button', { style: S.btn(), disabled: busy === `toggle:${item.serverName}`, onClick: () => toggleMcp(item.serverName, !item.enabled) }, item.enabled ? '停用' : '启用'),
             h('button', {
               style: S.btn(),
@@ -1589,6 +1621,62 @@ window.__ModuleLoader__.load({
                       detail.kind === 'skill'
                         ? h('button', { style: S.btn('primary'), disabled: busy === 'save:skill', onClick: saveSkillEdit }, '保存')
                         : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, '保存并重连'))))
+              : null,
+            // 已装 MCP 工具清单浮窗：点卡片本体打开，列全部工具的名称/描述，参数 schema 逐个可展开。
+            mcpTools
+              ? h('div', {
+                  style: {
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(15, 23, 42, 0.45)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 1200,
+                  },
+                  onClick: () => setMcpTools(null),
+                },
+                  h('div', {
+                    style: {
+                      width: '100%',
+                      maxWidth: 620,
+                      maxHeight: '80vh',
+                      overflow: 'auto',
+                      background: 'var(--dsh-card, #fff)',
+                      borderRadius: 12,
+                      padding: 20,
+                      boxShadow: '0 16px 48px rgba(15, 23, 42, 0.28)',
+                    },
+                    onClick: (e) => e.stopPropagation(),
+                  },
+                    h('div', { style: { ...S.row, justifyContent: 'space-between' } },
+                      h('div', { style: { ...S.title, fontSize: 14 } }, `${mcpTools.title} · ${mcpTools.toolDetails.length} 个工具`),
+                      h('button', { style: S.btn(), onClick: () => setMcpTools(null) }, '关闭')),
+                    !mcpTools.hasDetails
+                      ? h('div', { style: { ...S.status, marginTop: 8 } },
+                          '当前服务端未提供工具详情，请点击菜单「重启应用与 Host」后重试。')
+                      : mcpTools.toolDetails.length === 0
+                        ? h('div', { style: { ...S.status, marginTop: 8 } },
+                            mcpTools.mounted
+                              ? '已挂载，但还没发布工具（服务器可能仍在启动，稍后重开）。'
+                              : '该连接器当前未挂载，所以还没有向模型注册任何工具；启用并连接后再查看。')
+                        : null,
+                    h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 } },
+                      mcpTools.toolDetails.map((tool) => {
+                        const short = tool.name.replace(/^mcp__[A-Za-z0-9_-]+__/, '');
+                        const open = mcpToolOpen === tool.name;
+                        return h('div', { key: tool.name, style: { ...S.card, padding: 10 } },
+                          h('div', { style: { ...S.row, justifyContent: 'space-between', cursor: 'pointer' },
+                            onClick: () => setMcpToolOpen(open ? '' : tool.name) },
+                            h('span', { style: { fontWeight: 600, fontFamily: 'ui-monospace, monospace', fontSize: 12 } }, short),
+                            h('span', { style: { ...S.status, fontSize: 11 } }, open ? '收起参数' : '展开参数')),
+                          h('div', { style: { ...S.desc, marginTop: 4 } }, tool.description || '（上游未提供描述）'),
+                          open
+                            ? h('pre', {
+                              style: { fontSize: 11, opacity: 0.85, whiteSpace: 'pre-wrap', margin: '8px 0 0', background: 'rgba(15, 23, 42, 0.04)', padding: 8, borderRadius: 6, maxHeight: 260, overflow: 'auto' },
+                            }, tool.parameters ? JSON.stringify(tool.parameters, null, 2) : '（无参数 schema）')
+                            : null);
+                      }))))
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,

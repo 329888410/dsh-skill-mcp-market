@@ -172,6 +172,28 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     }
   }
 
+  /**
+   * 某个连接器已注册工具的名称 + 描述 + 参数 schema。
+   * 数据全在宿主 definition 上（ToolSchema: name/description/parameters；
+   * dsh-mcp-client 把上游 inputSchema 原样放进 parameters），因此这是纯读，
+   * 不需要任何上游请求，也不会触发连接。
+   */
+  function toolDetailsFor(serverName) {
+    const prefix = `mcp__${serverName}__`;
+    try {
+      return ctx.tools
+        .definitions()
+        .filter((definition) => definition && typeof definition.name === "string" && definition.name.startsWith(prefix))
+        .map((definition) => ({
+          name: definition.name,
+          description: String(definition.description || ""),
+          parameters: definition.parameters && typeof definition.parameters === "object" ? definition.parameters : null,
+        }));
+    } catch {
+      return [];
+    }
+  }
+
   async function mount(def) {
     if (mounted.has(def.serverName)) return { ok: true, alreadyMounted: true, tools: toolNamesFor(def.serverName) };
     const missing = missingEnv(def);
@@ -319,6 +341,7 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
       enabled: def.enabled !== false,
       mounted: mounted.has(name),
       tools: toolNamesFor(name),
+      toolDetails: toolDetailsFor(name),
       source: def.source || "manual",
       slug: def.slug || "",
       homepage: def.homepage || "",

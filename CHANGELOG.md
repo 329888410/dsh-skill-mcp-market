@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.116
+
+- **管理 → MCP 子面板：点击已装连接器卡片，浮窗显示该连接器的工具清单与详情**
+  - 交互：卡片本体可点击（cursor + 悬停提示「查看工具清单」），点击弹出浮窗，列出该连接器注册给模型的全部工具——名称（去掉 `mcp__<server>__` 前缀便于阅读）、上游描述、以及逐个可展开的参数 JSON Schema。点遮罩或「关闭」收起；卡片上的操作按钮行 `stopPropagation`，点「停用/编辑/测试连接/打开文件夹/卸载」不会顺带弹浮窗。
+  - 数据面（零上游请求）：宿主 `ToolSchema` 本就带 `description`/`parameters`（dsh-llm types.ts；dsh-mcp-client 把上游 `inputSchema` 原样放进 `parameters`），此前 `toolNamesFor` 只取 `definition.name` 就丢了。新增 `toolDetailsFor`（与 `toolNamesFor` 同一前缀规则）由 `mcp.detail` 以 `toolDetails` 字段透出；`definitions()` 异常时降级为空数组，不影响清单其余部分。纯读操作，刻意不进 DESTRUCTIVE_OPS。
+  - 诚实性：`hasDetails` 区分「旧服务端根本没这个字段」与「真的一个工具都没有」——前者提示点『重启应用与 Host』，绝不说成「还没发布工具」（那对已挂载 25 个工具的连接器是假陈述）。未挂载与启动中两种空态也分别给出原因。
+  - `mcp.list` 的 `tools` 仍是名字数组，卡片计数与既有测试不受影响。
+  - 测试：`test-mcp-tools-popup.mjs`（26 项，注册为第 29 个 CI 门套件）覆盖服务端字段透出、前缀过滤、卡片点击与冒泡、浮窗渲染、三态文案、TDZ 顺序、既有入口不回归；运行时用假 ctx 实测 toolDetailsFor（含 other/run_code 被过滤、空描述、definitions 抛错降级）。离线 26 套件 420 项全绿。
 ## 0.5.115
 
 - **执行 MCP 子面板设计方案的 P-1/P0/P0.5/P1；改前核实挖出一个安全边界漏洞**
