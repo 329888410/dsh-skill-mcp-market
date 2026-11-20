@@ -10,6 +10,8 @@
 // C. 全部展开/折叠：分组多时逐个点折叠箭头太繁琐，分组头行加两个便捷操作。
 import fs from 'node:fs';
 import path from 'node:path';
+// 锚定位只有一份实现：anchor-lib.mjs。本套件曾内联过 once/lineOf/countHits，
+// 三份拷贝就是三个会各自漂移的判定（尤其空 needle 死循环那个 bug 只修在库里）。
 
 const W = path.resolve(import.meta.dirname, '..');
 const read = (f) => fs.readFileSync(path.join(W, f), 'utf8');
@@ -17,21 +19,7 @@ const c = read('client.js');
 
 let passed = 0, failed = 0;
 const check = (n, cond, d) => { if (cond) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + String(d).slice(0, 130) + ']' : '')); } };
-// 严格定位：needle 必须全文件唯一，否则 throw —— 不允许 indexOf/lastIndexOf
-// 静默回退到近名节点（同名/近名按钮会伪装成断言通过，即假绿）。
-function once(src, needle, label) {
-  let hits = 0, i = -1;
-  while ((i = src.indexOf(needle, i + 1)) >= 0) hits++;
-  if (hits !== 1) throw new Error('定位失败 ' + label + '：命中 ' + hits + ' 次（要求唯一）');
-  return src.indexOf(needle);
-}
-// 取 idx 所在整行：判断节点是否带门控前缀时，锚点常落在行中，
-// 用「行首→锚点」的切片会漏掉前缀；取整行才可靠。
-function lineOf(src, idx) {
-  const s = src.lastIndexOf('\n', idx) + 1;
-  const e = src.indexOf('\n', idx);
-  return src.slice(s, e < 0 ? src.length : e);
-}
+import { once, lineOf, countHits } from './anchor-lib.mjs';
 
 console.log('');
 console.log('Test A: 测试连接后刷新卡片');
@@ -135,7 +123,6 @@ console.log('Test G: 跨套件节点锚唯一性（防静默回退假绿）');
   const DOLLAR = String.fromCharCode(36);
   const srcs = {};
   for (const k of Object.keys(VAR2SRC)) { const rel = VAR2SRC[k]; if (!srcs[rel]) srcs[rel] = read(rel); }
-  const countHits = (hay, needle) => { let hits = 0, i = hay.indexOf(needle); while (i >= 0) { hits++; i = hay.indexOf(needle, i + 1); } return hits; };
   const varBefore = (line, dotIdx) => { let i = dotIdx - 1; while (i >= 0 && /[A-Za-z0-9_$]/.test(line[i])) i--; return line.slice(i + 1, dotIdx); };
   // 手工取字面量（不用正则字面量：跨层写文件时转义极易被破坏）
   const stringAt = (line, openIdx) => {

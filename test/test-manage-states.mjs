@@ -54,7 +54,12 @@ console.log('');
 console.log('Test 5: 既有行为不破');
 check('list() 仍返回数组（test-mcp-trash 契约）', /return \[\.\.\.defs\.values\(\)\]\.map/.test(mj));
 check('技能段仍在 MCP 段之前', si > 0 && si < mi);
-check('浮窗渲染仍在（visibleTools 单一数据源）', /visibleTools\.map\(/.test(c) && /const visibleTools = mcpTools \? mcpTools\.toolDetails\.filter/.test(c));
+// 0.5.130 起渲染源改为 renderedTools（visibleTools 的分批切片）。单一数据源仍是 visibleTools：
+// 计数、无匹配提示、分批渲染都从它派生。锁这条链，而不是锁某个变量名还在被 map。
+check('浮窗单一数据源仍是 visibleTools', /const visibleTools = mcpTools \? mcpTools\.toolDetails\.filter/.test(c));
+check('渲染经 renderedTools 分批（派生自 visibleTools）', /const renderedTools = mcpTools && visibleTools\.length > TOOL_BATCH \* toolBatch/.test(c) && /renderedTools\.map\(\(tool\) =>/.test(c));
+check('计数与无匹配提示仍读 visibleTools', /匹配 \$\{visibleTools\.length\}/.test(c) && /visibleTools\.length === 0/.test(c));
+
 check('回收站折叠锁仍在', c.includes('回收站（'));
 check('上传门控锁仍在', /uploadOpen \? h\('div'/.test(c));
 

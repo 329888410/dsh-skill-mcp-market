@@ -20,6 +20,27 @@ window.__ModuleLoader__.load({
     }
     // 连接生命周期文案。unknown 是诚实态：探测不到就不假装知道（回退到旧的布尔语义）。
     const PHASE_LABEL = { active: '· 已连接', loading: '· 启动中', failed: '· 连接失败', unloaded: '· 未挂载', unknown: '' };
+    // 工具浮窗一次铺满几十个工具时，每输入一个字符都要重建整棵子树
+    // （playwright-mcp 单连接器就有 22+ 个）。默认只渲染一批，余量靠「继续显示」增量展开。
+    const TOOL_BATCH = 60;
+    // 已装技能排序：纯前端呈现序，与来源分组正交（分组归属仍由 rank 决定）。
+    // default 必须原样返回——服务端顺序本身有含义，不能悄悄重排。
+    function sortInstalled(items, mode, isOff) {
+      if (!mode || mode === 'default') return items;
+      const nameOf = (x) => String(x.name || x.slug || '');
+      const byName = items.slice().sort((a, b) => nameOf(a).localeCompare(nameOf(b), 'zh-Hans-CN'));
+      if (mode === 'name') return byName;
+      if (mode === 'on' || mode === 'off') {
+        const wantOff = mode === 'off';
+        return byName.slice().sort((a, b) => {
+          const ao = isOff ? isOff(a) === true : false;
+          const bo = isOff ? isOff(b) === true : false;
+          if (ao === bo) return 0;
+          return wantOff === ao ? -1 : 1;
+        });
+      }
+      return byName;
+    }
     // ── 窄屏判据（参照 Issue #71 的双层结构）──────────────────────────────
     // 「窗口宽 ≠ 面板宽」是这里的物理事实：面板挂在宿主主区里，左侧会话栏占掉一截，
     // 900-1100px 的窗口下面板可能只有 ~650px。所以两层判据都留着：
@@ -384,6 +405,7 @@ window.__ModuleLoader__.load({
       }, []);
       // 状态筛选维度：all | on | off（值持久化，与折叠偏好同一风格）。
       const SKILL_STATE_KEY = 'dsh-skill-mcp-market.manage-skill-state';
+      const SKILL_SORT_KEY = 'dsh-skill-mcp-market.manage-skill-sort';
       const [manageSkillState, setManageSkillState] = useState(() => {
         try {
           const v = window.localStorage.getItem(SKILL_STATE_KEY);
@@ -469,6 +491,15 @@ window.__ModuleLoader__.load({
       // 工具级禁用草稿：打开浮窗时从 deniedTools 预勾，保存走 mcp.tools.set。
       const [toolDenyDraft, setToolDenyDraft] = useState([]);
       const [toolDenyApplied, setToolDenyApplied] = useState(0);
+      // 工具浮窗分批游标（第 n 批 = n × TOOL_BATCH 个）
+      const [toolBatch, setToolBatch] = useState(1);
+      // 已装技能排序（持久化与「状态筛选」同一路径：拒绝存储的浏览器只是不记忆）
+      const [manageSkillSort, setManageSkillSort] = useState(() => {
+        try {
+          const v = window.localStorage.getItem(SKILL_SORT_KEY);
+          return v === 'name' || v === 'on' || v === 'off' ? v : 'default';
+        } catch { return 'default'; }
+      });
       // 无法解析的定义文件：readDefs 会跳过它们，面板必须说出来，否则用户以为连接器被删了
       const [mcpBroken, setMcpBroken] = useState([]);
       const [trashBusy, setTrashBusy] = useState('');
@@ -1599,6 +1630,13 @@ window.__ModuleLoader__.load({
         : mountedList;
       // 浮窗清单的唯一数据源：标题计数、列表渲染、无匹配提示都读它。
       const visibleTools = mcpTools ? mcpTools.toolDetails.filter((tool) => toolMatches(tool, toolQuery)) : [];
+      // 只渲染前 toolBatch × TOOL_BATCH 个：搜索时输入一个字符就重建几十个 card 是明显浪费，
+      // 而标题计数仍报全量（命中/总数），用户看得见「还有多少没显示」。
+      const renderedTools = mcpTools && visibleTools.length > TOOL_BATCH * toolBatch
+        ? visibleTools.slice(0, TOOL_BATCH * toolBatch)
+        : visibleTools;
+      // 搜索词一变就退回第一批：游标停在上次的末尾时，新搜索的前几条反而看不到。
+      useEffect(() => { setToolBatch(1); }, [toolQuery]);
       // 任一判据窄即窄屏：视口窄（手机远控）或面板窄（宿主侧栏挤占）。
       const narrow = narrowViewport || narrowPanel;
       // 批量计数与动作的唯一口径：只算「筛选后仍可见」的选中项。
@@ -1694,10 +1732,13 @@ window.__ModuleLoader__.load({
             }, '卸载')));
       };
 
+      // 用户选了排序就先排再分组：同一来源组内的先后可控，
+      // 组与组之间仍按 rank（避免排序把来源层级搞乱）。
+      const sortedInstalled = sortInstalled(filteredInstalled, manageSkillSort, skillStateOff);
       // 按来源层级分组（rank 200 用户 → 500 插件提供），折叠状态存 localStorage
       const installedGrouped = (() => {
         const map = new Map();
-        for (const item of filteredInstalled) {
+        for (const item of sortedInstalled) {
           const rank = item.rank || 999;
           const label = item.sourceLabel || '未分层';
           const key = `${rank}:${label}`;
@@ -2195,7 +2236,7 @@ window.__ModuleLoader__.load({
                       ? h('div', { style: { ...S.status, marginTop: 8 } }, '没有匹配的工具（换个关键词）。')
                       : null,
                     h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 } },
-                      visibleTools.map((tool) => {
+                      renderedTools.map((tool) => {
                         const short = tool.name.replace(/^mcp__[A-Za-z0-9_-]+__/, '');
                         const open = mcpToolOpen === tool.name;
                         return h('div', { key: tool.name, style: { ...S.card, padding: 10 } },
@@ -2220,6 +2261,11 @@ window.__ModuleLoader__.load({
                             }, tool.parameters ? JSON.stringify(tool.parameters, null, 2) : '（无参数 schema）')
                             : null);
                       }))),
+                    toolQuery && visibleTools.length > TOOL_BATCH * toolBatch
+                      ? h('div', { style: { ...S.row, justifyContent: 'center', marginTop: 8 } },
+                          h('button', { style: S.btn(), onClick: () => setToolBatch((n) => n + 1) },
+                            `继续显示 ${Math.min(TOOL_BATCH, visibleTools.length - TOOL_BATCH * toolBatch)} 个（还有 ${visibleTools.length - TOOL_BATCH * toolBatch} 个未显示）`))
+                      : null,
                     mcpTools.hasDetails && mcpTools.toolDetails.length > 0
                       ? h('div', { style: { ...S.row, justifyContent: 'space-between', marginTop: 10 } },
                           h('span', { style: { ...S.status, fontSize: 11 } },
@@ -2426,6 +2472,17 @@ window.__ModuleLoader__.load({
                   const on = filteredInstalled.filter((i) => !skillStateOff(i)).length;
                   return h('span', { style: { ...S.status, fontSize: 11, fontWeight: 400 } }, `已启用 ${on} · 已停用 ${filteredInstalled.length - on}`);
                 })(),
+                h('select', {
+                  style: { ...S.input, width: 104, flex: '0 0 auto', height: 24, fontSize: 12 },
+                  value: manageSkillSort,
+                  title: '组内排序（纯前端呈现序；来源分组与层级不受影响）',
+                  onChange: (e) => {
+                    const v = e.target.value;
+                    setManageSkillSort(v);
+                    try { window.localStorage.setItem(SKILL_SORT_KEY, v); } catch { /* 拒绝存储只是不记忆 */ }
+                  },
+                }, h('option', { value: 'default' }, '默认顺序'), h('option', { value: 'name' }, '按名称'),
+                  h('option', { value: 'on' }, '启用优先'), h('option', { value: 'off' }, '停用优先')),
                 nativeDirs.length > 0
                   ? h('span', { style: { fontSize: 11, opacity: 0.6, fontWeight: 400 } }, `含 DSH 内置 ${nativeDirs.length} 个目录`)
                   : null,
@@ -2489,6 +2546,10 @@ window.__ModuleLoader__.load({
                     ? '没有符合筛选条件的技能（试试清除筛选）。'
                     : '还没有已安装技能。点右上角「＋ 添加技能」上传。')
                 : h('div', { style: S.grid }, installedSkills),
+              (skillFilterText || manageSkillState !== 'all') && filteredInstalled.length > 0 && expandedVisible.length === 0
+                ? h('div', { style: { ...S.status, fontSize: 11, marginTop: 4 } },
+                    '命中项都在折叠分组里（展开对应来源才看得到，或点「全部展开」）。')
+                : null,
               h('div', { style: { ...S.row, gap: 8, marginTop: 6, flexWrap: narrow ? 'wrap' : 'nowrap' } },
                 h('button', {
                   type: 'button',

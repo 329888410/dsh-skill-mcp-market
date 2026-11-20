@@ -91,7 +91,9 @@ console.log('Test 6: 回收站默认折叠 + 条目对齐 + 时间可读');
 {
   const gi = c.indexOf("manageTab === 'skill' ? h('div'");
   // 浮层弹出层加入后回收站被推到 ~12.7k；窗口给到 15k 留余量
-  const seg = c.slice(gi, gi + 17000);   // 批量条插入后回收站 grid 距 gi ~15.4k、formatStamp ~15.9k（实测）
+  // 0.5.130：工具浮窗分批 + 排序控件 + 折叠提示加入后，gridTemplateColumns 距 gi 实测 17182、
+  // formatStamp 17708。窗口按实测值 + 余量取 19000（旧 17000 因此差 708 字符漏检）。
+  const seg = c.slice(gi, gi + 19000);
   check('回收站标题保留 回收站（N） 形态（结构锁）', seg.includes('回收站（'));
   // 未记录时 getItem 返回 null，null==='1' 为 false → 默认折叠；catch 分支同样 false。
   check('默认折叠（未记录时 false）', /getItem\(TRASH_OPEN_KEY\) === '1'/.test(c));
