@@ -17,26 +17,43 @@ const c = read('client.js');
 
 let passed = 0, failed = 0;
 const check = (n, cond, d) => { if (cond) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + String(d).slice(0, 130) + ']' : '')); } };
+// 严格定位：needle 必须全文件唯一，否则 throw —— 不允许 indexOf/lastIndexOf
+// 静默回退到近名节点（同名/近名按钮会伪装成断言通过，即假绿）。
+function once(src, needle, label) {
+  let hits = 0, i = -1;
+  while ((i = src.indexOf(needle, i + 1)) >= 0) hits++;
+  if (hits !== 1) throw new Error('定位失败 ' + label + '：命中 ' + hits + ' 次（要求唯一）');
+  return src.indexOf(needle);
+}
+// 取 idx 所在整行：判断节点是否带门控前缀时，锚点常落在行中，
+// 用「行首→锚点」的切片会漏掉前缀；取整行才可靠。
+function lineOf(src, idx) {
+  const s = src.lastIndexOf('\n', idx) + 1;
+  const e = src.indexOf('\n', idx);
+  return src.slice(s, e < 0 ? src.length : e);
+}
 
 console.log('');
 console.log('Test A: 测试连接后刷新卡片');
 {
   // 用函数体切片（saveMcpEdit 的教训：固定窗口会漏）。
-  const pi = c.indexOf('const r = await call(\'mcp.probe\'');
+  const pi = once(c, "const r = await call('mcp.probe'", 'probe调用');
   check('probe 调用存在', pi > 0);
   // 从 probe 调用向前找 onClick 起点、向后找 finally/setBusy('') 结束
   const start = c.lastIndexOf('onClick: async', pi);
   const end = c.indexOf("setBusy('');", pi);
   const body = pi > 0 && start > 0 && end > pi ? c.slice(start, end) : '';
   check('probe 处理体可切片', body.length > 100, 'start=' + start + ' end=' + end);
-  check('成功分支刷新列表', /if \(r\.ok\)[\s\S]{0,200}loadInstalled/.test(body) || /loadInstalled[\s\S]{0,120}已连接|连接正常[\s\S]{0,120}loadInstalled/.test(body), body.slice(0, 200));
+  // 'onClick: async' 有 8 处：lastIndexOf 取到的是包裹 pi 的那个（语义正确），
+  // 但必须校验区间确实只含这一个调用点，否则会跨到别的按钮体。
+  check('probe 体区间不跨其它按钮', pi - start < 260 && (body.match(/await call\(/g) || []).length === 1, 'span=' + (pi - start) + ' calls=' + (body.match(/await call\(/g) || []).length);  check('成功分支刷新列表', /if \(r\.ok\)[\s\S]{0,200}loadInstalled/.test(body) || /loadInstalled[\s\S]{0,120}已连接|连接正常[\s\S]{0,120}loadInstalled/.test(body), body.slice(0, 200));
   check('pending 分支也刷新（启动完成后卡片相位会变）', body.split('loadInstalled').length >= 2, 'loadInstalled 出现 ' + (body.match(/loadInstalled/g) || []).length + ' 次');
 }
 
 console.log('');
 console.log('Test B: 全选只选可见项');
 {
-  const sa = c.indexOf("'全不选' : '全选'");
+  const sa = once(c, "'全不选' : '全选'", '全选按钮');
   const seg = c.slice(Math.max(0, sa - 500), sa + 300);
   check('全选存在', sa > 0);
   // 口径：全选集合必须与 selectedVisible 同源（排除折叠/隐藏项），而不是 filteredInstalled 全集
@@ -72,6 +89,122 @@ console.log('Test D: 既有行为不破');
   check('两步确认武装态仍在', /mcpConfirmArmed \? '确认保存/.test(c));
   check('probe 语义未变（仍走独立实例 op）', /call\('mcp\.probe'/.test(c));
   check('折叠持久化键未变', c.includes("dsh-skill-mcp-market.collapsedGroups"));
+}
+
+console.log('');
+console.log('');
+console.log('Test F: 批量条不得遮挡可点控件（live 实测发现；严格定位防假绿）');
+{
+  const expandAt = once(c, "collapseAllGroups(false) }, '全部展开') : null", '全部展开');
+  const collapseAt = once(c, "collapseAllGroups(true) }, '全部折叠') : null", '全部折叠');
+  check('列表头全部展开受 !batchMode 门控', /^\s*!batchMode \? h\('button'/.test(lineOf(c, expandAt)));
+  check('列表头全部折叠受 !batchMode 门控', /^\s*!batchMode \? h\('button'/.test(lineOf(c, collapseAt)));
+  // 打开目录：用唯一 title 锚回溯它自己的开器。[开器, title] 之间不得出现 collapseAllGroups，
+  // 出现就说明抓到了上一个按钮（全部折叠）的开器，而不是打开目录的。
+  const odTitle = once(c, "title: '在资源管理器中直接查看 / 编辑技能文件'", '打开目录title');
+  // 开器必须是「任意」h('button'（不含门控前缀）——若用 lastIndexOf('!batchMode ? h('button'')，
+  // 摘掉门控后它会退到上一个按钮的开器，那行同样以 !batchMode 开头，门控断言就白写了。
+  const odOpener = c.lastIndexOf("h('button', {", odTitle);
+  check('打开目录开器存在', odOpener > 0);
+  const between = c.slice(odOpener, odTitle);
+  check('开器确属打开目录（中间无其它按钮残留）', between.indexOf('collapseAllGroups') < 0 && between.indexOf("}, '") < 0, JSON.stringify(between.replace(/\s+/g, ' ').slice(0, 90)));
+  check('打开目录受 !batchMode 门控', /^\s*!batchMode \? h\('button'/.test(lineOf(c, odOpener)));
+  // 批量条内补折叠控制：批量条本身只在 batchMode 渲染，条内按钮无需再门控。
+  // 区间用两个唯一锚（条起=已选计数、条尾=退出选择）夹住，避免窗口估算漂移。
+  const barStart = once(c, "已选 \${selectedVisible.length} 项", '批量条起');
+  const barEnd = once(c, "onClick: exitBatch }, '退出选择'))", '批量条尾');
+  check('批量条区间有效', barEnd > barStart, 'start=' + barStart + ' end=' + barEnd);
+  const barSeg = c.slice(barStart, barEnd);
+  check('批量条内含双向折叠控制', barSeg.indexOf('collapseAllGroups(false)') >= 0 && barSeg.indexOf('collapseAllGroups(true)') >= 0);
+}
+
+console.log('');
+console.log('Test G: 跨套件节点锚唯一性（防静默回退假绿）');
+{
+  // 起因（本轮 live 证伪实验）：Test F 曾用 lastIndexOf 找「打开目录」的开器，摘掉门控后
+  // 该串静默退到上一个按钮（同样以 !batchMode 开头），断言仍判 PASS —— 它检查的已不是
+  // 目标节点。仓库里还有几十个同样写法的锚点；逐文件改造风险高于收益，所以改成一处扫描：
+  // 任何 var.indexOf(字面量)/lastIndexOf(字面量) 取的节点锚，必须在目标源文件里命中恰好 1 次。
+  // 0 次 = 锚已失效、断言在空转；>1 次 = 存在静默回退风险。
+  const VAR2SRC = { c: 'client.js', ix: 'index.js', mj: 'src/mcp.js', sk: 'src/skills.js', rg: 'src/rpc-guard.js' };
+  const SELF = 'test-manage-optimizations.mjs';
+  const SQ = String.fromCharCode(39);
+  const DQ = String.fromCharCode(34);
+  const BS = String.fromCharCode(92);
+  const LF = String.fromCharCode(10);
+  const DOLLAR = String.fromCharCode(36);
+  const srcs = {};
+  for (const k of Object.keys(VAR2SRC)) { const rel = VAR2SRC[k]; if (!srcs[rel]) srcs[rel] = read(rel); }
+  const countHits = (hay, needle) => { let hits = 0, i = hay.indexOf(needle); while (i >= 0) { hits++; i = hay.indexOf(needle, i + 1); } return hits; };
+  const varBefore = (line, dotIdx) => { let i = dotIdx - 1; while (i >= 0 && /[A-Za-z0-9_$]/.test(line[i])) i--; return line.slice(i + 1, dotIdx); };
+  // 手工取字面量（不用正则字面量：跨层写文件时转义极易被破坏）
+  const stringAt = (line, openIdx) => {
+    const q = line[openIdx];
+    if (q !== SQ && q !== DQ) return null;
+    let out = '';
+    for (let i = openIdx + 1; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === BS) { const nx = line[i + 1]; if (nx === 'n') out += LF; else if (nx === 't') out += String.fromCharCode(9); else if (nx === 'r') out += String.fromCharCode(13); else out += nx; i++; continue; }
+      if (ch === q) return { text: out, eq: i };
+      out += ch;
+    }
+    return null;
+  };
+  // 从 openParenIdx（'(' 的位置）扫到配对的 ')'，用于判断调用结果是否被直接
+  // 拿去和 0/-1 比较（存在性断言），那种用法不要求锚唯一。
+  const callEnd = (line, openParenIdx) => {
+    let depth = 0, q = 0;
+    for (let i = openParenIdx; i < line.length; i++) {
+      const ch = line.charCodeAt(i);
+      if (q) { if (ch === 92) i++; else if (ch === q) q = 0; continue; }
+      if (ch === 39 || ch === 34 || ch === 96) { q = ch; continue; }
+      if (ch === 40) depth++;
+      else if (ch === 41) { depth--; if (depth === 0) return i; }
+    }
+    return -1;
+  };
+  const zero = [], multi = [];
+  let scanned = 0;
+  const files = fs.readdirSync(path.join(W, 'test')).filter((f) => f.endsWith('.mjs') && f !== SELF);
+  for (const f of files) {
+    const lines = read(path.join('test', f)).split(LF);
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      const dot = line.indexOf('.indexOf(');
+      const dot2 = line.indexOf('.lastIndexOf(');
+      if (dot < 0 && dot2 < 0) continue;
+      const useLast = dot2 > dot;
+      const d = useLast ? dot2 : dot;
+      const rel = VAR2SRC[varBefore(line, d)];
+      if (!rel) continue;
+      const openParen = d + (useLast ? 13 : 9);
+      const found = stringAt(line, openParen);
+      if (found === null) continue;
+      const anchor = found.text;
+      // 带第三参数 = 「从某位置往后找下一个」哨兵用法，天然多命中，不是节点定位锚。
+      if (line.slice(found.eq + 1).trimStart().startsWith(',')) continue;
+      // 存在性断言（<0 / >=0 / ===-1 / !==-1）只要求有或无，不要求唯一。
+      const ce = callEnd(line, openParen - 1);
+      const cmp = ce >= 0 ? line.slice(ce + 1).trimStart() : '';
+      if (cmp.startsWith('< 0') || cmp.startsWith('>= 0') || cmp.startsWith('=== -1') || cmp.startsWith('!== -1')) continue;
+      if (anchor.indexOf(LF) >= 0 || anchor.indexOf(DOLLAR + '{') >= 0 || anchor.length < 8) continue;
+      const t = line.trimStart();
+      if (t.startsWith('//') || t.startsWith('*')) continue;
+      scanned++;
+      const hits = countHits(srcs[rel], anchor);
+      const where = f + ':' + (li + 1) + ' [' + rel + '] ' + JSON.stringify(anchor.slice(0, 52));
+      if (hits === 0) zero.push(where);
+      else if (hits > 1) multi.push(hits + 'x ' + where);
+    }
+  }
+  check('扫描到足量节点锚', scanned >= 20, scanned + ' 个');
+  check('无命中 0 次的失效锚（断言不得空转）', zero.length === 0, zero.join(' / '));
+  check('无命中 >1 次的歧义锚（无静默回退面）', multi.length === 0, multi.join(' / '));
+  // 真实代码是 h('button', { —— 引号在 button 之后，之前拼错成 button, { 导致自测 0 命中。
+  const manyHits = 'h(' + SQ + 'button' + SQ + ', {';
+  check('计数器能识别多命中', countHits(c, manyHits) > 1, countHits(c, manyHits));
+  const uniq = 'title: ' + SQ + '在资源管理器中直接查看 / 编辑技能文件' + SQ;
+  check('计数器能识别唯一串', countHits(c, uniq) === 1, countHits(c, uniq));
 }
 
 console.log('');

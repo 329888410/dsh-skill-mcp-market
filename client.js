@@ -2430,9 +2430,9 @@ window.__ModuleLoader__.load({
                   ? h('span', { style: { fontSize: 11, opacity: 0.6, fontWeight: 400 } }, `含 DSH 内置 ${nativeDirs.length} 个目录`)
                   : null,
                 h('span', { style: { flex: 1 } }),
-                h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, title: '展开所有来源分组', onClick: () => collapseAllGroups(false) }, '全部展开'),
-                h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, title: '折叠所有来源分组；折叠的项不参与批量选择', onClick: () => collapseAllGroups(true) }, '全部折叠'),
-                h('button', {
+                !batchMode ? h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, title: '展开所有来源分组', onClick: () => collapseAllGroups(false) }, '全部展开') : null,
+                !batchMode ? h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, title: '折叠所有来源分组；折叠的项不参与批量选择', onClick: () => collapseAllGroups(true) }, '全部折叠') : null,
+                !batchMode ? h('button', {
                   style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
                   title: '在资源管理器中直接查看 / 编辑技能文件',
                   disabled: busy === 'openDir:skills',
@@ -2448,7 +2448,7 @@ window.__ModuleLoader__.load({
                       setBusy('');
                     }
                   },
-                }, '打开目录')),
+                }, '打开目录') : null),
               batchMode && filteredInstalled.length > 0
                 ? h('div', {
                     // 复用技能容器的 position:relative（0.5.119 为上传浮层加的）→ 零位移浮条
@@ -2480,6 +2480,8 @@ window.__ModuleLoader__.load({
                             `确认卸载 ${selectedVisible.length} 项`),
                           h('button', { style: S.btn(), onClick: () => setBatchConfirm(false) }, '取消')),
                     h('span', { style: { flex: 1 } }),
+                    h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, title: '展开所有来源分组', onClick: () => collapseAllGroups(false) }, '全部展开'),
+                    h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, title: '折叠所有来源分组；折叠的项不参与批量选择', onClick: () => collapseAllGroups(true) }, '全部折叠'),
                     h('button', { style: S.btn(), onClick: exitBatch }, '退出选择'))
                 : null,
               filteredInstalled.length === 0
