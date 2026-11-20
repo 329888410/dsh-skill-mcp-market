@@ -156,7 +156,9 @@ console.log('Test 9: 面板添加表单（E-2）');
   check('添加表单全字段', /serverName/.test(c) && /transport/.test(c));
   // 实测 confirm 距 'mcp.install' 321 字符（窗口 300 差 21）；市场安装点（slug）本就不带 confirm，
   // 所以断言只针对手动添加路径：第一个调用点（submitMcpAdd）必须带 confirm。
-  check('添加走 mcp.install 且自定义命令带 confirm', /'mcp\.install'[\s\S]{0,400}confirm/.test(c));
+  // 实测：加字段后 confirm 距 'mcp.install' 498（原 321）；固定窗口随字段增长脆弱，改为函数体切片。
+  const _si = c.indexOf('const submitMcpAdd');
+  check('添加走 mcp.install 且自定义命令带 confirm', /'mcp\.install'[\s\S]{0,700}confirm/.test(c.slice(_si, _si + 1600)));
   check('手动模式说明诚实（写明会执行该命令）', /将执行|会执行|本机执行/.test(c));
 }
 

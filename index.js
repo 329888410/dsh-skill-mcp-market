@@ -292,6 +292,10 @@ function manualMcpDefinition(body) {
     env: body.env && typeof body.env === "object" ? body.env : {},
     url: body.url || "",
     headers: body.headers && typeof body.headers === "object" ? body.headers : {},
+    // 添加路径必须与编辑路径同宽：这两个字段以前被丢弃，
+    // 于是「先添加、再编辑」之间出现只有编辑能设的字段。
+    cwd: body.cwd || "",
+    ...(Number(body.toolCallTimeoutMs) > 0 ? { toolCallTimeoutMs: Number(body.toolCallTimeoutMs) } : {}),
     source: "manual",
   };
 }
@@ -1121,14 +1125,26 @@ export async function apply(ctx, config = {}) {
   const scanCache = { at: 0, shallow: null };
   let scanInflight = null;
 /**
- * 判定一次 patch 是否触碰执行面（command/args）。纯函数，便于独立测试。
- * 注意用 in 而非 !== undefined：把 command 显式置空（清除）同样是执行面改动。
+ * 判定一次 patch 是否**真的**改变执行面（command/args）。纯函数，便于独立测试。
+ *
+ * 0.5.126 用的是「键存在即算改动」（in 判定），那会让只改 URL 的保存也被要求
+ * 二次确认而必然失败：面板的 draft 永远带着 command（它是定义的一部分），
+ * 于是每次 patch 都含 command 键。判据必须是值比对，不是存在性。
+ *
+ * current 缺失（新建、或读不到定义）时退回保守判定：键存在即算改动 ——
+ * 宁可多问一次，不可少问。
  */
-function needsConfirmFor(patch) {
+function needsConfirmFor(patch, current) {
   if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return [];
   const out = [];
-  if ("command" in patch) out.push("command");
-  if ("args" in patch) out.push("args");
+  const hasCurrent = current !== null && typeof current === "object" && !Array.isArray(current);
+  const normArgs = (value) => JSON.stringify(Array.isArray(value) ? value.map(String) : []);
+  if ("command" in patch) {
+    if (!hasCurrent || String(patch.command ?? "") !== String(current.command ?? "")) out.push("command");
+  }
+  if ("args" in patch) {
+    if (!hasCurrent || normArgs(patch.args) !== normArgs(current.args)) out.push("args");
+  }
   return out;
 }
 
@@ -1539,7 +1555,13 @@ function needsConfirmFor(patch) {
         // 直接往定义目录写一个 JSON，reconcile() 就会挂载执行它 —— 机器信任才是边界，
         // HTTP 守卫挡不住任何本地进程，只挡住误操作。契约因此改为与全插件一致的
         // confirm 闸门（删除/清空/卸载都走同一形态）：能改，但改到执行面时问一句。
-        const risky = needsConfirmFor(patch);
+        // 与磁盘上的当前定义比对（readDefs 给的是未掩码原值，command/args 可信）。
+        let current = null;
+        try {
+          const defs = await mcp.readDefs();
+          current = defs.get(normalizeServerName(body.serverName)) || null;
+        } catch { /* 读不到就保守判定 */ }
+        const risky = needsConfirmFor(patch, current);
         if (risky.length > 0 && body.confirm !== true) {
           throw new Error(`修改 ${risky.join("/")} 会改变连接器的执行命令，需要二次确认（confirm:true）`);
         }
@@ -1600,7 +1622,7 @@ function needsConfirmFor(patch) {
         const definition =
           body.command || body.url ? manualMcpDefinition(body) : await resolveMcpDefinition(body.slug, body.serverName);
         if (body.env && typeof body.env === "object") definition.env = { ...definition.env, ...body.env };
-        const overrideOf = ["command", "args", "url", "headers", "transport"];
+        const overrideOf = ["command", "args", "url", "headers", "transport", "cwd", "toolCallTimeoutMs"];
         for (const key of overrideOf) {
           if (body[key] !== undefined && body[key] !== "" && !(Array.isArray(body[key]) && body[key].length === 0)) {
             definition[key] = body[key];

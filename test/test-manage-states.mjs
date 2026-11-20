@@ -33,7 +33,7 @@ const sseg = c.slice(si, si + 16000);
 check('技能段无数据空态', /还没有已安装技能/.test(sseg));
 check('技能段筛选空态', /没有符合筛选条件/.test(sseg));
 const mi = c.indexOf("manageTab === 'mcp' ? h('div'");
-const mseg = c.slice(mi, mi + 9000);
+  const mseg = c.slice(mi, mi + 11000);   // 手动添加浮层加入后空态文案距起点 ~9.4k（实测）
 check('MCP 段无数据空态', /还没有已安装 MCP|还没有 MCP 连接器/.test(mseg));
 check('MCP 段筛选空态', /没有匹配的连接|没有符合筛选/.test(mseg));
 

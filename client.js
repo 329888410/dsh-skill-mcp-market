@@ -837,6 +837,8 @@ window.__ModuleLoader__.load({
           const args = String(d.args || '').split('\n').map((x) => x.trim()).filter(Boolean);
           const env = {};
           for (const r of d.envRows || []) { const k = String(r.key || '').trim(); if (k) env[k] = r.value; }
+          const headers = {};
+          for (const r of d.headerRows || []) { const k = String(r.key || '').trim(); if (k) headers[k] = r.value; }
           // 自定义 command = 在本机执行该程序：与服务端闸门同语义，必须显式确认。
           const r = await call('mcp.install', {
             serverName,
@@ -847,6 +849,9 @@ window.__ModuleLoader__.load({
             args,
             url,
             env,
+            headers,
+            cwd: String(d.cwd || '').trim(),
+            ...(Number(d.toolCallTimeoutMs) > 0 ? { toolCallTimeoutMs: Number(d.toolCallTimeoutMs) } : {}),
             confirm: command ? true : undefined,
           });
           const rr = (r.results || [])[0] || r;
@@ -963,8 +968,8 @@ window.__ModuleLoader__.load({
             transport: draft.transport,
             cwd: draft.cwd,
           };
-          if (draft.command !== undefined) patch.command = draft.command;
-          if (draft.args !== undefined) patch.args = argsList;
+          if (commandChanged) patch.command = draft.command;
+          if (argsChanged) patch.args = argsList;
           if (Object.keys(envPatch).length > 0 || envUnset.length > 0) patch.env = envPatch;
           if (envUnset.length > 0) patch.envUnset = envUnset;
           if (Object.keys(headerPatch).length > 0 || headersUnset.length > 0) patch.headers = headerPatch;
@@ -1000,8 +1005,6 @@ window.__ModuleLoader__.load({
           setBusy('');
         }
       };
-
-;
 
       // 各源详情页 URL 推导（统一通过 DSH 内置 sidebar-right browser tab 打开）。
       // 每个源都要给出可打开的地址：全部源的全部技能卡片都必须有「详情」按钮。
@@ -2042,14 +2045,14 @@ window.__ModuleLoader__.load({
                           : h('div', { style: { marginTop: 12 } },
                             h('div', { style: S.row },
                               h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '命令'),
-                              h('input', { style: S.input, placeholder: '可执行文件，如 npx、node 或绝对路径', value: draft.command || '', onChange: (e) => setDraft({ ...draft, command: e.target.value }) })),
+                              h('input', { style: S.input, placeholder: '可执行文件，如 npx、node 或绝对路径', value: draft.command || '', onChange: (e) => { setDraft({ ...draft, command: e.target.value }); setMcpConfirmArmed(false); } })),
                             h('div', { style: S.row },
                               h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '参数'),
                               h('textarea', {
                                 style: { ...S.input, height: 60, fontFamily: 'ui-monospace, monospace', fontSize: 12 },
                                 value: draft.args || '',
                                 placeholder: '每行一个参数',
-                                onChange: (e) => setDraft({ ...draft, args: e.target.value }),
+                                onChange: (e) => { setDraft({ ...draft, args: e.target.value }); setMcpConfirmArmed(false); },
                               })),
                             h('div', { style: S.row },
                               h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, 'URL'),
@@ -2118,10 +2121,10 @@ window.__ModuleLoader__.load({
                         ? h('button', { style: S.btn(), disabled: busy === 'save:mcp', title: '直接编辑定义文件原文（表单覆盖不到的字段）', onClick: () => openMcpRaw(detail.slug) },
                             mcpRaw && mcpRaw.serverName === detail.slug ? '收起原文' : '原文')
                         : null,
-                      h('button', { style: S.btn(), onClick: () => { setDetail(null); setMcpRaw(null); } }, '关闭'),
+                      h('button', { style: S.btn(), onClick: () => { setDetail(null); setMcpRaw(null); setMcpConfirmArmed(false); } }, '关闭'),
                       detail.kind === 'skill'
                         ? h('button', { style: S.btn('primary'), disabled: busy === 'save:skill', onClick: saveSkillEdit }, '保存')
-                        : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, '保存并重连'))))
+                        : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, mcpConfirmArmed ? '确认保存（命令已改动）' : '保存并重连'))))
               : null,
             // 已装 MCP 工具清单浮窗：点卡片本体打开，列全部工具的名称/描述，参数 schema 逐个可展开。
             mcpTools
@@ -2511,7 +2514,7 @@ window.__ModuleLoader__.load({
                   'aria-expanded': Boolean(mcpAdd),
                   onClick: () => {
                     if (mcpAdd) { setMcpAdd(null); setMcpAddConfirm(false); }
-                    else { setMcpAddDraft({ transport: 'stdio', envRows: [{ key: '', value: '' }] }); setMcpAddConfirm(false); setMcpAdd({ open: true }); }
+                    else { setMcpAddDraft({ transport: 'stdio', envRows: [{ key: '', value: '' }], headerRows: [] }); setMcpAddConfirm(false); setMcpAdd({ open: true }); }
                   },
                 }, mcpAdd ? '收起添加' : '＋ 手动添加'),
               // 手动添加浮层：绝对定位（复用 MCP 子面板容器的 position:relative？没有——用 fixed 居中，
@@ -2548,6 +2551,12 @@ window.__ModuleLoader__.load({
                     h('div', { style: S.row },
                       h('span', { style: { width: 92, fontSize: 12, opacity: 0.7 } }, 'URL'),
                       h('input', { style: S.input, placeholder: 'https://…/mcp（stdio 留空时必填）', value: mcpAddDraft.url || '', onChange: (e) => setMcpAddDraft({ ...mcpAddDraft, url: e.target.value }) })),
+                    h('div', { style: S.row },
+                      h('span', { style: { width: 92, fontSize: 12, opacity: 0.7 } }, '工作目录'),
+                      h('input', { style: S.input, placeholder: '可选：启动连接器时的工作目录', value: mcpAddDraft.cwd || '', onChange: (e) => setMcpAddDraft({ ...mcpAddDraft, cwd: e.target.value }) })),
+                    h('div', { style: S.row },
+                      h('span', { style: { width: 92, fontSize: 12, opacity: 0.7 } }, '超时 ms'),
+                      h('input', { style: { ...S.input, width: 140 }, type: 'number', placeholder: '60000', value: mcpAddDraft.toolCallTimeoutMs || '', onChange: (e) => setMcpAddDraft({ ...mcpAddDraft, toolCallTimeoutMs: e.target.value }) })),
                     h('div', { style: { marginTop: 6 } },
                       h('span', { style: { fontSize: 12, fontWeight: 600 } }, '环境变量'),
                       (mcpAddDraft.envRows || []).map((row, idx) => h('div', { key: `a-${idx}`, style: { ...S.row, marginTop: 4 } },
@@ -2555,6 +2564,13 @@ window.__ModuleLoader__.load({
                         h('input', { style: { ...S.input, flex: 1 }, placeholder: '值（支持 ${ENV_VAR} 引用）', value: row.value, onChange: (e) => { const rows = (mcpAddDraft.envRows || []).slice(); rows[idx] = { ...rows[idx], value: e.target.value }; setMcpAddDraft({ ...mcpAddDraft, envRows: rows }); } }),
                         h('button', { style: { ...S.btn(), ...S.danger }, onClick: () => setMcpAddDraft({ ...mcpAddDraft, envRows: (mcpAddDraft.envRows || []).filter((x, i2) => i2 !== idx) }) }, '删'))),
                       h('button', { style: S.btn(), onClick: () => setMcpAddDraft({ ...mcpAddDraft, envRows: [...(mcpAddDraft.envRows || []), { key: '', value: '' }] }) }, '＋ 添加变量')),
+                    h('div', { style: { marginTop: 6 } },
+                      h('span', { style: { fontSize: 12, fontWeight: 600 } }, '请求头'),
+                      (mcpAddDraft.headerRows || []).map((row, idx) => h('div', { key: `ah-${idx}`, style: { ...S.row, marginTop: 4 } },
+                        h('input', { style: { ...S.input, flex: '0 0 170px' }, placeholder: 'Header-Name', value: row.key, onChange: (e) => { const rows = (mcpAddDraft.headerRows || []).slice(); rows[idx] = { ...rows[idx], key: e.target.value }; setMcpAddDraft({ ...mcpAddDraft, headerRows: rows }); } }),
+                        h('input', { style: { ...S.input, flex: 1 }, placeholder: '值', value: row.value, onChange: (e) => { const rows = (mcpAddDraft.headerRows || []).slice(); rows[idx] = { ...rows[idx], value: e.target.value }; setMcpAddDraft({ ...mcpAddDraft, headerRows: rows }); } }),
+                        h('button', { style: { ...S.btn(), ...S.danger }, onClick: () => setMcpAddDraft({ ...mcpAddDraft, headerRows: (mcpAddDraft.headerRows || []).filter((x, i2) => i2 !== idx) }) }, '删'))),
+                      h('button', { style: S.btn(), onClick: () => setMcpAddDraft({ ...mcpAddDraft, headerRows: [...(mcpAddDraft.headerRows || []), { key: '', value: '' }] }) }, '＋ 添加请求头')),
                     h('div', { style: { ...S.row, marginTop: 12, justifyContent: 'flex-end', gap: 8 } },
                       mcpAddDraft.command && !mcpAddConfirm
                       ? h('button', { style: { ...S.btn(), ...S.danger }, onClick: () => setMcpAddConfirm(true) }, '添加并启动')
