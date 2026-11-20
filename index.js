@@ -1116,6 +1116,8 @@ export async function apply(ctx, config = {}) {
             shippedRoot: settings.shippedRoot || "(auto-detected)",
             settingsPath: settingsPath(),
             disabledSkills: settings.disabledSkills,
+            // 面板用它把长路径缩写成 ~/…（悬浮仍给全文）。不新增 op，随既有 settings.get 下发。
+            homeDir: dshHome().replace(/[\\/]+$/, ""),
           },
           skillProvider: { mounted: Boolean(disposeProvider), error: skillProviderError || undefined },
           // 排序能力表随 settings.get 下发：面板每次切 tab 都会 loadSettings()，

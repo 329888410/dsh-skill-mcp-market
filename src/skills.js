@@ -61,6 +61,10 @@ export async function listInstalledSkills(dirs) {
             name: meta.name || cand.slug,
             description: meta.description,
             whenToUse: meta.whenToUse,
+            // 文件级停用标记（SKILL.md 的 disable-model-invocation）。面板必须能看见它：
+            // 停用有两种实现（文件级 / 面板级 disabledSkills），只看后者会把文件级停用的
+            // 技能显示成「未停用」，那是对用户的假陈述。
+            disableModelInvocation: meta.disableModelInvocation === true,
             dir: dirname(cand.file),
             root: dir,
             path: cand.file,

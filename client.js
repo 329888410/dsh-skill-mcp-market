@@ -20,6 +20,27 @@ window.__ModuleLoader__.load({
     }
     // 连接生命周期文案。unknown 是诚实态：探测不到就不假装知道（回退到旧的布尔语义）。
     const PHASE_LABEL = { active: '· 已连接', loading: '· 启动中', failed: '· 连接失败', unloaded: '· 未挂载', unknown: '' };
+    // 路径缩写：把用户主目录换成 ~，卡片才不会把长路径中段截断（悬浮给全文）。
+    // home 由调用方传入（settings.settings.homeDir，服务端下发）——本函数在 factory 作用域，
+    // 拿不到组件 state，绝不能依赖全局变量猜。
+    function shortPath(p, home) {
+      const text = String(p || '');
+      const base = String(home || '');
+      const flat = (x) => x.replace(/\\/g, '/');
+      if (base && text.toLowerCase().startsWith(base.toLowerCase())) return '~' + flat(text.slice(base.length));
+      return flat(text);
+    }
+    // 回收站时间戳：ISO 的 2026-11-20T01-03-31-951Z 读不出含义，转成 11-20 09:03。
+    function formatStamp(stamp) {
+      const raw = String(stamp || '');
+      const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})/.exec(raw);
+      if (m) return m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5];
+      const iso = raw.replace(/(\d{2})-(\d{2})-(\d{3})Z$/, '$1:$2.$3Z');
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return raw.slice(0, 16);
+      const pad = (x) => String(x).padStart(2, '0');
+      return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
     function sortOptions(caps, defaultLabel) {
       const out = [h('option', { key: 'default', value: 'default' }, defaultLabel || '默认顺序')];
       if (caps) for (const k of caps) out.push(h('option', { key: k, value: k }, SORT_LABEL[k] || k));
@@ -169,7 +190,8 @@ window.__ModuleLoader__.load({
         background: 'var(--dsh-surface, #ffffff)',
 
       },
-      grid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignContent: 'start', alignItems: 'start' },
+      // auto-fill：宽面板自动多列、窄侧边栏自动降到 2/1 列，不再固定三列把按钮挤成两行。
+    grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(272px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' },
       chip: (active) => ({
         padding: '4px 10px',
         borderRadius: 999,
@@ -215,6 +237,8 @@ window.__ModuleLoader__.load({
       }),
       status: { fontSize: 12, opacity: 0.75 },
       err: { fontSize: 12, color: '#c62828' },
+    danger: { color: '#c62828', borderColor: 'rgba(198, 40, 40, 0.45)' },
+    btnRow: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'nowrap', width: '100%' },
     };
 
     // 每个目录一行：多目录时逐行渲染，避免 \n 在 <input> 里被吞掉、两行粘成一行
@@ -290,6 +314,22 @@ window.__ModuleLoader__.load({
       // 过滤词按子页签拆开：旧实现一个词同时过滤技能与 MCP，切页签互相污染
       const [manageSkillFilter, setManageSkillFilter] = useState('');
       const [manageMcpFilter, setManageMcpFilter] = useState('');
+      // 状态筛选维度：all | on | off（值持久化，与折叠偏好同一风格）。
+      const SKILL_STATE_KEY = 'dsh-skill-mcp-market.manage-skill-state';
+      const [manageSkillState, setManageSkillState] = useState(() => {
+        try {
+          const v = window.localStorage.getItem(SKILL_STATE_KEY);
+          return v === 'on' || v === 'off' ? v : 'all';
+        } catch { return 'all'; }
+      });
+      // 上传是低频动作：默认收起，点「＋ 添加技能」才展开；拖拽热区升到整个列表容器。
+      const [uploadOpen, setUploadOpen] = useState(false);
+      const [dragOver, setDragOver] = useState(false);
+      // 回收站默认折叠成一行（数量已在标题里），不再常驻占首屏。
+      const TRASH_OPEN_KEY = 'dsh-skill-mcp-market.trash-open';
+      const [trashOpen, setTrashOpen] = useState(() => {
+        try { return window.localStorage.getItem(TRASH_OPEN_KEY) === '1'; } catch { return false; }
+      });
       const [collapsedGroups, setCollapsedGroups] = useState(() => {
       // searchSkills/searchMcps 的 useCallback 依赖是 []，直接读 state 会闭包住首帧的值；
 
@@ -904,6 +944,66 @@ window.__ModuleLoader__.load({
         }
       };
 
+      // 拖拽上传技能：从旧版内联在虚线框里的 handler 原样提取（逻辑零改动），
+      // 热区升级为整个技能列表容器。额外先清 dragOver，避免提示条卡在屏幕上。
+      const handleSkillDrop = async (e) => {
+        e.preventDefault();
+        setDragOver(false);
+        setBusy('upload'); setError(''); setNotice('');
+        try {
+          const SKIP_DIRS = new Set(['.git', '.venv', 'venv', 'node_modules', '.idea', '.vscode', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', 'dist', 'build', '.next', '.nuxt', '.svelte-kit']);
+          const items = e.dataTransfer ? Array.from(e.dataTransfer.items || []) : [];
+          const droppedFiles = [];
+          // 优先走 DataTransferItem.webkitGetAsEntry() 递归读取 FileEntry，
+          // 能拿到真实的目录层级；读不到的文件回退到 e.dataTransfer.files。
+          const readEntry = async (entry, prefix, out) => {
+            if (entry.isFile) {
+              const file = await new Promise((resolve) => entry.file((f) => resolve(f), () => resolve(null)));
+              if (file) out.push({ file, path: prefix + file.name });
+            } else if (entry.isDirectory) {
+              const reader = entry.createReader();
+              const readBatch = () => new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
+              let batch = await readBatch();
+              while (batch.length) {
+                for (const child of batch) await readEntry(child, prefix + entry.name + '/', out);
+                batch = await readBatch();
+              }
+            }
+          };
+          const entryResults = [];
+          for (const item of items) {
+            const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+            if (entry) entryResults.push(entry);
+          }
+          if (entryResults.length) {
+            for (const entry of entryResults) await readEntry(entry, '', droppedFiles);
+          }
+          if (!droppedFiles.length) {
+            for (const f of Array.from(e.dataTransfer.files || [])) droppedFiles.push({ file: f, path: f.name });
+          }
+          if (!droppedFiles.length) return;
+          // 推断根目录前缀：所有 path 的公共第一段（拖入的是文件夹时形如 "agnes/SKILL.md"）。
+          const firstSeg = droppedFiles.map(({ path }) => path.split('/').filter(Boolean)[0] || '').filter(Boolean);
+          const rootPrefix = firstSeg.length && firstSeg.every((s) => s === firstSeg[0]) ? firstSeg[0] + '/' : '';
+          const files = [];
+          for (const { file, path } of droppedFiles) {
+            const rel = path.startsWith(rootPrefix) ? path : rootPrefix + path;
+            const parts = rel.split('/');
+            if (parts.some((p2, i) => i > 0 && SKIP_DIRS.has(p2))) continue;
+            const text = await file.text();
+            files.push({ path: rel, content: text });
+          }
+          const result = await call('skills.upload', { files, force: false });
+          const n = result.count || (result.items || []).length;
+          setNotice(`已上传 ${n} 个技能（${(result.items || []).map((i) => i.slug).join('、')}，安全扫描通过）`);
+          await loadInstalled();
+        } catch (err) {
+          setError(`上传失败：${err.message || err}`);
+        } finally {
+          setBusy('');
+        }
+      };
+
       const removeSkill = async (slug) => {
         setBusy(`remove:${slug}`);
         try {
@@ -1209,28 +1309,48 @@ window.__ModuleLoader__.load({
       // 两个子页签各用各的过滤词
       const skillFilterText = manageSkillFilter.trim().toLowerCase();
       const mcpFilterText = manageMcpFilter.trim().toLowerCase();
-      const filteredInstalled = skillFilterText
-        ? installed.filter((i) => (i.name || i.slug || '').toLowerCase().includes(skillFilterText) || (i.description || '').toLowerCase().includes(skillFilterText))
-        : installed;
+      const homeDir = (settings && settings.settings && settings.settings.homeDir) || '';
+      // 停用的真实状态 = 面板级 disabledSkills ∪ 文件级 disable-model-invocation。
+      // 只看前者会把「文件级已停用」的技能显示成启用中，并对用户假陈述（0.5.117 前既有缺陷）。
+      const skillStateOff = (item) => disabledSet.has(String(item.slug || '').toLowerCase()) || item.disableModelInvocation === true;
+      const filteredInstalled = installed.filter((i) => {
+        if (manageSkillState === 'on' && skillStateOff(i)) return false;
+        if (manageSkillState === 'off' && !skillStateOff(i)) return false;
+        if (!skillFilterText) return true;
+        return (i.name || i.slug || '').toLowerCase().includes(skillFilterText) || (i.description || '').toLowerCase().includes(skillFilterText);
+      });
       const filteredMounted = mcpFilterText
         ? mounted.filter((i) => (i.title || i.serverName || '').toLowerCase().includes(mcpFilterText) || (i.description || '').toLowerCase().includes(mcpFilterText))
         : mounted;
       // 单张已装技能卡片（分组渲染时复用）
       const renderInstalledCard = (item) => {
-        const off = disabledSet.has(String(item.slug).toLowerCase());
+        const off = skillStateOff(item);
         // fileToggle 表示这个技能的 SKILL.md 可写（文件级真生效）；否则只能面板级隐藏
         const fileToggle = item.fileToggleable !== false;
-        return h('div', { key: `i-${item.dir}-${item.slug}`, style: { ...S.card, opacity: item.shadowedBy ? 0.55 : 1 } },
-          h('div', { style: S.title }, `${item.name || item.slug}${off ? '（已停用）' : ''}${item.shadowedBy ? `（被 ${item.shadowedBy} 覆盖）` : ''}`),
-          h('div', { style: S.meta }, h('span', null, item.sourceLabel ? `${item.sourceLabel} · rank ${item.rank}` : item.dir)),
-          h('div', { style: S.meta }, h('span', { style: { opacity: 0.6 } }, item.dir)),
-          h('div', { style: S.row },
+        return h('div', {
+          key: `i-${item.dir}-${item.slug}`,
+          style: { ...S.card, opacity: item.shadowedBy ? 0.55 : 1, display: 'flex', flexDirection: 'column', gap: 6 },
+        },
+          // 标题行：状态点前置，不再把「（已停用）（被…覆盖）」堆进标题字符串
+          h('div', { style: { ...S.row, justifyContent: 'space-between', gap: 8, flexWrap: 'nowrap' } },
+            h('span', { style: { ...S.title, minWidth: 0 }, title: item.name || item.slug }, item.name || item.slug),
+            h('span', {
+              style: { fontSize: 11, whiteSpace: 'nowrap', color: off ? '#b26a00' : 'var(--dsh-text-secondary, #57606a)' },
+              title: off ? '模型不会调用该技能' : '模型可调用',
+            }, off ? '● 已停用' : '● 已启用')),
+          // 描述优先于来源（来源已在分组头说过，卡片再写一遍是重复）
+          h('div', { style: S.desc, title: item.description || '' }, item.description || '（SKILL.md 未提供 description）'),
+          h('div', { style: { ...S.meta, fontSize: 11 } },
+            h('span', { style: { opacity: 0.65, minWidth: 0 }, title: item.dir }, shortPath(item.dir, homeDir)),
+            item.shadowedBy ? h('span', { style: { color: '#b26a00', whiteSpace: 'nowrap' }, title: `同名技能由 ${item.shadowedBy} 提供，层级更高` }, '被覆盖') : null),
+          // 次要动作靠左、危险动作靠右；nowrap 保证窄面板不折行
+          h('div', { style: S.btnRow },
             h('button', {
               style: S.btn(off ? 'primary' : undefined),
               disabled: busy === `toggle:${item.slug}`,
               title: fileToggle ? '改写 SKILL.md 的 disable-model-invocation，模型不再调用该技能' : '该技能只能在本面板隐藏，模型仍会收到',
               onClick: () => toggleSkill(item.slug, off, fileToggle ? 'file' : 'panel'),
-            }, busy === `toggle:${item.slug}` ? '处理中…' : (off ? '启用' : (fileToggle ? '关闭' : '在本面板隐藏'))),
+            }, busy === `toggle:${item.slug}` ? '处理中…' : (off ? '启用' : '停用')),
             h('button', {
               style: S.btn(),
               disabled: busy === `openDir:skill:${item.slug}`,
@@ -1247,7 +1367,13 @@ window.__ModuleLoader__.load({
                 }
               },
             }, '打开文件夹'),
-            h('button', { style: S.btn(), disabled: busy === `remove:${item.slug}`, onClick: () => removeSkill(item.slug) }, '卸载')))
+            h('span', { style: { flex: 1 } }),
+            h('button', {
+              style: { ...S.btn(), ...S.danger },
+              disabled: busy === `remove:${item.slug}`,
+              title: '移入回收站，可随时恢复',
+              onClick: () => removeSkill(item.slug),
+            }, '卸载')));
       };
 
       // 按来源层级分组（rank 200 用户 → 500 插件提供），折叠状态存 localStorage
@@ -1275,7 +1401,8 @@ window.__ModuleLoader__.load({
           },
             h('span', { style: { fontSize: 12, width: 12 } }, collapsed ? '▸' : '▾'),
             h('span', { style: { fontSize: 13, fontWeight: 600 } }, group.label),
-            h('span', { style: { ...S.status, fontSize: 11 } }, `rank ${group.rank} · ${group.items.length} 个`),
+            // rank 是实现细节（同名技能谁优先），不该出现在界面上；降级为悬浮提示。
+            h('span', { style: { ...S.status, fontSize: 11 }, title: `层级 ${group.rank}：数字越小，同名技能越优先` }, `${group.items.length} 个`),
             shadowed > 0 ? h('span', { style: { ...S.status, fontSize: 11, color: '#b26a00' } }, `${shadowed} 个被更高层覆盖`) : null),
           collapsed ? null : h('div', { style: S.grid }, group.items.map(renderInstalledCard)));
       });
@@ -1710,23 +1837,22 @@ window.__ModuleLoader__.load({
               h('div', { style: { ...S.row, gap: 2, borderBottom: '1px solid var(--dsh-border, #d0d7de)', marginBottom: 2 }, role: 'tablist' },
                 h('button', { type: 'button', style: S.subTab(manageTab === 'skill'), 'aria-selected': manageTab === 'skill', onClick: () => switchManageTab('skill') }, `SKILL 技能 (${installed.length})`),
                 h('button', { type: 'button', style: S.subTab(manageTab === 'mcp'), 'aria-selected': manageTab === 'mcp', onClick: () => switchManageTab('mcp') }, `MCP 连接器 (${mounted.length})`)),
-              manageTab === 'skill' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, width: '100%' } },
+              manageTab === 'skill' ? h('div', {
+                style: { display: 'flex', flexDirection: 'column', gap: 12, width: '100%' },
+                // 拖拽热区 = 整个技能列表容器（旧版热区是上传行里的小虚线框，且该框从未闭合）。
+                onDragOver: (e) => { e.preventDefault(); if (!dragOver) setDragOver(true); },
+                onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false); },
+                onDrop: handleSkillDrop,
+              },
+              dragOver ? h('div', { style: { ...S.status, textAlign: 'center', padding: 8, border: '2px dashed var(--dsh-accent, #3b82f6)', borderRadius: 8, color: 'var(--dsh-accent, #3b82f6)' } }, '松开即可上传（根目录或一级子目录必须含 SKILL.md）') : null,
               // 上传技能：拖拽文件夹或点按钮选文件夹。宿主 @deepseek-ai 包没有 showOpenDialog
               // 暴露给插件，面板是 web 页面，用 <input type=file webkitdirectory>（Chromium
               // 弹原生文件夹对话框，效果与 workbuddy 相同）。拖拽事件里 dataTransfer.files
               // 是扁平文件列表，没有 webkitRelativePath，用首个文件的 name 前缀推断根目录。
-              h('div', {
-                style: {
-                  ...S.row,
-                  border: '1px dashed var(--dsh-border, #d0d7de)',
-                  borderRadius: 8,
-                  padding: '12px 16px',
-                  gap: 12,
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                },
+              uploadOpen ? h('div', {
+                style: { ...S.row, border: '1px dashed var(--dsh-border, #d0d7de)', borderRadius: 8, padding: '10px 14px', gap: 12, alignItems: 'center', flexWrap: 'wrap' },
               },
-                h('div', { style: { fontSize: 12, opacity: 0.7 } }, '把技能文件夹拖到这里，或'),
+                h('div', { style: { fontSize: 12, opacity: 0.7 } }, '选择技能文件夹上传，或'),
                 h('button', {
                   style: S.btn('primary'),
                   disabled: busy === 'upload',
@@ -1804,92 +1930,44 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, busy === 'uploadZip' ? '导入中…' : '导入 .zip'),
-                h('div', {
-                  style: {
-                    flex: 1,
-                    minHeight: 40,
-                    border: '2px dashed var(--dsh-border, #d0d7de)',
-                    borderRadius: 8,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: 'var(--dsh-text-secondary, #6a737d)',
-                    fontSize: 12,
-                    opacity: 0.7,
-                  },
-                  onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); },
-                  onDrop: async (e) => {
-                    e.preventDefault(); e.stopPropagation();
-                    setBusy('upload'); setError(''); setNotice('');
-                    try {
-                      const SKIP_DIRS = new Set(['.git', '.venv', 'venv', 'node_modules', '.idea', '.vscode', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', 'dist', 'build', '.next', '.nuxt', '.svelte-kit']);
-                      const items = e.dataTransfer ? Array.from(e.dataTransfer.items || []) : [];
-                      const droppedFiles = [];
-                      // 优先走 DataTransferItem.webkitGetAsEntry() 递归读取 FileEntry，
-                      // 能拿到真实的目录层级；读不到的文件回退到 e.dataTransfer.files。
-                      const readEntry = async (entry, prefix, out) => {
-                        if (entry.isFile) {
-                          const file = await new Promise((resolve) => entry.file((f) => resolve(f), () => resolve(null)));
-                          if (file) out.push({ file, path: prefix + file.name });
-                        } else if (entry.isDirectory) {
-                          const reader = entry.createReader();
-                          const readBatch = () => new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
-                          let batch = await readBatch();
-                          while (batch.length) {
-                            for (const child of batch) await readEntry(child, prefix + entry.name + '/', out);
-                            batch = await readBatch();
-                          }
-                        }
-                      };
-                      const entryResults = [];
-                      for (const item of items) {
-                        const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
-                        if (entry) entryResults.push(entry);
-                      }
-                      if (entryResults.length) {
-                        for (const entry of entryResults) await readEntry(entry, '', droppedFiles);
-                      }
-                      if (!droppedFiles.length) {
-                        for (const f of Array.from(e.dataTransfer.files || [])) droppedFiles.push({ file: f, path: f.name });
-                      }
-                      if (!droppedFiles.length) return;
-                      // 推断根目录前缀：所有 path 的公共第一段（拖入的是文件夹时形如 "agnes/SKILL.md"）。
-                      const firstSeg = droppedFiles.map(({ path }) => path.split('/').filter(Boolean)[0] || '').filter(Boolean);
-                      const rootPrefix = firstSeg.length && firstSeg.every((s) => s === firstSeg[0]) ? firstSeg[0] + '/' : '';
-                      const files = [];
-                      for (const { file, path } of droppedFiles) {
-                        const rel = path.startsWith(rootPrefix) ? path : rootPrefix + path;
-                        const parts = rel.split('/');
-                        if (parts.some((p2, i) => i > 0 && SKIP_DIRS.has(p2))) continue;
-                        const text = await file.text();
-                        files.push({ path: rel, content: text });
-                      }
-                      const result = await call('skills.upload', { files, force: false });
-                      const n = result.count || (result.items || []).length;
-                      setNotice(`已上传 ${n} 个技能（${(result.items || []).map((i) => i.slug).join('、')}，安全扫描通过）`);
-                      await loadInstalled();
-                    } catch (err) {
-                      setError(`上传失败：${err.message || err}`);
-                    } finally {
-                      setBusy('');
-                    }
-                  },
-                }, '或拖拽技能文件夹到这里（根目录或一级子目录必须含 SKILL.md）'),
-              h('div', { style: S.row },
+                h('span', { style: { ...S.status, fontSize: 11 } }, '也可以把技能文件夹直接拖到本列表区域（根目录或一级子目录必须含 SKILL.md）'))
+              : null,
+              h('div', { style: { ...S.row, gap: 8, flexWrap: 'nowrap' } },
                 h('input', {
-                  style: { ...S.input, flex: 1 },
+                  style: { ...S.input, flex: 1, minWidth: 120 },
                   placeholder: '搜索已装技能（名称、描述）',
                   value: manageSkillFilter,
                   onChange: (e) => setManageSkillFilter(e.target.value),
                 }),
-                manageSkillFilter ? h('button', { style: S.btn(), onClick: () => setManageSkillFilter('') }, '清除') : null),
-              h('div', { style: { ...S.title, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
+                manageSkillFilter ? h('button', { style: S.btn(), onClick: () => setManageSkillFilter('') }, '清除') : null,
+                h('select', {
+                  style: { ...S.input, width: 96, flex: '0 0 auto' },
+                  value: manageSkillState,
+                  title: '按启用状态筛选（文件级与面板级停用一并计入）',
+                  onChange: (e) => {
+                    const v = e.target.value;
+                    setManageSkillState(v);
+                    try { window.localStorage.setItem(SKILL_STATE_KEY, v); } catch { /* 拒绝存储的浏览器只是不记忆，不影响本次筛选 */ }
+                  },
+                }, h('option', { value: 'all' }, '全部状态'), h('option', { value: 'on' }, '已启用'), h('option', { value: 'off' }, '已停用')),
+                h('button', {
+                  style: S.btn(uploadOpen ? 'primary' : undefined),
+                  'aria-expanded': uploadOpen,
+                  onClick: () => setUploadOpen(!uploadOpen),
+                }, uploadOpen ? '收起上传' : '＋ 添加技能')),
+              h('div', { style: { ...S.title, marginBottom: 2, display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `已装技能（${filteredInstalled.length}）`,
+                (() => {
+                  const on = filteredInstalled.filter((i) => !skillStateOff(i)).length;
+                  return h('span', { style: { ...S.status, fontSize: 11, fontWeight: 400 } }, `已启用 ${on} · 已停用 ${filteredInstalled.length - on}`);
+                })(),
                 nativeDirs.length > 0
-                  ? h('span', { style: { fontSize: 11, opacity: 0.6 } }, `含 DSH 内置 ${nativeDirs.length} 个目录`)
+                  ? h('span', { style: { fontSize: 11, opacity: 0.6, fontWeight: 400 } }, `含 DSH 内置 ${nativeDirs.length} 个目录`)
                   : null,
+                h('span', { style: { flex: 1 } }),
                 h('button', {
                   style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
+                  title: '在资源管理器中直接查看 / 编辑技能文件',
                   disabled: busy === 'openDir:skills',
                   onClick: async () => {
                     setBusy('openDir:skills');
@@ -1903,25 +1981,44 @@ window.__ModuleLoader__.load({
                       setBusy('');
                     }
                   },
-                }, '打开目录'),
-                h('span', { style: { ...S.status, fontSize: 12, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `（可在资源管理器中直接查看 / 编辑技能文件）`)),
-              h('div', { style: S.grid }, installedSkills),
-              h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
-                `回收站（${trashList ? trashList.items.length : '?'}）`,
+                }, '打开目录')),
+              filteredInstalled.length === 0
+                ? h('div', { style: S.dim }, manageSkillState !== 'all' || skillFilterText
+                    ? '没有符合筛选条件的技能（试试清除筛选）。'
+                    : '还没有已安装技能。点右上角「＋ 添加技能」上传。')
+                : h('div', { style: S.grid }, installedSkills),
+              h('div', { style: { ...S.row, gap: 8, marginTop: 6, flexWrap: 'nowrap' } },
+                h('button', {
+                  type: 'button',
+                  style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
+                  'aria-expanded': trashOpen,
+                  title: trashOpen ? '收起回收站' : '展开回收站（含已删除技能的恢复入口）',
+                  onClick: () => {
+                    const next = !trashOpen;
+                    setTrashOpen(next);
+                    try { window.localStorage.setItem(TRASH_OPEN_KEY, next ? '1' : '0'); } catch { /* 拒绝存储的浏览器只是不记忆 */ }
+                  },
+                }, (trashOpen ? '▾' : '▸') + ' 回收站（' + (trashList ? trashList.items.length : '?') + '）'),
                 h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: trashBusy === 'list', onClick: loadTrash }, trashBusy === 'list' ? '读取中…' : '读取回收站'),
                 trashList && trashList.items.length > 0
-                  ? h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: trashBusy === 'empty', onClick: emptyTrashAll }, trashBusy === 'empty' ? '清空中…' : '清空回收站')
+                  ? h('button', { style: { ...S.btn(), ...S.danger, padding: '2px 10px', height: 24, fontSize: 12 }, disabled: trashBusy === 'empty', onClick: emptyTrashAll }, trashBusy === 'empty' ? '清空中…' : '清空回收站')
                   : null,
-                h('span', { style: { ...S.status, fontSize: 12 } }, '删除即移入 .trash，可随时恢复')),
-              trashList && trashList.items.length > 0
-                ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 240, overflow: 'auto', width: '100%' } },
-                    trashList.items.map((item) => h('div', { key: item.path, style: { ...S.row, fontSize: 11, gap: 8 } },
-                      h('span', { style: { fontWeight: 600, minWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.slug),
-                      h('span', { style: { opacity: 0.7 } }, item.kind === 'file' ? '单文件' : '目录'),
-                      h('span', { style: { flex: '1', opacity: 0.6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.stamp || item.name),
-                      h('button', { style: { ...S.btn(), padding: '0 6px', height: 22, fontSize: 11 }, disabled: trashBusy === `restore:${item.path}`, onClick: () => restoreTrashEntry(item) }, trashBusy === `restore:${item.path}` ? '恢复中…' : '恢复'))))
-                : (trashList ? h('div', { style: S.status }, '回收站是空的。') : null),
-              )) : null,
+                h('span', { style: { ...S.status, fontSize: 11 } }, '删除即移入 .trash，可随时恢复')),
+              trashOpen
+                ? (trashList && trashList.items.length > 0
+                  ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 240, overflow: 'auto', width: '100%' } },
+                      trashList.items.map((item) => h('div', {
+                        key: item.path,
+                        style: { display: 'grid', gridTemplateColumns: 'minmax(110px, 1.2fr) 48px 84px minmax(60px, 1fr) auto', gap: 8, alignItems: 'center', fontSize: 11 },
+                      },
+                        h('span', { style: { fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: item.slug }, item.slug),
+                        h('span', { style: { opacity: 0.7 } }, item.kind === 'file' ? '单文件' : '目录'),
+                        h('span', { style: { opacity: 0.6 }, title: item.stamp || item.name }, formatStamp(item.stamp || item.name)),
+                        h('span', { style: { opacity: 0.5, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: item.path }, shortPath(item.path, homeDir)),
+                        h('button', { style: { ...S.btn(), padding: '0 6px', height: 22, fontSize: 11 }, disabled: trashBusy === `restore:${item.path}`, onClick: () => restoreTrashEntry(item) }, trashBusy === `restore:${item.path}` ? '恢复中…' : '恢复'))))
+                  : (trashList ? h('div', { style: S.status }, '回收站是空的。') : null))
+                : null,
+              ) : null,
               manageTab === 'mcp' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, width: '100%' } },
               h('div', { style: S.row },
                 h('input', {
