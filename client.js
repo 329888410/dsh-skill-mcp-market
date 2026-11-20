@@ -401,6 +401,9 @@ window.__ModuleLoader__.load({
       // 就地错误：上传失败显示在浮层内（页面级 error 槽在视口上方，用户视线不在那）。
       const [uploadError, setUploadError] = useState('');
       const uploadRef = useRef(null);
+      // 原文编辑：默认不加载（原文会暴露 env 真实值，detail 的掩码在这里失效）。
+      // { serverName, text, filePath, hasSecrets, loading, error, dirty }
+      const [mcpRaw, setMcpRaw] = useState(null);
       // 窄屏自适应：视口判据首帧生效，面板判据由 ResizeObserver 校准（见模块级注释）。
       const [narrowViewport, setNarrowViewport] = useState(readNarrowViewport);
       const [narrowPanel, setNarrowPanel] = useState(false);
@@ -748,6 +751,33 @@ window.__ModuleLoader__.load({
         }
       };
 
+      // 显式点开才读原文：不加载时用户看到的仍是掩码视图。
+      const openMcpRaw = async (serverName) => {
+        setMcpRaw({ serverName, text: '', filePath: '', hasSecrets: false, loading: true, error: '', dirty: false });
+        try {
+          const d = await call('mcp.raw.get', { serverName });
+          setMcpRaw({ serverName, text: d.text, filePath: d.filePath, hasSecrets: Boolean(d.hasSecrets), loading: false, error: '', dirty: false });
+        } catch (e) {
+          setMcpRaw({ serverName, text: '', filePath: '', hasSecrets: false, loading: false, error: String(e.message || e), dirty: false });
+        }
+      };
+
+      const saveMcpRaw = async () => {
+        if (!mcpRaw || !mcpRaw.dirty) return;
+        setMcpRaw({ ...mcpRaw, loading: true, error: '' });
+        try {
+          const r = await call('mcp.raw.set', { serverName: mcpRaw.serverName, text: mcpRaw.text, confirm: true });
+          // 保存成功与连接成功分开播报：原文可以合法但连不上，那时不能说「已保存并重连」。
+          if (r.connected) setNotice(`已保存并重连 ${mcpRaw.serverName}，${(r.tools || []).length} 个工具`);
+          else if (r.pending) setNotice(`已保存 ${mcpRaw.serverName}，连接器仍在启动中，稍后在卡片查看工具数`);
+          else setNotice(`已保存，但未连上：${r.connectError || '未知原因'}`);
+          setMcpRaw(null);
+          await loadInstalled();
+        } catch (e) {
+          setMcpRaw((prev) => (prev ? { ...prev, loading: false, error: String(e.message || e) } : prev));
+        }
+      };
+
       const openMcpDetail = async (serverName) => {
         setBusy(`detail:${serverName}`);
         setError('');
@@ -755,6 +785,7 @@ window.__ModuleLoader__.load({
           const data = await call('mcp.detail', { serverName });
           setDetail({ kind: 'mcp', slug: serverName, data });
           setDraft({ command: data.command, args: (data.args || []).join('\n'), url: data.url });
+          setMcpRaw(null);
         } catch (e) {
           setError(String(e.message || e));
         } finally {
@@ -1913,9 +1944,43 @@ window.__ModuleLoader__.load({
                             '启动命令与参数在此只读：可执行命令只能由工具安装通道设置（mcp_market_install），面板不开放改写。'),
                           h('pre', { style: { fontSize: 11, opacity: 0.8, whiteSpace: 'pre-wrap', margin: '10px 0 0', background: 'rgba(15, 23, 42, 0.04)', padding: 8, borderRadius: 6 } },
                             JSON.stringify({ transport: detail.data.transport, env: detail.data.env, headers: detail.data.headers }, null, 2))),
+                    mcpRaw && detail.kind === 'mcp'
+                      ? h('div', { style: { marginTop: 10, border: '1px solid var(--dsh-border, #d0d7de)', borderRadius: 8, padding: 10 } },
+                          h('div', { style: { ...S.row, justifyContent: 'space-between', gap: 8 } },
+                            h('span', { style: { fontWeight: 700, fontSize: 12 } }, '定义原文'),
+                            h('button', { style: S.btn(), onClick: () => setMcpRaw(null) }, '收起')),
+                          mcpRaw.loading && !mcpRaw.text
+                            ? h('div', { style: S.status }, '正在读取原文…')
+                            : mcpRaw.error && !mcpRaw.text
+                              ? h('div', { style: { ...S.err, wordBreak: 'break-word' } }, mcpRaw.error)
+                              : h('div', null,
+                                  mcpRaw.hasSecrets
+                                    ? h('div', { style: { ...S.status, fontSize: 11, color: '#b26a00', marginBottom: 6 } },
+                                        '注意：原文视图会显示环境变量明文（detail 的掩码在这里失效），保存前请确认这台机器可信。')
+                                    : null,
+                                  h('textarea', {
+                                    style: { ...S.input, height: 180, fontFamily: 'ui-monospace, monospace', fontSize: 11, whiteSpace: 'pre' },
+                                    value: mcpRaw.text,
+                                    spellCheck: false,
+                                    onChange: (e) => setMcpRaw({ ...mcpRaw, text: e.target.value, dirty: true, error: '' }),
+                                  }),
+                                  mcpRaw.filePath ? h('div', { style: { ...S.status, fontSize: 11, marginTop: 4, wordBreak: 'break-all' } }, shortPath(mcpRaw.filePath, homeDir)) : null,
+                                  mcpRaw.error ? h('div', { style: { ...S.err, marginTop: 6, wordBreak: 'break-word' } }, mcpRaw.error) : null,
+                                  h('div', { style: { ...S.row, marginTop: 8, justifyContent: 'flex-end', gap: 8 } },
+                                    h('button', {
+                                      style: S.btn('primary'),
+                                      disabled: !mcpRaw.dirty || mcpRaw.loading || busy === 'save:mcp',
+                                      title: '直接写回原文（保留字节与未知字段）；command/args 与当前定义不同则拒绝',
+                                      onClick: saveMcpRaw,
+                                    }, mcpRaw.loading ? '保存中…' : '保存原文'))))
+                      : null,
                     h('div', { style: { ...S.meta, marginTop: 10 } }, h('span', null, detail.data.path || '')),
                     h('div', { style: { ...S.row, marginTop: 14, justifyContent: 'flex-end', gap: 8 } },
-                      h('button', { style: S.btn(), onClick: () => setDetail(null) }, '关闭'),
+                      detail.kind === 'mcp'
+                        ? h('button', { style: S.btn(), disabled: busy === 'save:mcp', title: '直接编辑定义文件原文（表单覆盖不到的字段）', onClick: () => openMcpRaw(detail.slug) },
+                            mcpRaw && mcpRaw.serverName === detail.slug ? '收起原文' : '原文')
+                        : null,
+                      h('button', { style: S.btn(), onClick: () => { setDetail(null); setMcpRaw(null); } }, '关闭'),
                       detail.kind === 'skill'
                         ? h('button', { style: S.btn('primary'), disabled: busy === 'save:skill', onClick: saveSkillEdit }, '保存')
                         : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, '保存并重连'))))

@@ -46,7 +46,7 @@ check('无匹配时明确提示', /没有匹配的工具/.test(c));
 console.log('');
 console.log('Test 4: 无法解析的定义文件必须可见');
 check('readDefs 收集解析失败项', /brokenDefs\.push\(/.test(mj));
-check('broken 访问器存在且导出（list 契约不变）', /function broken\(\) \{/.test(mj) && /trashEmpty, status, broken \}/.test(mj));
+check('broken 访问器存在且导出（list 契约不变）', /function broken\(\) \{/.test(mj) && /\bbroken\b/.test(mj.slice(mj.indexOf('return { init, dispose'))));
 check('RPC 组装 broken 清单', /broken: mcp\.broken\(\)/.test(read('index.js')));
 check('面板显示坏定义并给文件名', /无法解析|无法读取/.test(c) && /mcpBroken/.test(c));
 

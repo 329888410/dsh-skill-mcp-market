@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.125
+
+- **MCP 定义原文编辑（差距清单兜底项；本轮已补齐连带修复与全量回归）**
+  - `mcp.raw.get` / `mcp.raw.set` 两个 op + `src/mcp.js` 的 rawGet/rawSet。表单覆盖不到的字段（toolCallTimeoutMs、reconnect、cwd、用户手写任意键）从此可编辑。
+  - 三个设计决策由测试锁死：**diff 而非 presence**（原文必然含 command，照搬 update 的 presence 判据会误拒只改标题的编辑）；**保字节写回**（不走 save() 规范化，键序/未知字段/缩进原样保留）；**hasSecrets 明文警告**（detail 把 env 掩成「***（来自环境变量）」，原文视图必然暴露真实值，UI 默认不自动加载、显式点开才读）。
+  - 「保存成功」与「连接成功」分开报告（`saved` / `connected`/`connectError`）：原文可以合法但连不上，此时不回滚、不抛错、不谎称已重连。重连失败不回滚文件由测试锁住。
+  - UI：编辑抽屉内「原文」按钮 → 原文 textarea（等宽字体、filePath 显示、dirty 门控保存按钮）；关闭抽屉/切换连接器自动清空原文态；错误就地显示。
+  - `mcp.raw.set` 进 DESTRUCTIVE_OPS（confirm 闸门）；`rawGet`/`rawSet` 排在 status 前、导出列表追加；`writeFile` 补进 fs/promises 导入。
+  - 连带修复：test-skill-subpanel-ui 的 known Set 补两个新 op；test-manage-states / test-fiber-state 的导出断言从「锁死尾部顺序」改为「存在 broken 即可」（导出列表会随功能增长，锁死顺序等于每次加功能都要改测试）。
+  - 测试：`test-mcp-raw-edit.mjs` 49 项（第 37 个 CI 门套件）；离线 32 套件全绿。
 ## 0.5.124
 
 - **窄屏自适应（差距清单最后一项可独立落地的布局项）**

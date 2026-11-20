@@ -1669,6 +1669,15 @@ export async function apply(ctx, config = {}) {
         const result = await toolFilter.mergeServerDeny(name, Array.isArray(body.deny) ? body.deny : []);
         return { ...result, serverName: name };
       }
+      case "mcp.raw.get":
+        // 原文视图会暴露 env 的真实值（detail 的掩码在这里失效），调用方必须先警告再展示。
+        return mcp.rawGet(body.serverName);
+      case "mcp.raw.set": {
+        // 破坏性 op：改的是定义本体，走 confirm 闸门（见 src/rpc-guard.js）。
+        // command/args 用 diff 判据（在 src/mcp.js rawSet 内），与 mcp.update 的 presence 判据
+        // 不同 —— 原文必然包含这两个字段，presence 判据会误拒只改标题的编辑。
+        return mcp.rawSet(body.serverName, body.text);
+      }
       case "mcp.status":
         // 只读：连接生命周期（active/loading/failed/unloaded/unknown）。
         // 刻意不进 DESTRUCTIVE_OPS —— 它不写任何东西。

@@ -112,7 +112,7 @@ console.log('Test 8: 既有结构锁不被破坏');
   check('MCP 段仍在技能段之后', c.indexOf("manageTab === 'mcp' ? h('div'") > c.indexOf("manageTab === 'skill' ? h('div'"));
   check('未引入未登记 op', (() => {
     const ops = [...new Set([...c.matchAll(/call\('([\w.]+)'/g)].map((m) => m[1]))];
-    const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','mcp.probe','mcp.status','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','mcp.trash','mcp.restore','mcp.trashEmpty','mcp.tools.get','mcp.tools.set','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
+    const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','mcp.probe','mcp.status','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','mcp.trash','mcp.restore','mcp.trashEmpty','mcp.tools.get','mcp.raw.get','mcp.raw.set','mcp.tools.set','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
     return ops.filter((o) => !known.has(o)).length === 0;
   })());
 }

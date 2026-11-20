@@ -1,5 +1,5 @@
 // MCP connector manager: definitions on disk, live mounts through the shipped dsh-mcp-client plugin.
-import { readFile, readdir, rm } from "node:fs/promises";
+import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync, watch } from "node:fs";
 import { join, dirname, basename, resolve } from "node:path";
 import { ensureDir, writeJson } from "./home.js";
@@ -167,6 +167,90 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
   /** 最近一次 readDefs 发现的坏定义（list/detail/status 都会先跑 readDefs）。 */
   function broken() {
     return brokenDefs.slice();
+  }
+
+  /**
+   * 读取定义文件原文。表单覆盖不到的字段（toolCallTimeoutMs、reconnect、cwd、
+   * 用户手写任意键）只能从这里改。**不做 JSON.parse→stringify 往返**：那会重排键序、
+   * 丢注释位、并被 save() 补上 installedAt，等于另一种语义。
+   * hasSecrets 是安全提示：detail 把 env 的 ${VAR} 掩成「***（来自环境变量）」，
+   * 而原文视图必然暴露明文值，所以调用方要先警告再展示。
+   */
+  async function rawGet(serverName) {
+    const name = normalizeServerName(serverName);
+    const defs = await readDefs();
+    const def = defs.get(name);
+    if (!def) throw new Error(`没有名为 ${name} 的 MCP 定义`);
+    const text = await readFile(def.filePath, "utf8");
+    let hasSecrets = false;
+    try {
+      const parsed = JSON.parse(text);
+      hasSecrets = Object.values(parsed.env || {}).some((v) => {
+        const s = String(v ?? "");
+        return s.length > 0 && !/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(s);
+      });
+    } catch {
+      // 坏 JSON 正是原文编辑要救的场景：照常返回原文，让 UI 显示并让用户修。
+      hasSecrets = false;
+    }
+    return { serverName: name, text, filePath: def.filePath, hasSecrets };
+  }
+
+  /**
+   * 写回原文。三条判据（缺一不可）：
+   *  - diff 而非 presence：原文必然含 command/args（它们是定义的一部分）。
+   *    照搬 mcp.update 的「字段存在就拒」会让只改 title 的编辑也失败；
+   *    真判据是「与当前定义相比是否真的变了」。
+   *  - serverName 不得改：改名等于写进另一个文件（甚至越界），那是重命名不是编辑。
+   *  - 保字节：直接 writeFile(text)，不走 save() 的规范化。
+   * 校验通过才落盘；任何拒绝路径都不写文件。
+   */
+  async function rawSet(serverName, text) {
+    const name = normalizeServerName(serverName);
+    const defs = await readDefs();
+    const def = defs.get(name);
+    if (!def) throw new Error(`没有名为 ${name} 的 MCP 定义`);
+    const raw = String(text ?? "");
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`原文不是合法 JSON：${String(error && error.message ? error.message : error)}`);
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("原文必须是一个 JSON 对象（连接器定义）");
+    }
+    const nextName = normalizeServerName(parsed.serverName || "");
+    if (!nextName) throw new Error("原文缺少合法的 serverName");
+    if (nextName !== name) {
+      throw new Error(`serverName 必须保持 ${name}；改名请新建连接器再卸载旧的`);
+    }
+    const sameCommand = String(parsed.command ?? "") === String(def.command ?? "");
+    const sameArgs = JSON.stringify(parsed.args ?? []) === JSON.stringify(def.args ?? []);
+    if (!sameCommand || !sameArgs) {
+      throw new Error("面板通道不接受自定义 command/args；请改用 mcp_market_install 工具重装该连接器");
+    }
+    await writeFile(def.filePath, raw.endsWith("\n") ? raw : raw + "\n", "utf8");
+    // 「保存成功」与「连接成功」是两件事，必须分开报：原文编辑完全可以写出一个
+    // 合法但连不上的配置（比如 args 指向不存在的脚本），那时应该告诉用户
+    // 「已保存，但连接失败」，而不是回滚、抛错，或假装连上了。
+    const result = { ok: true, saved: true, serverName: name, connected: false, pending: false, tools: [], connectError: "" };
+    try {
+      const fresh = await readDefs();
+      const saved = fresh.get(name);
+      if (!saved) { result.connectError = "写入后无法重新读取定义，请检查文件内容"; return result; }
+      unmount(name);
+      await mount(saved);
+      const probe = await probeTools(name, 2000);
+      result.connected = probe.ok === true;
+      result.pending = probe.pending === true;
+      result.tools = probe.tools || [];
+      result.connectError = probe.ok ? "" : String(probe.error || "");
+    } catch (error) {
+      // 重连失败不回滚文件：用户改的是定义，定义已经按原文落盘。
+      result.connectError = String(error && error.message ? error.message : error);
+    }
+    return result;
   }
 
   async function status(serverName) {
@@ -576,5 +660,5 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     for (const name of [...mounted.keys()]) unmount(name);
   }
 
-  return { init, dispose, list, install, uninstall, setEnabled, probe, detail, update, reconcile, mount, unmount, toolNamesFor, readDefs, trashList, trashRestore, trashEmpty, status, broken };
+  return { init, dispose, list, install, uninstall, setEnabled, probe, detail, update, reconcile, mount, unmount, toolNamesFor, readDefs, trashList, trashRestore, trashEmpty, status, broken, rawGet, rawSet };
 }

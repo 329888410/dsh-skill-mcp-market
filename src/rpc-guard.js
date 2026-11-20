@@ -21,6 +21,7 @@ export const DESTRUCTIVE_OPS = new Set([
   "mcp.uninstall",
   "skills.trashEmpty",
   "mcp.trashEmpty",
+    "mcp.raw.set",
 ]);
 
 export function makeRpcGuard() {

@@ -81,7 +81,7 @@ console.log('');
 console.log('Test 4: 既有契约不破');
 {
   check('list 仍返回数组', /return \[\.\.\.defs\.values\(\)\]\.map/.test(mj));
-  check('broken 仍导出', /trashEmpty, status, broken \}/.test(mj));
+  check('broken 仍导出', /\bbroken\b/.test(mj.slice(mj.indexOf('return { init, dispose'))));
   check('toolDetailsFor 仍在', /function toolDetailsFor\(/.test(mj));
 }
 
