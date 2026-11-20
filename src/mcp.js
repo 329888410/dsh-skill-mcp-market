@@ -50,6 +50,12 @@ export function missingEnv(def) {
   return [...new Set(missing)];
 }
 
+/**
+ * detail() 对环境变量引用的掩码字面量。它绝不能被写回定义文件——那会把真实值
+ * 替换成一句中文说明，连接器随即启动失败（可静默发生的数据损坏）。
+ */
+export const MASK_LITERAL = "***（来自环境变量）";
+
 /** 重连默认值与参照实现（Fishquito7/dsh-skill-mcp-panel src/mcp/model.ts）一致。 */
 export const DEFAULT_RECONNECT = { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 };
 
@@ -176,6 +182,25 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
    * hasSecrets 是安全提示：detail 把 env 的 ${VAR} 掩成「***（来自环境变量）」，
    * 而原文视图必然暴露明文值，所以调用方要先警告再展示。
    */
+  /**
+   * 拒绝把掩码字面量写回定义（env/headers）。纯函数、无副作用，必须在任何写盘之前调用。
+   * maskLiteral 作为参数并带默认值：测试可以用 new Function 独立求值本函数，
+   * 不必把整个 createMcpManager 跑起来（CI 环境没有宿主 asar，跑不起来）。
+   * maskLiteral 的默认值必须与 MASK_LITERAL 一致（有测试锁两者相等）。
+   */
+  function assertNoMaskLiteral(patch, maskLiteral = "***（来自环境变量）") {
+    if (patch === null || typeof patch !== 'object') return;
+    for (const field of ['env', 'headers']) {
+      const map = patch[field];
+      if (map === null || typeof map !== 'object') continue;
+      for (const [key, value] of Object.entries(map)) {
+        if (String(value ?? '') === maskLiteral) {
+          throw new Error(`${field}.${key} 是 detail 的掩码值，不能写回定义（会毁掉真实的环境变量引用）；请填入真实值，或保持该键不变`);
+        }
+      }
+    }
+  }
+
   async function rawGet(serverName) {
     const name = normalizeServerName(serverName);
     const defs = await readDefs();
@@ -225,11 +250,9 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     if (nextName !== name) {
       throw new Error(`serverName 必须保持 ${name}；改名请新建连接器再卸载旧的`);
     }
-    const sameCommand = String(parsed.command ?? "") === String(def.command ?? "");
-    const sameArgs = JSON.stringify(parsed.args ?? []) === JSON.stringify(def.args ?? []);
-    if (!sameCommand || !sameArgs) {
-      throw new Error("面板通道不接受自定义 command/args；请改用 mcp_market_install 工具重装该连接器");
-    }
+    // command/args 的改动判定交给 dispatch 层的 confirm 闸门（needsConfirmFor），
+    // 这里不再永久拒绝 —— 那是把误操作防护错当成安全边界（实测磁盘写入即可绕过）。
+    assertNoMaskLiteral(parsed);
     await writeFile(def.filePath, raw.endsWith("\n") ? raw : raw + "\n", "utf8");
     // 「保存成功」与「连接成功」是两件事，必须分开报：原文编辑完全可以写出一个
     // 合法但连不上的配置（比如 args 指向不存在的脚本），那时应该告诉用户
@@ -432,7 +455,9 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     const mask = (map) => {
       const out = {};
       for (const [key, value] of Object.entries(map || {})) {
-        out[key] = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(String(value)) ? "***（来自环境变量）" : String(value);
+        // 掩码值统一取自 MASK_LITERAL：detail 生成端与 assertNoMaskLiteral 校验端必须是同一个串，
+        // 否则「掩码被写回」的防线会静默失效（改了展示文案却忘了改校验）。
+        out[key] = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(String(value)) ? MASK_LITERAL : String(value);
       }
       return out;
     };
@@ -448,6 +473,9 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
       headers: mask(def.headers),
       cwd: def.cwd || "",
       enabled: def.enabled !== false,
+      // 表单高级区需要：这两个不是敏感值（超时与重连参数），随 detail 一起给。
+      toolCallTimeoutMs: def.toolCallTimeoutMs,
+      reconnect: def.reconnect,
       mounted: mounted.has(name),
       tools: toolNamesFor(name),
       toolDetails: toolDetailsFor(name),
@@ -463,7 +491,17 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     const defs = await readDefs();
     const def = defs.get(name);
     if (!def) throw new Error(`没有名为 ${name} 的 MCP 定义`);
+    // 掩码值先拦下：detail 只把变量引用掩掉，表单原样回传会毁掉引用。
+    assertNoMaskLiteral(patch);
     const next = { ...def, ...patch, serverName: name };
+    // env/headers 用合并语义：patch 里出现的键才改动，未出现的键保持原值。
+    // 旧的整体替换会悄悄删掉用户没填的变量，这里兜住。
+    if (patch.env !== undefined) next.env = { ...(def.env || {}), ...patch.env };
+    if (Array.isArray(patch.envUnset)) { for (const key of patch.envUnset) delete next.env[String(key)]; }
+    if (patch.headers !== undefined) next.headers = { ...(def.headers || {}), ...patch.headers };
+    if (Array.isArray(patch.headersUnset)) { for (const key of patch.headersUnset) delete next.headers[String(key)]; }
+    delete next.envUnset;
+    delete next.headersUnset;
     delete next.filePath;
     delete next.dir;
     const saved = await save(next);

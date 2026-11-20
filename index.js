@@ -1120,6 +1120,18 @@ export async function apply(ctx, config = {}) {
   // sessions.scan 节流状态（见 case "sessions.scan"）
   const scanCache = { at: 0, shallow: null };
   let scanInflight = null;
+/**
+ * 判定一次 patch 是否触碰执行面（command/args）。纯函数，便于独立测试。
+ * 注意用 in 而非 !== undefined：把 command 显式置空（清除）同样是执行面改动。
+ */
+function needsConfirmFor(patch) {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return [];
+  const out = [];
+  if ("command" in patch) out.push("command");
+  if ("args" in patch) out.push("args");
+  return out;
+}
+
   async function dispatch(op, body) {
     if (HTTP_BLOCKED_OPS.has(op)) {
       throw new Error(`操作 ${op} 不允许经由面板 HTTP 通道执行`);
@@ -1521,12 +1533,15 @@ export async function apply(ctx, config = {}) {
         return local;
       }
       case "mcp.update": {
-        // 与 mcp.install 同一条边界：面板 HTTP 通道不接受自定义 command/args，那是任意命令执行面。
-        // 此前 install 挡了、update 没挡，而面板的编辑表单正在通过 update 改写 command —— 守卫形同虚设。
-        // 改命令请走 agent 工具 mcp_market_install（它直调内部函数，不经这里，能力不受影响）。
         const patch = body.patch && typeof body.patch === "object" ? body.patch : {};
-        if (patch.command !== undefined || patch.args !== undefined) {
-          throw new Error("面板通道不接受自定义 command/args；请改用 mcp_market_install 工具重装该连接器");
+        // 执行面改动（command/args）需要显式二次确认。
+        // 0.5.116 这里写的是「永久拒绝」，理由（任意命令执行面）已被实测推翻：
+        // 直接往定义目录写一个 JSON，reconcile() 就会挂载执行它 —— 机器信任才是边界，
+        // HTTP 守卫挡不住任何本地进程，只挡住误操作。契约因此改为与全插件一致的
+        // confirm 闸门（删除/清空/卸载都走同一形态）：能改，但改到执行面时问一句。
+        const risky = needsConfirmFor(patch);
+        if (risky.length > 0 && body.confirm !== true) {
+          throw new Error(`修改 ${risky.join("/")} 会改变连接器的执行命令，需要二次确认（confirm:true）`);
         }
         return mcp.update(body.serverName, patch);
       }
@@ -1575,10 +1590,11 @@ export async function apply(ctx, config = {}) {
         };
       }
       case "mcp.install": {
-        // 面板 HTTP 通道不接受自定义 command：那是任意命令执行面。
-        // 面板只按 slug/serverName 从注册表安装；自定义 command 请走 agent 工具 mcp_market_install。
-        if (body.command) {
-          throw new Error("面板通道不接受自定义 command；请改用 mcp_market_install 工具安装自定义连接器");
+        // 手动安装自定义 command = 在本机执行该程序，必须显式确认（同 mcp.update 的闸门）。
+        // 注册表安装（slug）不带 command，不需要确认。
+        // 0.5.116 这里是永久拒绝，理由已被实测推翻：直接写定义文件即可绕过全部 UI（reconcile 挂载执行）。
+        if (body.command && body.confirm !== true) {
+          throw new Error("手动指定启动命令会在本机执行该程序，需要二次确认（confirm:true）");
         }
         const envWritten = applyEnvValues(body.envValues);
         const definition =

@@ -404,6 +404,13 @@ window.__ModuleLoader__.load({
       // 原文编辑：默认不加载（原文会暴露 env 真实值，detail 的掩码在这里失效）。
       // { serverName, text, filePath, hasSecrets, loading, error, dirty }
       const [mcpRaw, setMcpRaw] = useState(null);
+      // 手动添加 MCP（E-2）：与市场安装并列的第二条入口，全字段表单。
+      const [mcpAdd, setMcpAdd] = useState(null); // null | { open }
+      const [mcpAddDraft, setMcpAddDraft] = useState({});
+      const [mcpAddConfirm, setMcpAddConfirm] = useState(false);
+      // 编辑抽屉：原始值快照（diff 判据）+ 两步确认的「已武装」态。
+      const [mcpDraftOrig, setMcpDraftOrig] = useState(null);
+      const [mcpConfirmArmed, setMcpConfirmArmed] = useState(false);
       // 窄屏自适应：视口判据首帧生效，面板判据由 ResizeObserver 校准（见模块级注释）。
       const [narrowViewport, setNarrowViewport] = useState(readNarrowViewport);
       const [narrowPanel, setNarrowPanel] = useState(false);
@@ -784,7 +791,29 @@ window.__ModuleLoader__.load({
         try {
           const data = await call('mcp.detail', { serverName });
           setDetail({ kind: 'mcp', slug: serverName, data });
-          setDraft({ command: data.command, args: (data.args || []).join('\n'), url: data.url });
+          const rowsOf = (map) => Object.entries(map || {}).map(([key, value]) => ({ key, value: String(value ?? '') }));
+          setDraft({
+            command: data.command || '',
+            args: (data.args || []).join('\n'),
+            url: data.url || '',
+            transport: data.transport || 'stdio',
+            cwd: data.cwd || '',
+            toolCallTimeoutMs: data.toolCallTimeoutMs == null ? '' : String(data.toolCallTimeoutMs),
+            envRows: rowsOf(data.env),
+            headerRows: rowsOf(data.headers),
+          });
+          // 原始快照：env/headers 的值此时可能仍是掩码字面量，diff 时按它比对。
+          setMcpDraftOrig({
+            command: data.command || '',
+            args: (data.args || []).join('\n'),
+            url: data.url || '',
+            transport: data.transport || 'stdio',
+            cwd: data.cwd || '',
+            toolCallTimeoutMs: data.toolCallTimeoutMs == null ? '' : String(data.toolCallTimeoutMs),
+            envRows: rowsOf(data.env),
+            headerRows: rowsOf(data.headers),
+          });
+          setMcpConfirmArmed(false);
           setMcpRaw(null);
         } catch (e) {
           setError(String(e.message || e));
@@ -795,6 +824,43 @@ window.__ModuleLoader__.load({
 
       // 点卡片本体：读 mcp.detail 的 toolDetails（宿主 definition 的 name/description/parameters）。
       // 纯读操作，不连接、不重启连接器；未挂载时 toolDetails 为空，浮窗会如实说明原因。
+      const submitMcpAdd = async () => {
+        const d = mcpAddDraft;
+        const serverName = String(d.serverName || '').trim();
+        const command = String(d.command || '').trim();
+        const url = String(d.url || '').trim();
+        if (!serverName) { setError('serverName 必填（1-32 位字母/数字/下划线/连字符）'); return; }
+        if (!command && !url) { setError('stdio 需要 command，streamable-http 需要 URL，至少填一个'); return; }
+        setBusy('mcpAdd');
+        setError('');
+        try {
+          const args = String(d.args || '').split('\n').map((x) => x.trim()).filter(Boolean);
+          const env = {};
+          for (const r of d.envRows || []) { const k = String(r.key || '').trim(); if (k) env[k] = r.value; }
+          // 自定义 command = 在本机执行该程序：与服务端闸门同语义，必须显式确认。
+          const r = await call('mcp.install', {
+            serverName,
+            title: String(d.title || '').trim() || serverName,
+            description: String(d.description || '').trim(),
+            transport: command ? 'stdio' : 'streamable-http',
+            command,
+            args,
+            url,
+            env,
+            confirm: command ? true : undefined,
+          });
+          const rr = (r.results || [])[0] || r;
+          setNotice(rr.ok === false && rr.error ? `添加失败：${rr.error}` : `已添加 ${serverName}${rr.pending ? '，连接器启动中' : `，${(rr.tools || []).length} 个工具`}`);
+          setMcpAdd(null);
+          setMcpAddConfirm(false);
+          await loadInstalled();
+        } catch (e) {
+          setError(`添加失败：${e.message || e}`);
+        } finally {
+          setBusy('');
+        }
+      };
+
       const saveToolDeny = async (serverName, draft) => {
         setBusy('saveToolDeny');
         setError('');
@@ -860,16 +926,64 @@ window.__ModuleLoader__.load({
         setBusy('save:mcp');
         setError('');
         try {
-          // command/args 不发送：服务端 HTTP 面已拒绝（见 index.js mcp.update），
-          // 面板这边同步收口，避免用户填了却被报错的困惑体验。
-          const result = await call('mcp.update', {
-            serverName: detail.slug,
-            patch: { url: draft.url },
-          });
+          // env/headers 合并语义：掩码条目（未改动）必须省略，真实新值才发送。
+          // 服务端还会用 assertNoMaskLiteral 兜底；两边都不允许「***」写回定义。
+          const envPatch = {};
+          const envUnset = [];
+          for (const r of draft.envRows || []) {
+            const key = String(r.key || '').trim();
+            if (!key) continue;
+            if (r.value === '***（来自环境变量）') continue;
+            envPatch[key] = r.value;
+          }
+          for (const r of mcpDraftOrig?.envRows || []) {
+            const key = String(r.key || '').trim();
+            if (!key) continue;
+            if (!(draft.envRows || []).some((x) => String(x.key || '').trim() === key)) envUnset.push(key);
+          }
+          const headerPatch = {};
+          const headersUnset = [];
+          for (const r of draft.headerRows || []) {
+            const key = String(r.key || '').trim();
+            if (!key) continue;
+            if (r.value === '***（来自环境变量）') continue;
+            headerPatch[key] = r.value;
+          }
+          for (const r of mcpDraftOrig?.headerRows || []) {
+            const key = String(r.key || '').trim();
+            if (!key) continue;
+            if (!(draft.headerRows || []).some((x) => String(x.key || '').trim() === key)) headersUnset.push(key);
+          }
+          const argsList = String(draft.args || '').split('\n').map((x) => x.trim()).filter(Boolean);
+          const origArgs = String(mcpDraftOrig?.args || '').split('\n').map((x) => x.trim()).filter(Boolean);
+          const commandChanged = String(draft.command || '') !== String(mcpDraftOrig?.command || '');
+          const argsChanged = JSON.stringify(argsList) !== JSON.stringify(origArgs);
+          const patch = {
+            url: draft.url,
+            transport: draft.transport,
+            cwd: draft.cwd,
+          };
+          if (draft.command !== undefined) patch.command = draft.command;
+          if (draft.args !== undefined) patch.args = argsList;
+          if (Object.keys(envPatch).length > 0 || envUnset.length > 0) patch.env = envPatch;
+          if (envUnset.length > 0) patch.envUnset = envUnset;
+          if (Object.keys(headerPatch).length > 0 || headersUnset.length > 0) patch.headers = headerPatch;
+          if (headersUnset.length > 0) patch.headersUnset = headersUnset;
+          if (String(draft.toolCallTimeoutMs || '').trim() !== '') patch.toolCallTimeoutMs = Number(draft.toolCallTimeoutMs);
+          // 执行面改动（command/args）需要二次确认：服务端闸门会拒未带 confirm 的请求。
+          // UI 同步两步化：第一次点保存只是武装确认按钮，第二次才真正发送。
+          const needsConfirm = commandChanged || argsChanged;
+          if (needsConfirm && !mcpConfirmArmed) {
+            setMcpConfirmArmed(true);
+            setBusy('');
+            return;
+          }
+          // confirm 在 RPC body 顶层（服务端读 body.confirm）；放进 patch 会被
+          // spread 进定义文件，污染数据且闸门仍然读不到——两处都错。
+          const result = await call('mcp.update', { serverName: detail.slug, patch, confirm: needsConfirm ? true : undefined });
           if (result.ok) {
-            setNotice(`已保存并重连 ${detail.slug}，${result.tools.length} 个工具`);
+            setNotice(`已保存并重连 ${detail.slug}，${result.tools.length} 个工具${needsConfirm ? '（命令已更新）' : ''}`);
           } else if (result.pending) {
-            // 已挂载但还在启动：轮询实时工具表给终局（npx 冷启动可远超 8s）
             setNotice(`已保存 ${detail.slug}，正在重启连接器…`);
             const final = await waitForTools(detail.slug);
             if (final.ok) setNotice(`已保存并重连 ${detail.slug}，${final.toolCount} 个工具（等待 ${Math.round(final.waitedMs / 1000)}s）`);
@@ -1925,25 +2039,49 @@ window.__ModuleLoader__.load({
                             value: draft.body || '',
                             onChange: (e) => setDraft({ ...draft, body: e.target.value }),
                           }))
-                      : h('div', { style: { marginTop: 12 } },
-                          h('div', { style: S.row },
-                            h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '命令'),
-                            h('input', { style: { ...S.input, opacity: 0.75, background: 'var(--dsh-bg, #f6f7f9)' }, value: draft.command || '', readOnly: true, title: '启动命令不可在此修改' })),
-                          h('div', { style: S.row },
-                            h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, 'URL'),
-                            h('input', { style: S.input, value: draft.url || '', onChange: (e) => setDraft({ ...draft, url: e.target.value }) })),
-                          h('div', { style: S.row },
-                            h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '参数'),
-                            h('textarea', {
-                              style: { ...S.input, height: 60, fontFamily: 'ui-monospace, monospace', fontSize: 12, opacity: 0.75, background: 'var(--dsh-bg, #f6f7f9)' },
-                              value: draft.args || '',
-                              readOnly: true,
-                              title: '启动参数不可在此修改',
-                            })),
-                          h('div', { style: { ...S.status, fontSize: 11 } },
-                            '启动命令与参数在此只读：可执行命令只能由工具安装通道设置（mcp_market_install），面板不开放改写。'),
-                          h('pre', { style: { fontSize: 11, opacity: 0.8, whiteSpace: 'pre-wrap', margin: '10px 0 0', background: 'rgba(15, 23, 42, 0.04)', padding: 8, borderRadius: 6 } },
-                            JSON.stringify({ transport: detail.data.transport, env: detail.data.env, headers: detail.data.headers }, null, 2))),
+                          : h('div', { style: { marginTop: 12 } },
+                            h('div', { style: S.row },
+                              h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '命令'),
+                              h('input', { style: S.input, placeholder: '可执行文件，如 npx、node 或绝对路径', value: draft.command || '', onChange: (e) => setDraft({ ...draft, command: e.target.value }) })),
+                            h('div', { style: S.row },
+                              h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '参数'),
+                              h('textarea', {
+                                style: { ...S.input, height: 60, fontFamily: 'ui-monospace, monospace', fontSize: 12 },
+                                value: draft.args || '',
+                                placeholder: '每行一个参数',
+                                onChange: (e) => setDraft({ ...draft, args: e.target.value }),
+                              })),
+                            h('div', { style: S.row },
+                              h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, 'URL'),
+                              h('input', { style: S.input, value: draft.url || '', onChange: (e) => setDraft({ ...draft, url: e.target.value }) })),
+                            h('div', { style: S.row },
+                              h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '传输'),
+                              h('select', { style: { ...S.input, width: 220 }, value: draft.transport || 'stdio', onChange: (e) => setDraft({ ...draft, transport: e.target.value }) },
+                                h('option', { value: 'stdio' }, 'stdio（本机命令）'), h('option', { value: 'streamable-http' }, 'streamable-http（远程 URL）'))),
+                            h('div', { style: S.row },
+                              h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '工作目录'),
+                              h('input', { style: S.input, value: draft.cwd || '', onChange: (e) => setDraft({ ...draft, cwd: e.target.value }) })),
+                            h('div', { style: S.row },
+                              h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '超时 ms'),
+                              h('input', { style: { ...S.input, width: 140 }, type: 'number', value: draft.toolCallTimeoutMs || '', placeholder: '60000', onChange: (e) => setDraft({ ...draft, toolCallTimeoutMs: e.target.value }) })),
+                            h('div', { style: { ...S.status, fontSize: 11 } },
+                              '改动命令或参数会在下一次点击时要求确认——那是在本机执行程序的改动。'),
+                            h('div', { style: { marginTop: 8 } },
+                              h('span', { style: { fontSize: 12, fontWeight: 600 } }, '环境变量'),
+                              (draft.envRows || []).map((row, idx) => h('div', { key: `e-${idx}`, style: { ...S.row, marginTop: 4 } },
+                                h('input', { style: { ...S.input, flex: '0 0 180px' }, placeholder: 'KEY', value: row.key, onChange: (e) => { const rows = (draft.envRows || []).slice(); rows[idx] = { ...rows[idx], key: e.target.value }; setDraft({ ...draft, envRows: rows }); } }),
+                                h('input', { style: { ...S.input, flex: 1 }, placeholder: '值；来自环境变量的引用显示为掩码，不动即不修改', value: row.value, onChange: (e) => { const rows = (draft.envRows || []).slice(); rows[idx] = { ...rows[idx], value: e.target.value }; setDraft({ ...draft, envRows: rows }); } }),
+                                h('button', { style: { ...S.btn(), ...S.danger }, title: '删除该变量（保存时从定义里移除）', onClick: () => setDraft({ ...draft, envRows: (draft.envRows || []).filter((x, i2) => i2 !== idx) }) }, '删'))),
+                              h('button', { style: S.btn(), onClick: () => setDraft({ ...draft, envRows: [...(draft.envRows || []), { key: '', value: '' }] }) }, '＋ 添加变量')),
+                            h('div', { style: { marginTop: 8 } },
+                              h('span', { style: { fontSize: 12, fontWeight: 600 } }, '请求头'),
+                              (draft.headerRows || []).map((row, idx) => h('div', { key: `h-${idx}`, style: { ...S.row, marginTop: 4 } },
+                                h('input', { style: { ...S.input, flex: '0 0 180px' }, placeholder: 'Header-Name', value: row.key, onChange: (e) => { const rows = (draft.headerRows || []).slice(); rows[idx] = { ...rows[idx], key: e.target.value }; setDraft({ ...draft, headerRows: rows }); } }),
+                                h('input', { style: { ...S.input, flex: 1 }, placeholder: '值（掩码同上）', value: row.value, onChange: (e) => { const rows = (draft.headerRows || []).slice(); rows[idx] = { ...rows[idx], value: e.target.value }; setDraft({ ...draft, headerRows: rows }); } }),
+                                h('button', { style: { ...S.btn(), ...S.danger }, onClick: () => setDraft({ ...draft, headerRows: (draft.headerRows || []).filter((x, i2) => i2 !== idx) }) }, '删'))),
+                              h('button', { style: S.btn(), onClick: () => setDraft({ ...draft, headerRows: [...(draft.headerRows || []), { key: '', value: '' }] }) }, '＋ 添加请求头')),
+                            h('pre', { style: { fontSize: 11, opacity: 0.8, whiteSpace: 'pre-wrap', margin: '10px 0 0', background: 'rgba(15, 23, 42, 0.04)', padding: 8, borderRadius: 6 } },
+                              JSON.stringify({ transport: detail.data.transport, env: detail.data.env, headers: detail.data.headers }, null, 2))),
                     mcpRaw && detail.kind === 'mcp'
                       ? h('div', { style: { marginTop: 10, border: '1px solid var(--dsh-border, #d0d7de)', borderRadius: 8, padding: 10 } },
                           h('div', { style: { ...S.row, justifyContent: 'space-between', gap: 8 } },
@@ -2368,6 +2506,62 @@ window.__ModuleLoader__.load({
                   onChange: (e) => setManageMcpFilter(e.target.value),
                 }),
                 manageMcpFilter ? h('button', { style: S.btn(), onClick: () => setManageMcpFilter('') }, '清除') : null),
+                h('button', {
+                  style: S.btn(mcpAdd ? 'primary' : undefined),
+                  'aria-expanded': Boolean(mcpAdd),
+                  onClick: () => {
+                    if (mcpAdd) { setMcpAdd(null); setMcpAddConfirm(false); }
+                    else { setMcpAddDraft({ transport: 'stdio', envRows: [{ key: '', value: '' }] }); setMcpAddConfirm(false); setMcpAdd({ open: true }); }
+                  },
+                }, mcpAdd ? '收起添加' : '＋ 手动添加'),
+              // 手动添加浮层：绝对定位（复用 MCP 子面板容器的 position:relative？没有——用 fixed 居中，
+              // 与工具清单浮窗同构），全字段表单；自定义 command 走两步确认。
+              mcpAdd
+                ? h('div', {
+                style: { position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200 },
+                onClick: () => { setMcpAdd(null); setMcpAddConfirm(false); },
+                },
+                h('div', {
+                  style: { width: '100%', maxWidth: 560, maxHeight: '80vh', overflow: 'auto', background: 'var(--dsh-card, #fff)', borderRadius: 12, padding: 18, boxShadow: '0 16px 48px rgba(15, 23, 42, 0.28)' },
+                  onClick: (e) => e.stopPropagation(),
+                  },
+                    h('div', { style: { ...S.row, justifyContent: 'space-between' } },
+                      h('span', { style: { fontWeight: 700, fontSize: 14 } }, '手动添加 MCP 连接器'),
+                      h('button', { style: S.btn(), onClick: () => { setMcpAdd(null); setMcpAddConfirm(false); } }, '✕')),
+                    h('div', { style: { ...S.status, fontSize: 11, margin: '6px 0 10px' } },
+                      '填写本机可执行命令或远程 URL；stdio 模式下启动命令会在本机执行，保存前会要求确认。'),
+                    h('div', { style: S.row },
+                      h('span', { style: { width: 92, fontSize: 12, opacity: 0.7 } }, 'serverName'),
+                      h('input', { style: S.input, placeholder: 'my-mcp（1-32 位字母/数字/-/_）', value: mcpAddDraft.serverName || '', onChange: (e) => setMcpAddDraft({ ...mcpAddDraft, serverName: e.target.value }) })),
+                    h('div', { style: S.row },
+                      h('span', { style: { width: 92, fontSize: 12, opacity: 0.7 } }, '显示名'),
+                      h('input', { style: S.input, value: mcpAddDraft.title || '', onChange: (e) => setMcpAddDraft({ ...mcpAddDraft, title: e.target.value }) })),
+                    h('div', { style: S.row },
+                      h('span', { style: { width: 92, fontSize: 12, opacity: 0.7 } }, '描述'),
+                      h('input', { style: S.input, value: mcpAddDraft.description || '', onChange: (e) => setMcpAddDraft({ ...mcpAddDraft, description: e.target.value }) })),
+                    h('div', { style: S.row },
+                      h('span', { style: { width: 92, fontSize: 12, opacity: 0.7 } }, '命令'),
+                      h('input', { style: S.input, placeholder: 'npx / node / C:\\path\\to.exe（留空则用远程 URL）', value: mcpAddDraft.command || '', onChange: (e) => { setMcpAddDraft({ ...mcpAddDraft, command: e.target.value }); setMcpAddConfirm(false); } })),
+                    h('div', { style: S.row },
+                      h('span', { style: { width: 92, fontSize: 12, opacity: 0.7 } }, '参数'),
+                      h('textarea', { style: { ...S.input, height: 52, fontFamily: 'ui-monospace, monospace', fontSize: 12 }, placeholder: '每行一个参数', value: mcpAddDraft.args || '', onChange: (e) => setMcpAddDraft({ ...mcpAddDraft, args: e.target.value }) })),
+                    h('div', { style: S.row },
+                      h('span', { style: { width: 92, fontSize: 12, opacity: 0.7 } }, 'URL'),
+                      h('input', { style: S.input, placeholder: 'https://…/mcp（stdio 留空时必填）', value: mcpAddDraft.url || '', onChange: (e) => setMcpAddDraft({ ...mcpAddDraft, url: e.target.value }) })),
+                    h('div', { style: { marginTop: 6 } },
+                      h('span', { style: { fontSize: 12, fontWeight: 600 } }, '环境变量'),
+                      (mcpAddDraft.envRows || []).map((row, idx) => h('div', { key: `a-${idx}`, style: { ...S.row, marginTop: 4 } },
+                        h('input', { style: { ...S.input, flex: '0 0 170px' }, placeholder: 'KEY', value: row.key, onChange: (e) => { const rows = (mcpAddDraft.envRows || []).slice(); rows[idx] = { ...rows[idx], key: e.target.value }; setMcpAddDraft({ ...mcpAddDraft, envRows: rows }); } }),
+                        h('input', { style: { ...S.input, flex: 1 }, placeholder: '值（支持 ${ENV_VAR} 引用）', value: row.value, onChange: (e) => { const rows = (mcpAddDraft.envRows || []).slice(); rows[idx] = { ...rows[idx], value: e.target.value }; setMcpAddDraft({ ...mcpAddDraft, envRows: rows }); } }),
+                        h('button', { style: { ...S.btn(), ...S.danger }, onClick: () => setMcpAddDraft({ ...mcpAddDraft, envRows: (mcpAddDraft.envRows || []).filter((x, i2) => i2 !== idx) }) }, '删'))),
+                      h('button', { style: S.btn(), onClick: () => setMcpAddDraft({ ...mcpAddDraft, envRows: [...(mcpAddDraft.envRows || []), { key: '', value: '' }] }) }, '＋ 添加变量')),
+                    h('div', { style: { ...S.row, marginTop: 12, justifyContent: 'flex-end', gap: 8 } },
+                      mcpAddDraft.command && !mcpAddConfirm
+                      ? h('button', { style: { ...S.btn(), ...S.danger }, onClick: () => setMcpAddConfirm(true) }, '添加并启动')
+                      : h('button', { style: { ...S.btn(), ...S.danger }, disabled: busy === 'mcpAdd', onClick: submitMcpAdd },
+                        mcpAddDraft.command ? `确认执行 ${mcpAddDraft.command} 并添加` : '添加并启动')),
+                ))
+                : null,
               h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `已装 MCP（${filteredMounted.length}）`,
                 h('button', {

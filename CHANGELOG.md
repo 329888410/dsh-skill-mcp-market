@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.126
+
+- **MCP 添加与编辑完全化（用户指令）；同时纠正 0.5.116 写错的安全声明**
+  - **前提修正（实测，非推测）**：0.5.116 我在 CHANGELOG 里写「`mcp.update` 拒绝 command/args 关闭了一个任意命令执行面」。本轮实测：把 `command=calc.exe` 的定义直接写进定义目录，`reconcile()` 立即挂载执行 —— 任何本地进程或手动编辑磁盘都能绕过全部 UI。那条 HTTP 守卫**从来不是安全边界**，机器信任才是；它的真实价值只是防误操作。因此「完全可编辑」的正确配套不是继续假装存在边界，而是把改动放进与全插件一致的 **confirm 闸门**（删除技能、清空回收站、卸载连接器都走同一形态）：能改，但改到执行面时问一句。
+  - `mcp.update`：presence 永久拒绝 → 字段级 `needsConfirmFor(patch)`（command/args 用 `in` 判定，显式置空同样算改动；纯函数，测试用 new Function 真跑 7 个用例）。未确认时报「需要二次确认（confirm:true）」。
+  - `mcp.install`：手动自定义 command 同样从永久拒绝改为需 confirm；注册表安装（slug）不带 command，无需确认。`manualMcpDefinition` 的全字段能力本就存在，只是被守卫挡着。
+  - `src/mcp.js update()`：env/headers 改**合并语义**（`envUnset`/`headersUnset` 显式删除），旧的整体替换会悄悄删掉用户没填的变量。
+  - **数据损坏防线**：`detail()` 把 env/headers 的变量引用掩成「***（来自环境变量）」，表单原样回传就会把真实值替换成这句中文——实测确实发生（Test 4 抓到）。新增 `assertNoMaskLiteral(patch, maskLiteral)` 纯函数，在 update/rawSet **写盘之前**拦截；掩码串收敛为单一 `MASK_LITERAL` 常量（detail 生成端与校验端同源，加了三条防漂移锁）。顺带修掉我自己引入的 bug：`patch.confirm` 会把 confirm 写进定义文件且服务端读不到，改为 RPC body 顶层。
+  - 编辑抽屉表单全字段可编辑：命令、参数（每行一个）、URL、传输、工作目录、超时 ms、环境变量键值行（增删）、请求头键值行；改 command/args 时保存按钮两步化（「保存并重连」→「确认执行 <命令> 并添加」）。旧的「面板不开放改写」只读提示与孤立 `;` 一并清除。
+  - **E-2 手动添加**：MCP 子面板工具行新增「＋ 手动添加」，全字段浮层（serverName/显示名/描述/命令/参数/URL/环境变量），自定义命令两步确认，文案如实写明「启动命令会在本机执行」。
+  - 测试：`test-mcp-command-guard.mjs` 按新契约重写（42 项，含 7 个 needsConfirmFor 行为用例、5 个掩码用例、3 条防漂移锁）；`test-mcp-raw-edit.mjs` 旧「永久拒绝」断言反转为新契约（49 项）；新增 `test-mcp-full-edit.mjs`（47 项，第 38 个 CI 门套件）。过程中修掉 4 处我写的断言窗口/转义错误（321 字符实测、双反斜杠失配等），以及一次浮层插入层级错误（用括号深度扫描器定位到 d9 容器 children 层）。
+  - 验证：离线 33 套件全绿（含死代码标准：MASK_LITERAL 从「零引用导出」修成 detail 的单一数据源）。
 ## 0.5.125
 
 - **MCP 定义原文编辑（差距清单兜底项；本轮已补齐连带修复与全量回归）**

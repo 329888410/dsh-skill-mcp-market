@@ -75,9 +75,10 @@ console.log('Test 1: raw.get 返回原文（不规范化）并检测明文');
 console.log('');
 console.log('Test 2: rawSet 的 command/args 判据是 diff 而非 presence');
 {
-  check('rawSet 比较 command 与现定义', /String\(def\.command \|\| ''\)/.test(mj) || /sameCommand/.test(mj));
-  check('rawSet 比较 args 与现定义', /sameArgs/.test(mj) || /JSON\.stringify\(\(def\.args \|\| \[\]\)/.test(mj));
-  check('真变化时报面板通道错误', mj.includes('面板通道不接受自定义 command/args'));
+  // 0.5.126 契约反转：command/args 的改动判定上移到 dispatch 层（needsConfirmFor），src 层不再硬拒。
+  check('rawSet 不再做 command diff 拒绝', !/sameCommand/.test(mj));
+  check('rawSet 仍拒绝 serverName 改动（那是另一个连接器）', mj.includes('serverName 必须保持'));
+  check('rawSet 调用掩码校验（数据损坏防线）', /assertNoMaskLiteral\(parsed\)/.test(mj));
 }
 
 console.log('');
@@ -99,13 +100,13 @@ console.log('Test 3: rawSet 行为级验证（真落盘真拒绝）');
       check('新标题已落盘', fs.readFileSync(path.join(dir, 'gamma.json'), 'utf8').includes('新标题'));
       check('表单覆盖不到的字段写入', fs.readFileSync(path.join(dir, 'gamma.json'), 'utf8').includes('90000'));
       check('重连失败不回滚文件（3a 已落盘即成立）', fs.readFileSync(path.join(dir, 'gamma.json'), 'utf8').includes('新标题'));
-      let e2 = '';
-      try { await mgr.rawSet('gamma', JSON.stringify({ serverName: 'gamma', command: 'calc.exe', args: [] }, null, 2)); } catch (e) { e2 = String(e.message); }
-      check('改 command 被拒', /面板通道不接受/.test(e2), e2.slice(0, 70));
-      check('被拒后文件未变', fs.readFileSync(path.join(dir, 'gamma.json'), 'utf8').includes('新标题'));
-      let e3 = '';
-      try { await mgr.rawSet('gamma', JSON.stringify({ serverName: 'gamma', command: 'node', args: ['evil.js'] }, null, 2)); } catch (e) { e3 = String(e.message); }
-      check('改 args 被拒', /面板通道不接受/.test(e3), e3.slice(0, 70));
+      // 0.5.126 契约反转：src 层不再硬拒 command/args（实测磁盘写入即可绕过，那条守卫
+      // 不是安全边界）；确认闸门在 dispatch 层（needsConfirmFor + body.confirm）。
+      const r2 = await mgr.rawSet('gamma', JSON.stringify({ serverName: 'gamma', command: 'calc.exe', args: [] }, null, 2));
+      check('改 command 在 src 层允许', r2 && r2.saved === true, JSON.stringify(r2 && r2.connectError));
+      check('改 command 已落盘', JSON.parse(fs.readFileSync(path.join(dir, 'gamma.json'), 'utf8')).command === 'calc.exe');
+      const r3 = await mgr.rawSet('gamma', JSON.stringify({ serverName: 'gamma', command: 'node', args: ['evil.js'] }, null, 2));
+      check('改 args 在 src 层允许', r3 && r3.saved === true, JSON.stringify(r3 && r3.connectError));
       let e4 = '';
       try { await mgr.rawSet('gamma', JSON.stringify({ serverName: 'delta', command: 'node', args: ['-e', '0'] }, null, 2)); } catch (e) { e4 = String(e.message); }
       check('改 serverName 被拒', /serverName/.test(e4), e4.slice(0, 70));
@@ -156,14 +157,14 @@ console.log('Test 5: 面板 UI（默认不加载 + 明文警告）');
   check('hasSecrets 驱动警告', /mcpRaw\.hasSecrets/.test(c));
   check('保存走 mcp.raw.set', c.includes("call('mcp.raw.set'"));
   check('保存带 confirm', /'mcp\.raw\.set'[\s\S]{0,220}confirm: true/.test(c));
-  check('command/args 只读提示沿用', /mcp_market_install/.test(c));
+  check('command/args 只读提示已撤（完全可编辑）', !/面板不开放改写/.test(c));
   check('textarea 编辑原文', /value: mcpRaw\.text/.test(c));
 }
 
 console.log('');
 console.log('Test 6: 既有行为不破');
 {
-  check('mcp.update 的 presence 守卫仍在', /patch\.command !== undefined \|\| patch\.args !== undefined/.test(ix));
+  check('mcp.update 的 presence 永久拒绝已移除', ix.indexOf('patch.command !== undefined') < 0 && ix.indexOf('patch.args !== undefined') < 0);
   check('detail 的 env 掩码仍在', /\*\*\*（来自环境变量）/.test(mj));
   check('list 契约不变', /return \[\.\.\.defs\.values\(\)\]\.map/.test(mj));
   check('窄屏判据未被误伤', /NARROW_PANEL_WIDTH = 560/.test(c));
