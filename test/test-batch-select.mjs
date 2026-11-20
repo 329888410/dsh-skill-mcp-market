@@ -79,7 +79,9 @@ console.log('Test 2: 选择态与入口');
 console.log('');
 console.log('Test 3: 计数只算可见项（筛掉的旧选择不得参与批量）');
 {
-  check('selectedVisible 派生', /const selectedVisible = filteredInstalled\.filter\(\(i\) => selected\.has\(String\(i\.slug\)\)\)/.test(c));
+  // 0.5.128 口径收紧：selectedVisible 基于 expandedVisible（展开 + 未被筛掉），比旧版
+  // filteredInstalled 更强 —— 折叠分组里的项也不再悄悄参与计数与批量。
+  check('selectedVisible 派生（基于 expandedVisible）', /const selectedVisible = expandedVisible\.filter\(\(i\) => selected\.has\(String\(i\.slug\)\)\)/.test(c));
   check('计数用 selectedVisible', /已选 \$\{selectedVisible\.length\} 项/.test(c));
   check('启用作用于 selectedVisible', /runBatch\('启用', 'enable', selectedVisible\)/.test(c));
   check('停用作用于 selectedVisible', /runBatch\('停用', 'disable', selectedVisible\)/.test(c));

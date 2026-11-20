@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.128
+
+- **管理面板三处现有功能优化（转入优化阶段的第一次交付；全部由审计取证发现，非凭印象）**
+  - **A. 测试连接后刷新卡片**：`mcp.probe` 是独立实例、不写 mounted（0.5.112 起的语义，保持不变），但 probe 成功意味着真实 fiber 已发布工具，而卡片的 phase/工具数来自 `mcp.list` 缓存 —— 旧版点完「测试连接」只有 notice，卡片仍显示旧状态，要手动刷新页面。现在成功与 pending 两个分支都 `await loadInstalled()`（失败分支不刷新：什么都没变）。
+  - **B. 批量口径收紧（诚实性修复，本轮最有价值的一处）**：审计发现「全选」把**折叠分组里的技能**也选进集合 —— 用户看不见它们，批量卸载却会动它们。这与 0.5.122 自己定下的原则（筛掉/隐藏的项不得参与批量）直接冲突。修复不止于全选：把 `selectedVisible` 的定义从 `filteredInstalled.filter(...)` 改为 `expandedVisible.filter(...)`，让**计数、全选、批量动作三者同一口径**（展开 + 未被筛掉）。于是「展开→选中→再折叠」的项也不再悄悄参与批量卸载。分组归属通过 `installedGrouped` 反查 `groupKeyOf` 得到，不复制 `${rank}:${label}` 公式，避免两处口径漂移。
+  - **C. 全部展开 / 全部折叠**：分组多时逐个点折叠箭头繁琐。列表头加两个按钮，走 `collapseAllGroups` helper —— 刻意不直接 `setCollapsedGroups`，因为那样会漏掉 localStorage 写入（单组折叠的 `toggleGroupCollapsed` 是两者都写的），helper 保持同一持久化路径。
+  - 过程中修掉两处我自己的失误并留下证据：① 首次批量脚本在写盘前崩溃导致**部分落地**，全选三处出现混合口径（`expandedVisible.length && filteredInstalled.length > 0`），逐区 dump 真实字节后统一；② 按钮插入位置错进 openDir 按钮的 props 对象内部（`find()` 从 0 开始命中了技能段的同名行），语法检查抓到，改为插入撑杆之后成为合法兄弟子元素。
+  - 测试：新增 `test-manage-optimizations.mjs`（22 项，第 40 个 CI 门套件）。两条断言按真实架构修正：C 的按钮不直接触碰 `setCollapsedGroups`（走 helper 才有持久化），断言改为锁「按钮→helper→state+持久化」这条真实接线；B 补两条口径一致性锁。`test-batch-select` 的派生断言随契约升级更新（旧口径 filteredInstalled 已被更强的 expandedVisible 取代），并验证定义先于全部真实引用（397 行是注释不是引用，无 TDZ）。
+  - 验证：离线 35 套件全绿；TDZ 锁通过（installedGrouped 1698 → expandedVisible 1715 → selectedVisible 1719 → 引用 2464+）。
 ## 0.5.127
 
 - **MCP 添加/编辑闭环（三项审计缺陷修复；这一项到此完成）**

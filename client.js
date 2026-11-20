@@ -1602,7 +1602,6 @@ window.__ModuleLoader__.load({
       // 任一判据窄即窄屏：视口窄（手机远控）或面板窄（宿主侧栏挤占）。
       const narrow = narrowViewport || narrowPanel;
       // 批量计数与动作的唯一口径：只算「筛选后仍可见」的选中项。
-      const selectedVisible = filteredInstalled.filter((i) => selected.has(String(i.slug)));
       const exitBatch = () => { setBatchMode(false); setSelected(new Set()); setBatchConfirm(false); };
       const runBatch = async (label, verb, items) => {
         setBusy('batch');
@@ -1708,6 +1707,24 @@ window.__ModuleLoader__.load({
         return [...map.values()].sort((x, y) => x.rank - y.rank);
       })();
 
+      // 批量与全选的唯一可见口径：只算「当前展开且未被筛选掉」的项。
+      // 折叠分组里的项用户看不见，绝不能悄悄参与批量（0.5.122 定的诚实性原则）。
+      // 分组归属从 installedGrouped 反查（不复制 `${rank}:${label}` 公式，避免两处口径漂移）。
+      const groupKeyOf = new Map();
+      for (const g of installedGrouped) { for (const it of g.items) groupKeyOf.set(`${it.dir}|${it.slug}`, g.key); }
+      const expandedVisible = filteredInstalled.filter((i) => collapsedGroups[groupKeyOf.get(`${i.dir}|${i.slug}`)] !== true);
+      // 计数、全选、批量动作三者同一口径：只算「展开且未被筛选掉」且被选中的项。
+      // 旧口径基于 filteredInstalled（含折叠项），用户展开→选中→再折叠后，
+      // 看不见的项仍会参与批量卸载 —— 那是假陈述，也是 0.5.122 原则的漏洞。
+      const selectedVisible = expandedVisible.filter((i) => selected.has(String(i.slug)));
+      // 与 toggleGroupCollapsed 同一持久化路径：直接 setCollapsedGroups 会漏掉 localStorage 写入。
+      const collapseAllGroups = (collapsed) => {
+        const next = {};
+        for (const g of installedGrouped) next[g.key] = collapsed;
+        setCollapsedGroups(next);
+        try { window.localStorage.setItem('dsh-skill-mcp-market.collapsedGroups', JSON.stringify(next)); } catch { /* 拒绝存储的浏览器只是不记忆 */ }
+      };
+
       const installedSkills = installedGrouped.map((group) => {
         const collapsed = collapsedGroups[group.key] === true;
         const shadowed = group.items.filter((x) => x.shadowedBy).length;
@@ -1754,8 +1771,8 @@ window.__ModuleLoader__.load({
                 setError('');
                 try {
                   const r = await call('mcp.probe', { serverName: item.serverName, timeoutMs: 8000 });
-                  if (r.ok) setNotice(`${item.serverName} 连接正常，${r.tools.length} 个工具`);
-                  else if (r.pending) setNotice(`${item.serverName} 已挂载，服务器还在启动中，稍后再点一次测试连接`);
+                  if (r.ok) { setNotice(`${item.serverName} 连接正常，${r.tools.length} 个工具`); await loadInstalled(); }
+                  else if (r.pending) { setNotice(`${item.serverName} 已挂载，服务器还在启动中，稍后再点一次测试连接`); await loadInstalled(); }
                   else setError(`${item.serverName} 未连上：${r.error || ''}`);
                 } catch (e) {
                   setError(`测试失败：${e.message || e}`);
@@ -2413,6 +2430,8 @@ window.__ModuleLoader__.load({
                   ? h('span', { style: { fontSize: 11, opacity: 0.6, fontWeight: 400 } }, `含 DSH 内置 ${nativeDirs.length} 个目录`)
                   : null,
                 h('span', { style: { flex: 1 } }),
+                h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, title: '展开所有来源分组', onClick: () => collapseAllGroups(false) }, '全部展开'),
+                h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, title: '折叠所有来源分组；折叠的项不参与批量选择', onClick: () => collapseAllGroups(true) }, '全部折叠'),
                 h('button', {
                   style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
                   title: '在资源管理器中直接查看 / 编辑技能文件',
@@ -2444,10 +2463,10 @@ window.__ModuleLoader__.load({
                   },
                     h('span', { style: { fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' } }, `已选 ${selectedVisible.length} 项`),
                     h('button', { style: S.btn(), onClick: () => setSelected((prev) => {
-                      const all = new Set(filteredInstalled.map((i) => String(i.slug)));
-                      const isAll = selectedVisible.length === filteredInstalled.length && filteredInstalled.length > 0;
+                      const all = new Set(expandedVisible.map((i) => String(i.slug)));
+                      const isAll = selectedVisible.length === expandedVisible.length && expandedVisible.length > 0;
                       return isAll ? new Set() : all;
-                    }) }, selectedVisible.length === filteredInstalled.length && filteredInstalled.length > 0 ? '全不选' : '全选'),
+                    }) }, selectedVisible.length === expandedVisible.length && expandedVisible.length > 0 ? '全不选' : '全选'),
                     h('button', { style: S.btn(), disabled: selectedVisible.length === 0 || busy === 'batch',
                       onClick: () => runBatch('启用', 'enable', selectedVisible) }, '全部启用'),
                     h('button', { style: S.btn(), disabled: selectedVisible.length === 0 || busy === 'batch',
