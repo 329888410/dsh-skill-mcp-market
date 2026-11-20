@@ -21,7 +21,7 @@ async function fetchText(url, timeoutMs = 15000) {
 }
 
 /** Run `worker` over `items` with a bounded number of in-flight requests. */
-export async function mapLimit(items, limit, worker) {
+async function mapLimit(items, limit, worker) {
   const out = new Array(items.length);
   let cursor = 0;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -49,25 +49,6 @@ function decodeEntities(text) {
     );
 }
 
-/** File index of a GitHub repository (cached 24h), used to locate `<skill>/SKILL.md`. */
-async function repoFileIndex(repo, ref, cache) {
-  const key = `gh-index:${repo}@${ref}`;
-  const cached = await cache.get(key, 24 * 3600 * 1000);
-  if (cached) return new Set(cached);
-  const data = JSON.parse(await fetchText(`https://data.jsdelivr.com/v1/packages/gh/${repo}@${encodeURIComponent(ref)}`, 25000));
-  const files = [];
-  const walk = (nodes, prefix) => {
-    for (const node of nodes || []) {
-      const path = prefix ? `${prefix}/${node.name}` : node.name;
-      if (node.type === "directory") walk(node.files, path);
-      else files.push(path);
-    }
-  };
-  walk(data.files, "");
-  await cache.put(key, files);
-  return new Set(files);
-}
-
 /**
  * Some SKILL.md frontmatters carry junk descriptions ("&gt;" and friends). Only accept text
  * that a human would recognise as a sentence.
@@ -81,65 +62,6 @@ function usableDescription(value) {
   if (!/[\p{L}\p{N}]/u.test(text)) return "";
   if (/^[\p{P}\p{S}\s]+$/u.test(text)) return "";
   return text;
-}
-
-function locateSkillFile(index, skill) {
-  const wanted = String(skill || "").toLowerCase();
-  const candidates = [...index].filter((path) => path.toLowerCase().endsWith("/skill.md") || path.toLowerCase() === "skill.md");
-  const byBase = candidates.filter((path) => path.split("/").slice(-2, -1)[0]?.toLowerCase() === wanted);
-  if (byBase.length > 0) return byBase[0];
-  return candidates.length === 1 ? candidates[0] : "";
-}
-
-/**
- * Read each skills.sh entry's own SKILL.md frontmatter: that is the authoritative name and
- * description. One jsDelivr index request per repository, then one raw request per skill.
- */
-export async function enrichSkillsSh(items, cache) {
-  const withTarget = [];
-  for (const item of items) {
-    const parts = String(item.owner || "").split("/");
-    if (parts.length !== 2) continue;
-    withTarget.push({ item, repo: item.owner, skill: item.slug });
-  }
-  const repos = [...new Set(withTarget.map((entry) => entry.repo))];
-  const indexes = new Map();
-  await mapLimit(repos, 4, async (repo) => {
-    try {
-      indexes.set(repo, await repoFileIndex(repo, "main", cache));
-    } catch {
-      try {
-        indexes.set(repo, await repoFileIndex(repo, "master", cache));
-      } catch {
-        indexes.set(repo, new Set());
-      }
-    }
-  });
-
-  await mapLimit(withTarget, 6, async ({ item, repo, skill }) => {
-    const index = indexes.get(repo);
-    if (!index || index.size === 0) return item;
-    const path = locateSkillFile(index, skill);
-    if (!path) return item;
-    const cacheKey = `skillmd:${repo}:${path}`;
-    try {
-      let text = await cache.get(cacheKey, 24 * 3600 * 1000);
-      if (!text) {
-        text = await fetchText(`https://raw.githubusercontent.com/${repo}/main/${path}`);
-        await cache.put(cacheKey, text);
-      }
-      const { data } = parseFrontmatter(text);
-      const description = usableDescription(data.description);
-      if (description) item.description = description;
-      if (data.name) item.name = String(data.name).trim();
-      item.skillDir = path === "SKILL.md" ? "" : path.slice(0, -"/SKILL.md".length);
-      item.describedBy = "SKILL.md";
-    } catch {
-      // keep whatever the sitemap gave us
-    }
-    return item;
-  });
-  return items;
 }
 
 /**

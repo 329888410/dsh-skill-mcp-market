@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.114
+
+- **死代码清理 + 认定标准落地（标准由测试机器执行，不再靠人记）**
+  - 新增 `docs/dead-code-standard.md`：认定标准（引用面=全仓含 locale/文档；定义文件内表引用/内部调用算活；测试引用是契约不是死代码；动态访问不确定→保留记存疑；级联 helper 模拟删除后重数引用）+ 四步检测法（扫描→分类→160 导入名断链核验→行为回归）+ 操作纪律（基线先行、锚点核验、diff 行数比对）。
+  - 删除（标准四条全满足）：`enrichSkillsSh`（src/enrich.js，被 enrichSkillsShFast 取代的旧版）、`readEnvironmentVariable`（src/env.js）、级联私有 helper `repoFileIndex`/`locateSkillFile`（仅被前者调用；模拟删除后重数：usableDescription/fetchText/decodeEntities 仍有调用者，保留）。
+  - 收紧 17 个「仅本文件使用」的 export（去关键字、函数本体不动）：mapLimit、fetchFileText、safeJoin、BROWSER_HEADERS、curlJson、pythonJson、curlPostText、pythonPostText、LOBEHUB_MARKET_BASE、lobehubCredentialsPath、registerLobeHubClient、registryCard、registryQueryUrl、FALLBACK_SERVERS、browseSkillsSh、searchSkillsSh、searchBrowseSh。
+  - 反向锁（差点误删）：`buildPosixExportLine` 生产代码不用，但 test-security.mjs ×4 引用它 → 保留并写进 Test 5；`SORT_KEYS` 在 0.5.109 起已被 index.js 引用 → 旧「零引用清单」作废，印证标准里「不得凭记忆清理」。
+  - 新增 `test/test-dead-exports.mjs`（47 项）并注册进 CI 门（25 套件）：Test 1 死函数彻底消失、Test 2 收紧后本体仍在、Test 3 全仓扫描零引用导出=0（标准本身被机器执行）、Test 4 模块可正常 import、Test 5 反向锁防「顺手删」。
+  - 改后验证（全部实测）：160 个跨文件 import 名零断链；无 export * 桶导出；被删符号全仓零残留（除新测试的断言）；离线 23 套件 334 项全绿（基线 334/0 持平）；test-nocache 8 源 handler 表逐个真调全过（SOURCE_HANDLERS 未断）；慢实网 full-sort 24/24、global-sort 22/22、sort-honesty 11/11；diff 行数与预期一致（17 行收紧 + 删除区间锚点核验通过）。
 ## 0.5.113
 
 - **修 test-full-sort 两处「空转绿灯」：`'' === ''` 恒真会把「上游一条都没返回」判成「降级/缓存语义正确」**

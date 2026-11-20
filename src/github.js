@@ -55,7 +55,7 @@ async function fetchText(url, timeoutMs = 20000) {
  * Read one repository file. `raw.githubusercontent.com` is preferred because it is
  * reachable on more networks than the jsDelivr CDN; the CDN is the fallback.
  */
-export async function fetchFileText(repo, ref, path) {
+async function fetchFileText(repo, ref, path) {
   const sources = [
     `${RAW}/${repo}/${ref ? encodeURIComponent(ref) : "HEAD"}/${path}`,
     `${CDN}/${repo}${ref ? "@" + encodeURIComponent(ref) : ""}/${path}`,
@@ -157,7 +157,7 @@ export function skillDirsFrom(files) {
     .map((path) => (path === "SKILL.md" ? "" : path.slice(0, -"/SKILL.md".length)));
 }
 
-export function safeJoin(root, relative) {
+function safeJoin(root, relative) {
   const target = normalize(join(root, relative));
   const base = normalize(root.endsWith(sep) ? root : root + sep);
   if (target !== normalize(root) && !target.startsWith(base)) {

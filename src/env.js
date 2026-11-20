@@ -52,7 +52,3 @@ export function setUserEnvironmentVariable(name, value) {
   process.env[name] = value;
   return { ok: true, name, scope: "user", platform: process.platform };
 }
-
-export function readEnvironmentVariable(name) {
-  return process.env[name] || "";
-}

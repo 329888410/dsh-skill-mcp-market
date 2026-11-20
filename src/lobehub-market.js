@@ -19,10 +19,10 @@ import { join } from "node:path";
 import { getJson } from "./http.js";
 
 /** Marketplace origin; overridable for self-hosted or test instances. */
-export const LOBEHUB_MARKET_BASE = process.env.LOBEHUB_MARKET_BASE_URL || "https://market.lobehub.com";
+const LOBEHUB_MARKET_BASE = process.env.LOBEHUB_MARKET_BASE_URL || "https://market.lobehub.com";
 
 /** Where the CLI keeps the registered client credentials. */
-export function lobehubCredentialsPath() {
+function lobehubCredentialsPath() {
   return join(homedir(), ".lobehub-market", "credentials.json");
 }
 
@@ -79,7 +79,7 @@ function runCli(args, timeoutMs = 90000) {
 }
 
 /** Register this plugin as a marketplace client once; the CLI stores the credentials itself. */
-export async function registerLobeHubClient(name = "DSH Market") {
+async function registerLobeHubClient(name = "DSH Market") {
   await runCli(["register", "--base-url", LOBEHUB_MARKET_BASE, "--name", name, "--source", "dsh"], 150000);
   return lobehubCredentialsPath();
 }

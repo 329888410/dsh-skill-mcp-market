@@ -15,7 +15,7 @@ import { join } from "node:path";
 const CURL_BINARIES = ["curl.exe", "curl"];
 
 /** Headers that made the Cloudflare-fronted endpoints answer 200. */
-export const BROWSER_HEADERS = {
+const BROWSER_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   accept: "application/json, text/plain, */*",
@@ -59,7 +59,7 @@ export async function curlText(url, { headers = {}, timeoutMs = 15000 } = {}) {
 }
 
 /** GET + parse JSON through curl; a challenge page (HTML) is reported as such. */
-export async function curlJson(url, options) {
+async function curlJson(url, options) {
   const text = await curlText(url, options);
   try {
     return JSON.parse(text);
@@ -209,7 +209,7 @@ export async function pythonDownload(url, target, { timeoutMs = 120000 } = {}) {
   return target;
 }
 
-export async function pythonJson(url, options = {}) {
+async function pythonJson(url, options = {}) {
   const text = await pythonText(url, options);
   try {
     return JSON.parse(text);
@@ -242,7 +242,7 @@ export async function getJsonEscalating(url, { headers = {}, timeoutMs = 20000 }
 }
 
 /** POST a JSON body through curl (some hosts only answer a non-Node TLS client). */
-export async function curlPostText(url, body, { headers = {}, timeoutMs = 15000 } = {}) {
+async function curlPostText(url, body, { headers = {}, timeoutMs = 15000 } = {}) {
   const merged = { ...BROWSER_HEADERS, "content-type": "application/json", ...headers };
   const payload = JSON.stringify(body ?? {});
   const args = [
@@ -263,7 +263,7 @@ export async function curlPostText(url, body, { headers = {}, timeoutMs = 15000 
 }
 
 /** POST a JSON body through the Python transport. */
-export async function pythonPostText(url, body, { headers = {}, timeoutMs = 20000 } = {}) {
+async function pythonPostText(url, body, { headers = {}, timeoutMs = 20000 } = {}) {
   const python = await findPython();
   if (!python) throw new Error("没有可用的 Python 解释器，无法通过该传输取数");
   return new Promise((resolve, reject) => {

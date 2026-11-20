@@ -122,7 +122,7 @@ export function registryDefinition(server, serverNameHint = "") {
 }
 
 /** Turn one registry server into a market card. */
-export function registryCard(server) {
+function registryCard(server) {
   const definition = registryDefinition(server);
   const name = String(server.name || "");
   const transports = [
@@ -150,7 +150,7 @@ export function registryCard(server) {
   };
 }
 
-export function registryQueryUrl(query, pageSize, cursor) {
+function registryQueryUrl(query, pageSize, cursor) {
   const params = new URLSearchParams({ limit: String(pageSize) });
   if (String(query || "").trim()) params.set("search", String(query).trim());
   if (cursor) params.set("cursor", cursor);
@@ -295,7 +295,7 @@ export async function registryDefinitionByName(name, serverNameHint = "") {
  * real, verified registry names (checked live), not invented placeholders; installing one
  * still resolves through the registry, so a wrong guess fails loudly instead of silently.
  */
-export const FALLBACK_SERVERS = [
+const FALLBACK_SERVERS = [
   {
     name: "io.github.Async23/chrome-devtools-mcp",
     description: "Chrome DevTools 自动化：调试、网络与性能分析（npm @async23/chrome-devtools-mcp）",

@@ -192,7 +192,7 @@ async function loadSkillsShCatalog(cache) {
   return null;
 }
 
-export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort = "" } = {}) {
+async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort = "" } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
   let catalog = await loadSkillsShCatalog(cache);
@@ -249,7 +249,7 @@ function sortSkillsShRows(rows, sort) {
   return rows;
 }
 
-export async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
+async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
@@ -344,7 +344,7 @@ export async function resolveSkillsShInstall(url, cache) {
 
 // ------------------------------------------------------------------ browse.sh
 /** browse.sh exposes the whole catalogue with title, description, category and tags. */
-export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
+async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
   let rows = cache ? await cache.get("browse_sh_api", 30 * 60 * 1000) : undefined;
