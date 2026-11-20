@@ -26,6 +26,23 @@ window.__ModuleLoader__.load({
       const q = String(query).toLowerCase();
       return ((tool && tool.name ? tool.name : '') + ' ' + (tool && tool.description ? tool.description : '')).toLowerCase().includes(q);
     }
+    // 批量结果汇总：逐项 RPC 循环最容易写出「全成功文案，实际第 3 项抛错」的假陈述。
+    // 诚实规则：成功数只算 ok 项；有失败必须报数与原因；全失败不得出现成功计数。
+    function summarizeBatch(label, results) {
+      const rows = Array.isArray(results) ? results : [];
+      const okRows = rows.filter((r) => r && r.ok);
+      const failRows = rows.filter((r) => !r || !r.ok);
+      const parts = [];
+      if (okRows.length > 0) parts.push(`已${label} ${okRows.length} 项`);
+      if (failRows.length > 0) {
+        parts.push(`${failRows.length} 项失败`);
+        const reason = String((failRows.find((r) => r && r.error) || {}).error || '').slice(0, 120);
+        if (reason) parts.push(`（${reason}）`);
+      } else if (rows.length === 0) {
+        parts.push('没有可操作的项');
+      }
+      return { okRows: okRows.length, failRows: failRows.length, hasFailure: failRows.length > 0, text: parts.join('，') };
+    }
     // 路径缩写：把用户主目录换成 ~，卡片才不会把长路径中段截断（悬浮给全文）。
     // home 由调用方传入（settings.settings.homeDir，服务端下发）——本函数在 factory 作用域，
     // 拿不到组件 state，绝不能依赖全局变量猜。
@@ -332,6 +349,11 @@ window.__ModuleLoader__.load({
       // 上传是低频动作：默认收起，点「＋ 添加技能」才展开；拖拽热区升到整个列表容器。
       const [uploadOpen, setUploadOpen] = useState(false);
       const [dragOver, setDragOver] = useState(false);
+      // 批量多选（Task D-1）：Set 存 slug；筛选变化时旧选择仍保留，
+      // 但计数与动作只作用于「当前可见」的选中项（selectedVisible），筛掉的项绝不偷偷参与批量。
+      const [batchMode, setBatchMode] = useState(false);
+      const [selected, setSelected] = useState(() => new Set());
+      const [batchConfirm, setBatchConfirm] = useState(false);
       // 就地错误：上传失败显示在浮层内（页面级 error 槽在视口上方，用户视线不在那）。
       const [uploadError, setUploadError] = useState('');
       const uploadRef = useRef(null);
@@ -1381,6 +1403,33 @@ window.__ModuleLoader__.load({
         : mountedList;
       // 浮窗清单的唯一数据源：标题计数、列表渲染、无匹配提示都读它。
       const visibleTools = mcpTools ? mcpTools.toolDetails.filter((tool) => toolMatches(tool, toolQuery)) : [];
+      // 批量计数与动作的唯一口径：只算「筛选后仍可见」的选中项。
+      const selectedVisible = filteredInstalled.filter((i) => selected.has(String(i.slug)));
+      const exitBatch = () => { setBatchMode(false); setSelected(new Set()); setBatchConfirm(false); };
+      const runBatch = async (label, verb, items) => {
+        setBusy('batch');
+        setError('');
+        setNotice('');
+        try {
+          const results = [];
+          for (const item of items) {
+            try {
+              if (verb === 'uninstall') await call('skills.uninstall', { slug: item.slug, confirm: true });
+              else await call('skills.toggle', { slug: item.slug, enabled: verb === 'enable' });
+              results.push({ ok: true, slug: item.slug });
+            } catch (e) {
+              results.push({ ok: false, slug: item.slug, error: String(e.message || e) });
+            }
+          }
+          const summary = summarizeBatch(label, results);
+          await loadInstalled();
+          if (summary.hasFailure) setError(summary.text);
+          else setNotice(summary.text);
+          if (summary.failRows === 0) exitBatch();
+        } finally {
+          setBusy('');
+        }
+      };
       // 单张已装技能卡片（分组渲染时复用）
       const renderInstalledCard = (item) => {
         const off = skillStateOff(item);
@@ -1392,7 +1441,20 @@ window.__ModuleLoader__.load({
         },
           // 标题行：状态点前置，不再把「（已停用）（被…覆盖）」堆进标题字符串
           h('div', { style: { ...S.row, justifyContent: 'space-between', gap: 8, flexWrap: 'nowrap' } },
-            h('span', { style: { ...S.title, minWidth: 0 }, title: item.name || item.slug }, item.name || item.slug),
+            h('span', { style: { ...S.row, gap: 6, flexWrap: 'nowrap', minWidth: 0 } },
+              batchMode ? h('input', {
+                type: 'checkbox',
+                'aria-label': `选择 ${item.slug}`,
+                checked: selected.has(String(item.slug)),
+                onClick: (e) => e.stopPropagation(),
+                onChange: () => setSelected((prev) => {
+                  const next = new Set(prev);
+                  const key = String(item.slug);
+                  if (next.has(key)) next.delete(key); else next.add(key);
+                  return next;
+                }),
+              }) : null,
+              h('span', { style: { ...S.title, minWidth: 0 }, title: item.name || item.slug }, item.name || item.slug)),
             h('span', {
               style: { fontSize: 11, whiteSpace: 'nowrap', color: off ? '#b26a00' : 'var(--dsh-text-secondary, #57606a)' },
               title: off ? '模型不会调用该技能' : '模型可调用',
@@ -2078,7 +2140,13 @@ window.__ModuleLoader__.load({
                   'aria-expanded': uploadOpen,
                   'data-upload-trigger': '1',
                   onClick: () => setUploadOpen(!uploadOpen),
-                }, uploadOpen ? '收起上传' : '＋ 添加技能')),
+                }, uploadOpen ? '收起上传' : '＋ 添加技能'),
+                h('button', {
+                  style: S.btn(batchMode ? 'primary' : undefined),
+                  'aria-pressed': batchMode,
+                  title: batchMode ? '退出批量模式' : '批量启用/停用/卸载技能',
+                  onClick: () => { if (batchMode) exitBatch(); else { setBatchMode(true); setBatchConfirm(false); } },
+                }, batchMode ? '退出选择' : '选择')),
               h('div', { style: { ...S.title, marginBottom: 2, display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `已装技能（${filteredInstalled.length}）`,
                 (() => {
@@ -2106,6 +2174,39 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, '打开目录')),
+              batchMode && filteredInstalled.length > 0
+                ? h('div', {
+                    // 复用技能容器的 position:relative（0.5.119 为上传浮层加的）→ 零位移浮条
+                    style: {
+                      position: 'absolute', left: 0, right: 0, top: 46, zIndex: 55,
+                      display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap',
+                      background: 'var(--dsh-surface, #ffffff)',
+                      border: '1px solid var(--dsh-border, #d0d7de)',
+                      borderRadius: 10, boxShadow: '0 8px 24px rgba(15, 23, 42, 0.16)',
+                      padding: '8px 12px',
+                    },
+                  },
+                    h('span', { style: { fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' } }, `已选 ${selectedVisible.length} 项`),
+                    h('button', { style: S.btn(), onClick: () => setSelected((prev) => {
+                      const all = new Set(filteredInstalled.map((i) => String(i.slug)));
+                      const isAll = selectedVisible.length === filteredInstalled.length && filteredInstalled.length > 0;
+                      return isAll ? new Set() : all;
+                    }) }, selectedVisible.length === filteredInstalled.length && filteredInstalled.length > 0 ? '全不选' : '全选'),
+                    h('button', { style: S.btn(), disabled: selectedVisible.length === 0 || busy === 'batch',
+                      onClick: () => runBatch('启用', 'enable', selectedVisible) }, '全部启用'),
+                    h('button', { style: S.btn(), disabled: selectedVisible.length === 0 || busy === 'batch',
+                      onClick: () => runBatch('停用', 'disable', selectedVisible) }, '全部停用'),
+                    !batchConfirm
+                      ? h('button', { style: { ...S.btn(), ...S.danger }, disabled: selectedVisible.length === 0,
+                          onClick: () => setBatchConfirm(true) }, '批量卸载')
+                      : h('span', { style: { ...S.row, gap: 6, flexWrap: 'nowrap' } },
+                          h('button', { style: { ...S.btn(), ...S.danger }, disabled: busy === 'batch',
+                            onClick: () => { setBatchConfirm(false); runBatch('卸载', 'uninstall', selectedVisible); } },
+                            `确认卸载 ${selectedVisible.length} 项`),
+                          h('button', { style: S.btn(), onClick: () => setBatchConfirm(false) }, '取消')),
+                    h('span', { style: { flex: 1 } }),
+                    h('button', { style: S.btn(), onClick: exitBatch }, '退出选择'))
+                : null,
               filteredInstalled.length === 0
                 ? h('div', { style: S.dim }, manageSkillState !== 'all' || skillFilterText
                     ? '没有符合筛选条件的技能（试试清除筛选）。'

@@ -44,7 +44,7 @@ console.log('Test 3: 工具行——搜索为主角，上传收进弹出层');
 {
   const gi = c.indexOf("manageTab === 'skill' ? h('div'");
   // 窗口要覆盖到「＋ 添加技能」（实测偏移 ~7.1k），6000 不够。
-  const seg = c.slice(gi, gi + 11000);
+  const seg = c.slice(gi, gi + 9000);   // 覆盖到「＋ 添加技能」（实测 ~7.6k）
   check('搜索框排在上传按钮之前', seg.indexOf('搜索已装技能') < seg.indexOf('＋ 添加技能'));
   // 本文件是 h() 调用风格，不是 JSX：门控的真实形态是 uploadOpen ? h('div', ...) : null
   check('上传区收进 uploadOpen 门控', /uploadOpen \? h\('div'/.test(seg) && /onClick: \(\) => setUploadOpen\(!uploadOpen\)/.test(seg));
@@ -91,7 +91,7 @@ console.log('Test 6: 回收站默认折叠 + 条目对齐 + 时间可读');
 {
   const gi = c.indexOf("manageTab === 'skill' ? h('div'");
   // 浮层弹出层加入后回收站被推到 ~12.7k；窗口给到 15k 留余量
-  const seg = c.slice(gi, gi + 15000);
+  const seg = c.slice(gi, gi + 17000);   // 批量条插入后回收站 grid 距 gi ~15.4k、formatStamp ~15.9k（实测）
   check('回收站标题保留 回收站（N） 形态（结构锁）', seg.includes('回收站（'));
   // 未记录时 getItem 返回 null，null==='1' 为 false → 默认折叠；catch 分支同样 false。
   check('默认折叠（未记录时 false）', /getItem\(TRASH_OPEN_KEY\) === '1'/.test(c));
