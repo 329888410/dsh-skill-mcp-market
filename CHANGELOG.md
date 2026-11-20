@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.118
+
+- **修 0.5.117 的一处未达成承诺：路径 `~` 缩写静默失效**
+  - 现象（实测截图证实）：技能卡片路径仍显示 `C:/Users/贺新/.agents/skills/reverse-engineer-anything` 并在窄卡片里被截断，`~` 没生效。
+  - 根因：`homeDir` 下发的是 `dshHome()`（= `…\.dsh`），而技能散落在 `…\.agents\skills`、`…\.dsh\profiles\…` 等多处根目录下，只有 OS 主目录（`homedir()` = `C:\Users\x`）能统一缩写。前缀不匹配时 `shortPath` 原样返回，不报错——静默降级。
+  - 修复：`homeDir: homedir()`（`~` 的约定含义就是 OS 主目录）。
+  - **假绿防线**：旧测试只断言「代码里调用了 `shortPath(`」，正则命中即通过，掩盖了这个 bug。新增行为级断言——从源码抽出 `shortPath` 函数体 `new Function` 求值，验证 `shortPath('C:\\Users\\x\\.agents\\skills\\demo','C:\\Users\\x')==='~/.agents/skills/demo'` 为真；并锁 `homeDir` 必须用 `homedir()` 而非 `dshHome()`。34 项全绿。
+  - 附带确认：列表头「已装技能（N）· 已启用 n · 已停用 m」渲染正常（此前快照探针报 NOT FOUND 是 DOM walker 不报 div 直接子文本的既有特性，截图证伪了该担忧）。
 ## 0.5.117
 
 - **「管理 → SKILL 技能」子面板 UI 重构（A 排版 + B 上传收纳 + 状态筛选维度）；顺带修掉一个既存结构缺陷**

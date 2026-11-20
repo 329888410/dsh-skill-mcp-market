@@ -1117,7 +1117,9 @@ export async function apply(ctx, config = {}) {
             settingsPath: settingsPath(),
             disabledSkills: settings.disabledSkills,
             // 面板用它把长路径缩写成 ~/…（悬浮仍给全文）。不新增 op，随既有 settings.get 下发。
-            homeDir: dshHome().replace(/[\\/]+$/, ""),
+            // ~ 的约定含义是 OS 主目录（C:\Users\x），不是 .dsh 子目录：技能散落在
+            // ~/.agents/skills、~/.dsh/profiles/… 等多处，只有 OS 主目录才能统一缩写。
+            homeDir: homedir().replace(/[\\/]+$/, ""),
           },
           skillProvider: { mounted: Boolean(disposeProvider), error: skillProviderError || undefined },
           // 排序能力表随 settings.get 下发：面板每次切 tab 都会 loadSettings()，

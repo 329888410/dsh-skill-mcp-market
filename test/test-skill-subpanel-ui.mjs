@@ -71,6 +71,16 @@ console.log('Test 5: 卡片排版——描述、路径缩写、按钮位置与�
   const seg = c.slice(ci, ci + 4200);
   check('卡片显示描述', /item\.description/.test(seg));
   check('路径用 ~ 缩写', /shortPath\(/.test(seg));
+  // 假绿防线：只断言「调用了 shortPath」不够——homeDir 必须是 OS 主目录（~ 的约定含义），
+  // 否则 .agents/… 技能路径前缀不匹配，缩写静默失效（0.5.117 首版正是这样）。
+  check('homeDir 用 homedir() 而非 dshHome()', /homeDir: homedir\(\)/.test(read('index.js')));
+  check('shortPath 真实产出 ~（行为级）', (function () {
+    const fn = /function shortPath\(p, home\) \{[\s\S]*?\n    \}/.exec(c);
+    if (!fn) return false;
+    const body = fn[0].replace('function shortPath', 'function');
+    const f = new Function('return ' + body)();
+    return f('C:\\Users\\x\\.agents\\skills\\demo', 'C:\\Users\\x') === '~/.agents/skills/demo';
+  })());
   check('技能侧按钮文案统一为停用', /'停用'/.test(seg) && !/'关闭'/.test(seg));
   check('卸载是危险样式且靠右', /danger|S\.btnDanger|color: '#c62828'/.test(seg));
   check('按钮行不换行（窄面板不挤成两行）', /flexWrap: 'nowrap'/.test(seg));
