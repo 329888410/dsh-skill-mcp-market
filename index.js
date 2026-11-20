@@ -1634,8 +1634,11 @@ export async function apply(ctx, config = {}) {
         });
         return { opened: target, kind };
       }
-      case "mcp.list":
-        return { mcpDirs: settings.mcpDirs, items: await mcp.list() };
+      case "mcp.list": {
+        // items 先算（内部跑 readDefs），broken 再同步取最近一次的坏定义清单。
+        const items = await mcp.list();
+        return { mcpDirs: settings.mcpDirs, items, broken: mcp.broken() };
+      }
       case "mcp.status":
         // 只读：连接生命周期（active/loading/failed/unloaded/unknown）。
         // 刻意不进 DESTRUCTIVE_OPS —— 它不写任何东西。

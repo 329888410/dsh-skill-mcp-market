@@ -20,6 +20,12 @@ window.__ModuleLoader__.load({
     }
     // 连接生命周期文案。unknown 是诚实态：探测不到就不假装知道（回退到旧的布尔语义）。
     const PHASE_LABEL = { active: '· 已连接', loading: '· 启动中', failed: '· 连接失败', unloaded: '· 未挂载', unknown: '' };
+    // 工具检索：名称或描述命中即可。单一实现，标题计数/清单/无匹配提示共用，避免三处口径漂移。
+    function toolMatches(tool, query) {
+      if (!query) return true;
+      const q = String(query).toLowerCase();
+      return ((tool && tool.name ? tool.name : '') + ' ' + (tool && tool.description ? tool.description : '')).toLowerCase().includes(q);
+    }
     // 路径缩写：把用户主目录换成 ~，卡片才不会把长路径中段截断（悬浮给全文）。
     // home 由调用方传入（settings.settings.homeDir，服务端下发）——本函数在 factory 作用域，
     // 拿不到组件 state，绝不能依赖全局变量猜。
@@ -282,8 +288,9 @@ window.__ModuleLoader__.load({
       const [installProgress, setInstallProgress] = useState(null);
       const [skills, setSkills] = useState([]);
       const [mcps, setMcps] = useState([]);
-      const [installed, setInstalled] = useState([]);
-      const [mounted, setMounted] = useState([]);
+      // null = 还没加载完，[] = 真的一个都没装。两者混用会让首帧谎报「(0)」。
+      const [installed, setInstalled] = useState(null);
+      const [mounted, setMounted] = useState(null);
       const [settings, setSettings] = useState(null);
       const [sortCaps, setSortCaps] = useState(null);
       const [skillDraft, setSkillDraft] = useState('');
@@ -377,6 +384,10 @@ window.__ModuleLoader__.load({
       // 已装 MCP 的工具清单浮窗：{ serverName, toolDetails, mounted } | null
       const [mcpTools, setMcpTools] = useState(null);
       const [mcpToolOpen, setMcpToolOpen] = useState('');
+      // 浮窗里的工具检索词（几十个工具的连接器需要筛）
+      const [toolQuery, setToolQuery] = useState('');
+      // 无法解析的定义文件：readDefs 会跳过它们，面板必须说出来，否则用户以为连接器被删了
+      const [mcpBroken, setMcpBroken] = useState([]);
       const [trashBusy, setTrashBusy] = useState('');
       // 最近一次的查询结果缓存（按 tab+source+category+sort+query 作 key），
       // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
@@ -476,6 +487,7 @@ window.__ModuleLoader__.load({
         const [s, m] = await Promise.all([call('skills.list'), call('mcp.list')]);
         setInstalled(s.items || []);
         setMounted(m.items || []);
+        setMcpBroken(Array.isArray(m.broken) ? m.broken : []);
         return { s, m };
       }, []);
 
@@ -1239,7 +1251,7 @@ window.__ModuleLoader__.load({
               disabled: !detailUrlFor(item),
               onClick: () => openDetail(item),
             }, '详情'),
-            installed.some((x) => x.slug === item.slug)
+            (installed ?? []).some((x) => x.slug === item.slug)
               ? h('span', { style: S.status }, '✓ 已安装')
               : item.installable === false
                 ? h('span', { style: S.status }, item.note || '该条目没有可用的下载源')
@@ -1334,15 +1346,19 @@ window.__ModuleLoader__.load({
       // 停用的真实状态 = 面板级 disabledSkills ∪ 文件级 disable-model-invocation。
       // 只看前者会把「文件级已停用」的技能显示成启用中，并对用户假陈述（0.5.117 前既有缺陷）。
       const skillStateOff = (item) => disabledSet.has(String(item.slug || '').toLowerCase()) || item.disableModelInvocation === true;
-      const filteredInstalled = installed.filter((i) => {
+      const installedList = installed ?? [];
+      const mountedList = mounted ?? [];
+      const filteredInstalled = installedList.filter((i) => {
         if (manageSkillState === 'on' && skillStateOff(i)) return false;
         if (manageSkillState === 'off' && !skillStateOff(i)) return false;
         if (!skillFilterText) return true;
         return (i.name || i.slug || '').toLowerCase().includes(skillFilterText) || (i.description || '').toLowerCase().includes(skillFilterText);
       });
       const filteredMounted = mcpFilterText
-        ? mounted.filter((i) => (i.title || i.serverName || '').toLowerCase().includes(mcpFilterText) || (i.description || '').toLowerCase().includes(mcpFilterText))
-        : mounted;
+        ? mountedList.filter((i) => (i.title || i.serverName || '').toLowerCase().includes(mcpFilterText) || (i.description || '').toLowerCase().includes(mcpFilterText))
+        : mountedList;
+      // 浮窗清单的唯一数据源：标题计数、列表渲染、无匹配提示都读它。
+      const visibleTools = mcpTools ? mcpTools.toolDetails.filter((tool) => toolMatches(tool, toolQuery)) : [];
       // 单张已装技能卡片（分组渲染时复用）
       const renderInstalledCard = (item) => {
         const off = skillStateOff(item);
@@ -1798,8 +1814,17 @@ window.__ModuleLoader__.load({
                     onClick: (e) => e.stopPropagation(),
                   },
                     h('div', { style: { ...S.row, justifyContent: 'space-between' } },
-                      h('div', { style: { ...S.title, fontSize: 14 } }, `${mcpTools.title} · ${mcpTools.toolDetails.length} 个工具`),
+                      h('div', { style: { ...S.title, fontSize: 14 } },
+                        toolQuery
+                          ? `${mcpTools.title} · 匹配 ${visibleTools.length}/${mcpTools.toolDetails.length} 个工具`
+                          : `${mcpTools.title} · ${mcpTools.toolDetails.length} 个工具`),
                       h('button', { style: S.btn(), onClick: () => setMcpTools(null) }, '关闭')),
+                    h('input', {
+                      style: { ...S.input, marginTop: 8 },
+                      placeholder: '搜索工具名或描述',
+                      value: toolQuery,
+                      onChange: (e) => setToolQuery(e.target.value),
+                    }),
                     !mcpTools.hasDetails
                       ? h('div', { style: { ...S.status, marginTop: 8 } },
                           '当前服务端未提供工具详情，请点击菜单「重启应用与 Host」后重试。')
@@ -1809,8 +1834,11 @@ window.__ModuleLoader__.load({
                               ? '已挂载，但还没发布工具（服务器可能仍在启动，稍后重开）。'
                               : '该连接器当前未挂载，所以还没有向模型注册任何工具；启用并连接后再查看。')
                         : null,
+                    toolQuery && mcpTools.hasDetails && visibleTools.length === 0 && mcpTools.toolDetails.length > 0
+                      ? h('div', { style: { ...S.status, marginTop: 8 } }, '没有匹配的工具（换个关键词）。')
+                      : null,
                     h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 } },
-                      mcpTools.toolDetails.map((tool) => {
+                      visibleTools.map((tool) => {
                         const short = tool.name.replace(/^mcp__[A-Za-z0-9_-]+__/, '');
                         const open = mcpToolOpen === tool.name;
                         return h('div', { key: tool.name, style: { ...S.card, padding: 10 } },
@@ -1856,8 +1884,8 @@ window.__ModuleLoader__.load({
               // 二级页签：技能侧（上传/列表/回收站）与 MCP 侧各自成页；
               // 记忆上次停留页，aria 属性兼作 test-manage-panel 的结构锚点。
               h('div', { style: { ...S.row, gap: 2, borderBottom: '1px solid var(--dsh-border, #d0d7de)', marginBottom: 2 }, role: 'tablist' },
-                h('button', { type: 'button', style: S.subTab(manageTab === 'skill'), 'aria-selected': manageTab === 'skill', onClick: () => switchManageTab('skill') }, `SKILL 技能 (${installed.length})`),
-                h('button', { type: 'button', style: S.subTab(manageTab === 'mcp'), 'aria-selected': manageTab === 'mcp', onClick: () => switchManageTab('mcp') }, `MCP 连接器 (${mounted.length})`)),
+                h('button', { type: 'button', style: S.subTab(manageTab === 'skill'), 'aria-selected': manageTab === 'skill', onClick: () => switchManageTab('skill') }, `SKILL 技能 (${installed === null ? '读取中' : installed.length})`),
+                h('button', { type: 'button', style: S.subTab(manageTab === 'mcp'), 'aria-selected': manageTab === 'mcp', onClick: () => switchManageTab('mcp') }, `MCP 连接器 (${mounted === null ? '读取中' : mounted.length})`)),
               manageTab === 'skill' ? h('div', {
                 // position:relative 是浮层的包含块：没有它，absolute 会锚到 S.page，
                 // 浮层飞到整个面板右上角盖住 tab 栏（实测祖先链只有 S.page 有 position）。
@@ -2099,7 +2127,15 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, '打开目录')),
-              h('div', { style: S.grid }, installedMcps),
+              mountedList.length === 0
+                ? h('div', { style: S.dim }, '还没有已安装 MCP 连接器。去「MCP 连接器」页安装，或点上方「打开目录」直接编辑定义文件。')
+                : filteredMounted.length === 0
+                  ? h('div', { style: S.dim }, '没有匹配的连接（换个关键词或清空搜索）。')
+                  : h('div', { style: S.grid }, installedMcps),
+              mcpBroken.length > 0
+                ? h('div', { style: { ...S.err, wordBreak: 'break-word' } },
+                    `${mcpBroken.length} 个定义文件无法解析，这些连接器当前不会生效：${mcpBroken.map((b) => b.file).join('、')}（JSON 语法问题，可对照备份修正）`)
+                : null,
               h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `MCP 回收站（${mcpTrashList ? mcpTrashList.items.length : '?'}）`,
                 h('button', { style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 }, disabled: mcpTrashBusy === 'list', onClick: () => loadMcpTrash() }, '读取回收站'),

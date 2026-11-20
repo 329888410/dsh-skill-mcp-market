@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.120
+
+- **管理面板：加载态/空态诚实化、坏定义可见、工具浮窗检索（差距清单 Task A）**
+  - 未加载 ≠ 空：`installed`/`mounted` 初值从 `[]` 改为 `null`。旧形态下首帧把「还没加载完」渲染成「SKILL 技能 (0)/已装 MCP (0)」，等于对用户谎报数量；现在计数位显示「读取中」，数据到达后才是数字。使用点以 `installedList/mountedList = ?? []` 兜住，null 期不崩。
+  - **坏定义可见（实测缺陷）**：`readDefs` 的 catch 把 JSON 解析失败的定义文件静默跳过——实测 4 个文件（good / 尾逗号 / 非 JSON / 空名）列表只剩 2 条，用户手改坏一个文件后连接器凭空消失且毫无痕迹。现在 `brokenDefs` 收集 `{file, dir, error}`，经 `mcp.broken()` 访问器由 `mcp.list` RPC 组装上报（`list()` 仍返回数组，test-mcp-trash 契约不变），MCP 子面板红字列出文件名与原因。原计划的「未命名服务器」兜底经核实不可达（serverName 有空文件名回落，永不为空），属死代码，撤回未实现。
+  - MCP 子面板补齐空态：无连接器 / 筛空两种文案，与技能段对齐（技能段 0.5.117 已有）。
+  - 工具浮窗检索：浮层内加「搜索工具名或描述」输入框；标题计数变为「匹配 n/总 个工具」；无匹配显示「没有匹配的工具」。过滤逻辑收敛到模块级 `toolMatches()` 单一实现（行为级验证：命中名称/命中描述/空 query 全通过/null 安全），标题、清单、提示三处读同一 `visibleTools`，不再各写各的。
+  - `test-paging`：区分「上游整体不可达」与「分页窗口算错」。实测 ai.trusttools.cn 直接 fetch 失败（10.7s），旧断言把上游宕机判成本仓库回归 FAIL——与 0.5.110 修的误红同类。现在 degraded 命中且两页皆空记 SKIP 并注明外部状态；窗口算错（整页重复）仍然 FAIL。
+  - 测试：新增 `test-manage-states.mjs`（21 项，注册为第 32 个 CI 门套件）；`test-mcp-tools-popup` 锚点随 visibleTools 重构更新（先用实测偏移定位，遮罩在锚点上方 1523、parameters 在下方 2203，窗口据此设为 -2200/+2800）。
+  - 验证：离线 27 套件全绿；paging/total-pages/sort-honesty/sort-options 全绿；full-sort 本地因 trusttools 不可达而超预算（CI 上历次 110s PASS，网络套件以 CI 为权威）。
 ## 0.5.119
 
 - **「＋ 添加技能」弹出层：从插队横幅改为真正的浮层（绝对定位 + 三路关闭 + 就地错误 + 上下文行）**

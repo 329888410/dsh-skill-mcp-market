@@ -82,8 +82,13 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
   const logInfo = (message) => log?.("info", message);
   const logWarn = (message) => log?.("warn", message);
 
+  // 解析失败的定义文件：以前被 catch 静默跳过，用户手改坏一个 JSON 后连接器凭空消失，
+  // 界面上没有任何痕迹。现在收集起来（文件名 + 原因），由 mcp.list 一并上报给面板。
+  let brokenDefs = [];
+
   async function readDefs() {
     const defs = new Map();
+    brokenDefs = [];
     for (const dir of dirs) {
       if (!existsSync(dir)) continue;
       let names = [];
@@ -99,8 +104,9 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
           const serverName = normalizeServerName(raw.serverName || file.replace(/\.json$/, ""));
           if (!serverName) continue;
           defs.set(serverName, { ...raw, serverName, filePath: join(dir, file), dir });
-        } catch {
-          // malformed definition: skip, keep the rest
+        } catch (error) {
+          // 坏定义跳过其余条目继续，但必须留下可见痕迹（面板据此提示用户）
+          brokenDefs.push({ file, dir, error: String(error && error.message ? error.message : error) });
         }
       }
     }
@@ -142,6 +148,11 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
       }
     } catch { /* loader 不可用：落到回退 */ }
     return { phase: "unknown", detail };
+  }
+
+  /** 最近一次 readDefs 发现的坏定义（list/detail/status 都会先跑 readDefs）。 */
+  function broken() {
+    return brokenDefs.slice();
   }
 
   async function status(serverName) {
@@ -551,5 +562,5 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     for (const name of [...mounted.keys()]) unmount(name);
   }
 
-  return { init, dispose, list, install, uninstall, setEnabled, probe, detail, update, reconcile, mount, unmount, toolNamesFor, readDefs, trashList, trashRestore, trashEmpty, status };
+  return { init, dispose, list, install, uninstall, setEnabled, probe, detail, update, reconcile, mount, unmount, toolNamesFor, readDefs, trashList, trashRestore, trashEmpty, status, broken };
 }

@@ -56,9 +56,11 @@ console.log('');
 console.log('Test 4: 浮窗渲染工具清单与详情');
 {
   // 浮窗渲染段：从 map 调用回溯到遮罩开头（state 声明处也有同名注释，故不能用 indexOf(注释)）
-  const mapAt = c.indexOf('mcpTools.toolDetails.map');
-  const s = mapAt - 2200;   // 遮罩在 map 之前约 1.8k 字符（含注释与样式块）
-  const seg = c.slice(s, mapAt + 1600);
+  // 0.5.120 起清单走 visibleTools 单一数据源（toolDetails.map 不再出现）；
+  // 锚换成唯一的 搜索工具名或描述（浮层内搜索框），遮罩在其上方约 1.1k
+  const mapAt = c.indexOf('搜索工具名或描述');
+  const s = mapAt - 2200;   // 遮罩在锚点上方 1523（实测）
+  const seg = c.slice(s, mapAt + 2800);   // tool.parameters 在锚点下方 2203（实测）
   check('浮窗存在（fixed 遮罩）', s > 0 && /position: 'fixed'/.test(seg));
   check('渲染工具名', /tool\.name/.test(seg));
   check('渲染工具描述', /tool\.description/.test(seg));

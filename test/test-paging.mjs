@@ -28,13 +28,18 @@ for (const source of ALL_SOURCES) {
     // 边界单条重叠不违反「p2 从 p1 之后继续」的契约；把上游状态当回归判 FAIL 与 0.5.110
     // 修的误红同类。只放过「恰好 1 条且落在边界」，窗口算错（整页重复）仍然 FAIL。
     const boundaryDrift = overlap.length === 1 && (overlap[0] === a[a.length - 1] || overlap[0] === b[0]);
-    const ok = p1.items.length > 0 && b.length > 0 && (overlap.length === 0 || boundaryDrift);
+    // 上游整体不可达（degraded 命中）与「分页窗口算错」是两件事：前者是外部状态，
+    // 后者才是本仓库回归。2026-11-20 实测 ai.trusttools.cn 直接 fetch 失败（10.7s），
+    // 记成 FAIL 会把上游宕机算到我们头上（同 0.5.110 修的误红）。
+    const unreachable = Array.isArray(p1.degraded) && p1.degraded.some((d) => d.source === source);
+    const empty = p1.items.length === 0 && b.length === 0 && unreachable;
+    const ok = empty || (p1.items.length > 0 && b.length > 0 && (overlap.length === 0 || boundaryDrift));
     if (!ok) failures += 1;
     console.log(
-      `${ok ? "OK  " : "FAIL"} ${source.padEnd(14)} p1=${String(a.length).padStart(2)} p2=${String(b.length).padStart(2)} ` +
+      `${ok ? (empty ? "SKIP" : "OK  ") : "FAIL"} ${source.padEnd(14)} p1=${String(a.length).padStart(2)} p2=${String(b.length).padStart(2)} ` +
         `overlap=${overlap.length}${boundaryDrift ? "(边界漂移)" : ""} total=${p1.total} pages=${p1.pages} hasMore=${p1.hasMore} ` +
         `${((Date.now() - started) / 1000).toFixed(1)}s` +
-        (p1.hint ? ` hint=${p1.hint.slice(0, 40)}` : ""),
+        (empty ? " 上游不可达（外部状态，非回归）" : "") + (p1.hint ? ` hint=${p1.hint.slice(0, 40)}` : ""),
     );
     if (!ok) {
       console.log(`     p1=${a.slice(0, 3).join(" | ")}`);
