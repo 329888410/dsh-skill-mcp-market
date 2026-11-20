@@ -18,6 +18,8 @@ window.__ModuleLoader__.load({
       if (!entry) return null;
       return Array.isArray(entry) ? entry : (hasQuery ? entry.search : entry.browse);
     }
+    // 连接生命周期文案。unknown 是诚实态：探测不到就不假装知道（回退到旧的布尔语义）。
+    const PHASE_LABEL = { active: '· 已连接', loading: '· 启动中', failed: '· 连接失败', unloaded: '· 未挂载', unknown: '' };
     function sortOptions(caps, defaultLabel) {
       const out = [h('option', { key: 'default', value: 'default' }, defaultLabel || '默认顺序')];
       if (caps) for (const k of caps) out.push(h('option', { key: k, value: k }, SORT_LABEL[k] || k));
@@ -636,13 +638,11 @@ window.__ModuleLoader__.load({
         setBusy('save:mcp');
         setError('');
         try {
+          // command/args 不发送：服务端 HTTP 面已拒绝（见 index.js mcp.update），
+          // 面板这边同步收口，避免用户填了却被报错的困惑体验。
           const result = await call('mcp.update', {
             serverName: detail.slug,
-            patch: {
-              command: draft.command,
-              args: String(draft.args || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean),
-              url: draft.url,
-            },
+            patch: { url: draft.url },
           });
           if (result.ok) {
             setNotice(`已保存并重连 ${detail.slug}，${result.tools.length} 个工具`);
@@ -1258,10 +1258,34 @@ window.__ModuleLoader__.load({
           h('div', { style: S.title }, item.title || item.serverName),
           h('div', { style: S.meta },
             h('span', null, item.transport),
-            h('span', null, item.mounted ? '· 已连接' : '· 未连接'),
+            h('span', { title: item.phase === 'failed' ? (item.phaseDetail || '连接失败') : '' },
+              PHASE_LABEL[item.phase] || (item.mounted ? '· 已连接' : '· 未连接')),
             h('span', null, item.tools && item.tools.length ? `· ${item.tools.length} 个工具` : '')),
           h('div', { style: S.row },
             h('button', { style: S.btn(), disabled: busy === `toggle:${item.serverName}`, onClick: () => toggleMcp(item.serverName, !item.enabled) }, item.enabled ? '停用' : '启用'),
+            h('button', {
+              style: S.btn(),
+              disabled: busy === `detail:${item.serverName}`,
+              onClick: () => openMcpDetail(item.serverName),
+            }, '编辑'),
+            h('button', {
+              style: S.btn(),
+              disabled: busy === `probe:${item.serverName}`,
+              onClick: async () => {
+                setBusy(`probe:${item.serverName}`);
+                setError('');
+                try {
+                  const r = await call('mcp.probe', { serverName: item.serverName, timeoutMs: 8000 });
+                  if (r.ok) setNotice(`${item.serverName} 连接正常，${r.tools.length} 个工具`);
+                  else if (r.pending) setNotice(`${item.serverName} 已挂载，服务器还在启动中，稍后再点一次测试连接`);
+                  else setError(`${item.serverName} 未连上：${r.error || ''}`);
+                } catch (e) {
+                  setError(`测试失败：${e.message || e}`);
+                } finally {
+                  setBusy('');
+                }
+              },
+            }, '测试连接'),
             h('button', {
               style: S.btn(),
               disabled: busy === `openDir:mcp:${item.serverName}`,
@@ -1543,17 +1567,20 @@ window.__ModuleLoader__.load({
                       : h('div', { style: { marginTop: 12 } },
                           h('div', { style: S.row },
                             h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '命令'),
-                            h('input', { style: S.input, value: draft.command || '', onChange: (e) => setDraft({ ...draft, command: e.target.value }) })),
+                            h('input', { style: { ...S.input, opacity: 0.75, background: 'var(--dsh-bg, #f6f7f9)' }, value: draft.command || '', readOnly: true, title: '启动命令不可在此修改' })),
                           h('div', { style: S.row },
                             h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, 'URL'),
                             h('input', { style: S.input, value: draft.url || '', onChange: (e) => setDraft({ ...draft, url: e.target.value }) })),
                           h('div', { style: S.row },
                             h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '参数'),
                             h('textarea', {
-                              style: { ...S.input, height: 60, fontFamily: 'ui-monospace, monospace', fontSize: 12 },
+                              style: { ...S.input, height: 60, fontFamily: 'ui-monospace, monospace', fontSize: 12, opacity: 0.75, background: 'var(--dsh-bg, #f6f7f9)' },
                               value: draft.args || '',
-                              onChange: (e) => setDraft({ ...draft, args: e.target.value }),
+                              readOnly: true,
+                              title: '启动参数不可在此修改',
                             })),
+                          h('div', { style: { ...S.status, fontSize: 11 } },
+                            '启动命令与参数在此只读：可执行命令只能由工具安装通道设置（mcp_market_install），面板不开放改写。'),
                           h('pre', { style: { fontSize: 11, opacity: 0.8, whiteSpace: 'pre-wrap', margin: '10px 0 0', background: 'rgba(15, 23, 42, 0.04)', padding: 8, borderRadius: 6 } },
                             JSON.stringify({ transport: detail.data.transport, env: detail.data.env, headers: detail.data.headers }, null, 2))),
                     h('div', { style: { ...S.meta, marginTop: 10 } }, h('span', null, detail.data.path || '')),

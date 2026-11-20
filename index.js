@@ -1495,8 +1495,16 @@ export async function apply(ctx, config = {}) {
         }
         return local;
       }
-      case "mcp.update":
-        return mcp.update(body.serverName, body.patch || {});
+      case "mcp.update": {
+        // 与 mcp.install 同一条边界：面板 HTTP 通道不接受自定义 command/args，那是任意命令执行面。
+        // 此前 install 挡了、update 没挡，而面板的编辑表单正在通过 update 改写 command —— 守卫形同虚设。
+        // 改命令请走 agent 工具 mcp_market_install（它直调内部函数，不经这里，能力不受影响）。
+        const patch = body.patch && typeof body.patch === "object" ? body.patch : {};
+        if (patch.command !== undefined || patch.args !== undefined) {
+          throw new Error("面板通道不接受自定义 command/args；请改用 mcp_market_install 工具重装该连接器");
+        }
+        return mcp.update(body.serverName, patch);
+      }
       case "mcp.search": {
         const query = String(body.query || "").trim();
         const wanted = String(body.source || "registry") === "lobehub" ? "lobehub" : "registry";
@@ -1624,6 +1632,16 @@ export async function apply(ctx, config = {}) {
       }
       case "mcp.list":
         return { mcpDirs: settings.mcpDirs, items: await mcp.list() };
+      case "mcp.status":
+        // 只读：连接生命周期（active/loading/failed/unloaded/unknown）。
+        // 刻意不进 DESTRUCTIVE_OPS —— 它不写任何东西。
+        return mcp.status(body.serverName);
+      case "mcp.probe": {
+        // 独立测试连接：封装 src/mcp.js 已有的 probe（pending 语义，非终态失败）。
+        // 面板「测试连接」按钮走这里；agent 工具 mcp_market_probe 直调内部函数，两者互不影响。
+        const t = Number(body.timeoutMs) > 0 ? Math.min(Number(body.timeoutMs), 60000) : 8000;
+        return mcp.probe(body.serverName, t);
+      }
       case "mcp.toggle":
         return mcp.setEnabled(body.serverName, body.enabled);
       case "mcp.trash":

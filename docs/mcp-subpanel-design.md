@@ -15,8 +15,8 @@
 | 能力 | 参照面板 | dsh-market 现状 | 差距来源 |
 |---|---|---|---|
 | 连接状态灯 | loader entry phase（pending/loading/active/failed/unloading，status.ts FIBER_PHASE） | 只有 mounted 布尔 + tools 数 | 我们没读 ctx.loader |
-| 编辑表单 | 全字段（command/args/env/headers/url/cwd/toolCallTimeoutMs/重连四参数），env null=删除语义 | 有 mcp.update op 但面板无表单入口 | 纯 UI 缺失 |
-| 测试连接 | probe 独立实例、不碰 live fiber | 有 mcp.probe（pending 语义）但面板只在安装时调用 | 半缺 |
+| 编辑表单 | 全字段（command/args/env/headers/url/cwd/toolCallTimeoutMs/重连四参数），env null=删除语义 | 抽屉表单**已存在**（client.js detail drawer：命令/URL/参数+saveMcpEdit），但只能从搜索 tab 的市场抽屉打开，已装连接器无入口 | UI 入口缺失（非表单缺失） |
+| 测试连接 | probe 独立实例、不碰 live fiber | src/mcp.js 有 probe 方法（pending 语义）**但 index.js 从未暴露成 op**；面板只在安装流程里用 probeTools | op 缺失 |
 | 工具级禁用 | tool-filter.json 四层策略（global/workspace/session/subagent），从模型工具表真删 schema | 无 | 宿主级概念，需 ctx.tools 干预，本插件无此通道 |
 | OAuth | 完整调度器（start/poll/refresh/disconnect） | 无 | 宿主凭据体系外，成本高 |
 | 凭据模板 | ${credential:REF} 展开 | 无（只有 ${VAR} 占位 resolvePlaceholders） | 宿主 credentials provider 未注入我们 ctx |

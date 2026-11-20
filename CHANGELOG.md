@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.115
+
+- **执行 MCP 子面板设计方案的 P-1/P0/P0.5/P1；改前核实挖出一个安全边界漏洞**
+  - **安全（P-1，先于任何功能改动）**：`mcp.install` 明确拒绝 `body.command`（注释写着「面板 HTTP 通道不接受自定义 command：那是任意命令执行面」），但同一条边界的另一半 `mcp.update` 是 `return mcp.update(body.serverName, body.patch || {})` **零校验**，而面板的 `saveMcpEdit` 一直在通过它改写 command/args —— 同一个「任意命令执行」能力，安装被挡、编辑放行，守卫形同虚设。现在 HTTP 面 `mcp.update` 拒绝 `patch.command`/`patch.args` 并引导走 `mcp_market_install`；面板表单把命令/参数改为只读并写明原因，`saveMcpEdit` 不再发送这两个字段。合法通道不受影响：agent 工具 `mcp_market_install` 直调内部函数、不经 HTTP case（Test 3 锁住这条，防误伤）。
+  - P0：已装 MCP 卡片新增「编辑」入口（复用已有 detail 抽屉，不另造表单、不触发安装）。
+  - P0.5：新增 `mcp.probe` op 封装 src/mcp.js 已有的 probe 方法（pending 语义，非终态失败），面板「测试连接」按钮走它；文案区分「连接正常 n 个工具 / 已挂载但还在启动 / 未连上」，按钮 busy 防重复。
+  - P1：新增 `mcp.status` op + 连接生命周期。重连参数从硬编码 `{ enabled: true }` 改为 `{ ...DEFAULT_RECONNECT, ...(def.reconnect) }`（默认 500/30000/10，与参照实现一致；用户值逐键覆盖，运行时实测 maxAttempts:3 正确覆盖默认 10）。状态探测主路读我们自己持有的 fiber、补充路探 `ctx.loader.entries()`，**两路都拿不到就返回 unknown 并回退旧布尔**——宿主 Cordis 在 app.asar 内不可静态审计，因此绝不猜一个假 phase（0.5.103 把「启动中」当「失败」误报是同一类错误）。
+  - `test-paging` 的 skillhub 边界漂移放行：实测 p1 末条与 p2 首条为同一条（上游在该窗口换位 1 条），边界单条重叠不违反「p2 从 p1 之后继续」的契约；只放过恰好 1 条且落在边界，整页重复仍 FAIL。与 0.5.110 修的误红同类。
+  - 设计文档修正两处被实测推翻的前提：编辑表单并非缺失（是入口缺失）；`mcp.probe` 并非已有 op（是内部方法未暴露）。
+  - 测试：新增 `test-mcp-command-guard.mjs`(16)、`test-mcp-panel-p0.mjs`(16)、`test-mcp-status-p1.mjs`(20)；`mcp.probe`/`mcp.status` 同步进两处 op 白名单；离线 25 套件 394 项全绿。
 ## 0.5.114
 
 - **死代码清理 + 认定标准落地（标准由测试机器执行，不再靠人记）**

@@ -50,12 +50,16 @@ export function missingEnv(def) {
   return [...new Set(missing)];
 }
 
+/** 重连默认值与参照实现（Fishquito7/dsh-skill-mcp-panel src/mcp/model.ts）一致。 */
+export const DEFAULT_RECONNECT = { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 };
+
 export function toClientConfig(def) {
   const common = {
     serverName: def.serverName,
     failOnStartupError: false,
     toolCallTimeoutMs: Number(def.toolCallTimeoutMs) > 0 ? Number(def.toolCallTimeoutMs) : 60000,
-    reconnect: { enabled: true },
+    // 定义里的 reconnect 逐键覆盖默认值（enabled:false 由用户整块关闭，spread 原样生效）
+    reconnect: { ...DEFAULT_RECONNECT, ...(def.reconnect && typeof def.reconnect === "object" ? def.reconnect : {}) },
   };
   if (def.transport === "streamable-http") {
     return { ...common, transport: "streamable-http", url: resolvePlaceholders(def.url || ""), headers: resolveMap(def.headers) };
@@ -101,6 +105,59 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
       }
     }
     return defs;
+  }
+
+  // 连接状态探测。宿主 Cordis 在 app.asar 内、fiber.status 的取值集合不可静态审计，
+  // 因此：主路读我们自己持有的 fiber（归一化），补充路探 ctx.loader.entries()
+  // （index.js:310 已证明该 API 在本宿主可用），两路都拿不到就回退成「已挂载但状态未知」——
+  // 绝不猜一个假 phase（0.5.103 把「启动中」当「失败」误报的教训）。
+  function normalizePhase(raw) {
+    const s = String(raw ?? "").toLowerCase();
+    if (!s) return "";
+    if (/fail|error|reject|crash/.test(s)) return "failed";
+    if (/dispos|unmount|remov|unload/.test(s)) return "unloaded";
+    if (/activating|loading|pending|starting|init|mounting/.test(s)) return "loading";
+    if (/active|ready|mounted|online/.test(s)) return "active";
+    return "";
+  }
+
+  function fiberPhaseOf(serverName) {
+    const entry = mounted.get(serverName);
+    if (!entry) return { phase: "unloaded", detail: "" };
+    const fiber = entry.fiber;
+    const direct = normalizePhase(fiber && fiber.status);
+    const detail = String((fiber && (fiber.error?.message || fiber.reason)) || "");
+    if (direct) return { phase: direct, detail };
+    try {
+      const loader = ctx && typeof ctx.loader?.entries === "function" ? ctx.loader : null;
+      if (loader) {
+        const tag = `market-mcp-${serverName}`;
+        for (const e of loader.entries()) {
+          if (!e) continue;
+          const hit = String(e.id || "").includes(tag) || String(e.config?.serverName || "") === serverName;
+          if (!hit) continue;
+          const p = normalizePhase(e.state != null ? e.state : e.status);
+          if (p) return { phase: p, detail: String(e.error?.message || e.error || detail || "") };
+        }
+      }
+    } catch { /* loader 不可用：落到回退 */ }
+    return { phase: "unknown", detail };
+  }
+
+  async function status(serverName) {
+    const defs = await readDefs();
+    const rows = [...defs.values()];
+    const view = (def) => {
+      const p = fiberPhaseOf(def.serverName);
+      return { serverName: def.serverName, phase: p.phase, detail: p.detail, mounted: mounted.has(def.serverName), enabled: def.enabled !== false, tools: toolNamesFor(def.serverName) };
+    };
+    if (serverName) {
+      const name = normalizeServerName(serverName);
+      const def = defs.get(name);
+      if (!def) throw new Error(`没有名为 ${name} 的 MCP 定义`);
+      return view(def);
+    }
+    return { items: rows.map(view) };
   }
 
   function toolNamesFor(serverName) {
@@ -152,6 +209,8 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
       url: def.url || "",
       enabled: def.enabled !== false,
       mounted: mounted.has(def.serverName),
+      phase: fiberPhaseOf(def.serverName).phase,
+      phaseDetail: fiberPhaseOf(def.serverName).detail,
       tools: toolNamesFor(def.serverName),
       envKeys: [...Object.keys(def.env || {}), ...(def.envRequired || [])],
       source: def.source || "manual",
@@ -469,5 +528,5 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     for (const name of [...mounted.keys()]) unmount(name);
   }
 
-  return { init, dispose, list, install, uninstall, setEnabled, probe, detail, update, reconcile, mount, unmount, toolNamesFor, readDefs, trashList, trashRestore, trashEmpty };
+  return { init, dispose, list, install, uninstall, setEnabled, probe, detail, update, reconcile, mount, unmount, toolNamesFor, readDefs, trashList, trashRestore, trashEmpty, status };
 }
