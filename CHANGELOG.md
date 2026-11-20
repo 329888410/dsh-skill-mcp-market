@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.123
+
+- **修 0.5.115 的字段名缺陷：连接状态 phase 恒为 unknown**
+  - 用户重启后 live 复测发现：`mcp.tools.*` 全部生效、`applied=4` 证明 restrict 真挂到了 4 个 agent scope，但 `mcp.list[0].phase` 仍是 `"unknown"` —— 0.5.115 的诚实回退在正确工作，恰好掩盖了上游读错字段。
+  - 根因（全部静态取证，非推测）：cordis `Fiber` 的公开字段是 **`state`**（数字），**`status` 不存在**（src/fiber.ts:192 `public state = FiberState.PENDING`；编译产物 lib/index.js 实测 `this.state = 2` 即 ACTIVE）；`FiberState` 是数字 const enum：0 PENDING / 1 LOADING / 2 ACTIVE / 3 FAILED / 4 DISPOSED / 5 UNLOADING。0.5.115 的 `normalizePhase(fiber && fiber.status)` 读到 `undefined`，字符串化后为空 → 回退 unknown。
+  - 修复：`normalizePhase` 增加数字分支（0/1→loading，2→active，3→failed，4/5→unloaded，未知值→空不猜）；主路改读 `fiber.state`；loader 补充路同步修正——Entry（cordis-plugin-loader entry.ts:47）暴露的是 `fiber?: Fiber`，没有自己的 state/status，旧写法读 `e.state` 同样永远拿不到值。
+  - 诚实性保持：Fiber 的错误记在私有 `_error`（src/fiber.ts:208），公开面只有 state，所以 `detail` 通常为空——宁可空 detail，不编造原因。
+  - 测试：新增 `test-fiber-state.mjs`（17 项，第 35 个 CI 门套件）：normalizePhase 对 0–5 的映射是 `new Function` 真实求值（非正则）；假 ctx 验证未挂载连接器 phase=unloaded 而非 unknown；断言只禁代码行读 `fiber.status`，注释里的历史说明不误伤。过程中再次被卫生锁拦住一次（我第 N 次在新测试里用裸 `os.tmpdir()`，改 `safeTempDir`）。
+  - 验证：离线 30 套件全绿。
 ## 0.5.122
 
 - **技能批量多选 + 批量启停 + 批量卸载（差距清单 Task D-1）**

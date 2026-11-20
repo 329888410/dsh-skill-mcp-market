@@ -113,11 +113,21 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     return defs;
   }
 
-  // 连接状态探测。宿主 Cordis 在 app.asar 内、fiber.status 的取值集合不可静态审计，
-  // 因此：主路读我们自己持有的 fiber（归一化），补充路探 ctx.loader.entries()
-  // （index.js:310 已证明该 API 在本宿主可用），两路都拿不到就回退成「已挂载但状态未知」——
-  // 绝不猜一个假 phase（0.5.103 把「启动中」当「失败」误报的教训）。
+  // 连接状态探测。主路读我们自己持有的 fiber（cordis Fiber.state，数字枚举），
+  // 补充路走 ctx.loader.entries() 的 entry.fiber.state（loader 在 app.asar 内但源码可静态审计，
+  // FiberState 取值与字段名均已实测确认）；两路都拿不到才回退 unknown——绝不猜一个假 phase。
+  // cordis 的 FiberState 是数字 const enum（src/fiber.ts:147；编译产物实测 this.state = 2），
+  // 公开字段是 fiber.state 而不是 fiber.status —— 0.5.115 读 status 导致 phase 恒为 unknown。
+  //   0 PENDING → loading   1 LOADING → loading   2 ACTIVE  → active
+  //   3 FAILED  → failed    4 DISPOSED → unloaded  5 UNLOADING → unloaded
   function normalizePhase(raw) {
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      if (raw === 2) return "active";
+      if (raw === 3) return "failed";
+      if (raw === 4 || raw === 5) return "unloaded";
+      if (raw === 0 || raw === 1) return "loading";
+      return "";
+    }
     const s = String(raw ?? "").toLowerCase();
     if (!s) return "";
     if (/fail|error|reject|crash/.test(s)) return "failed";
@@ -131,7 +141,9 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     const entry = mounted.get(serverName);
     if (!entry) return { phase: "unloaded", detail: "" };
     const fiber = entry.fiber;
-    const direct = normalizePhase(fiber && fiber.status);
+    const direct = normalizePhase(fiber && fiber.state);
+    // detail 尽力取：Fiber 的错误记在私有 _error 上（src/fiber.ts:208），公开面只有 state，
+    // 所以这里通常为空——空 detail 不影响 phase 的正确性，绝不拿它编造原因。
     const detail = String((fiber && (fiber.error?.message || fiber.reason)) || "");
     if (direct) return { phase: direct, detail };
     try {
@@ -142,7 +154,9 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
           if (!e) continue;
           const hit = String(e.id || "").includes(tag) || String(e.config?.serverName || "") === serverName;
           if (!hit) continue;
-          const p = normalizePhase(e.state != null ? e.state : e.status);
+          // Entry（cordis-plugin-loader src/config/entry.ts:43）暴露 fiber?: Fiber，
+          // 没有自己的 state/status 字段——旧写法读 e.state 永远拿不到值。
+          const p = normalizePhase(e.fiber ? e.fiber.state : undefined);
           if (p) return { phase: p, detail: String(e.error?.message || e.error || detail || "") };
         }
       }
