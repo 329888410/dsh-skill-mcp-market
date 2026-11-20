@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.113
+
+- **修 test-full-sort 两处「空转绿灯」：`'' === ''` 恒真会把「上游一条都没返回」判成「降级/缓存语义正确」**
+  - 症状：Test 5（skillsmp 按安装数必须被诚实拒绝）与 Test 6（缓存中毒回归）比较两侧 items 的 id 串。skillsmp 被 Cloudflare 挡住时两侧皆空 → `'' === ''` 为真 → **假通过**。与 0.5.110 修的四处误红方向相反，属漏报：真回归（handler 返回空但未记 degraded）同样会被放过。
+  - 修法：两侧皆空时先分流——`degraded` 非空 = 上游不可达 → SKIP；`degraded` 为空 = handler 回归 → 显式 FAIL（不再落到比较）。有数据时的比较表达式逐字未变。
+  - 验证：四分支单测覆盖（空+degraded→SKIP / 空+无degraded→FAIL / 等序→通过 / 乱序→失败）全部符合预期；正常网络 test-full-sort 24/24 绿；相关六套件 143 项绿。
+  - 顺带纠正一条自查结论：本轮曾怀疑 `hasQuery` 谓词与 `sources.js:258` 的 `q.length < 2` 阈值错配会让 UI 给出错误排序能力。逐源核实后**不成立**——skills.sh 的 browse/search 两路径能力集相同（`installCount`+`name`），clawhub 的 `if (q)` 恰好与客户端谓词一致，其余六源没有 query→路径分叉。故未改动代码，避免了为一个不存在的缺陷动手。
 ## 0.5.112
 
 - **修复 0.5.111 自身的 CI 红灯：Test 2b 的桩用了 Windows 特定非法路径，在 ubuntu 上反而可创建**

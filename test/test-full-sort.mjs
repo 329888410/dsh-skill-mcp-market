@@ -127,7 +127,17 @@ console.log('Test 5: skillsmp 按安装数必须被诚实拒绝（保持上游�
   try {
     const a = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache, sort: 'installCount' });
     const b = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache, sort: '' });
-    check('installCount 被降级为不排序', a.items.map((i) => i.id).join('|') === b.items.map((i) => i.id).join('|'));
+    // 空转绿灯修复：两侧都空时 '' === '' 恒真，会把「Cloudflare 挡住导致 skillsmp 一条都没有」
+    // 判成「降级正确」。必须区分：空且 degraded 非空 = 上游不可达（SKIP）；
+    // 空但无 degraded = handler 回归（FAIL）。有数据时比较表达式逐字不变。
+    if (!a.items.length && !b.items.length) {
+      // 两侧皆空：'' === '' 恒真，绝不能落到比较。
+      // degraded 非空 = 上游不可达（SKIP）；degraded 为空 = handler 回归（FAIL）。
+      if (a.degraded && a.degraded.length) skip('skillsmp 不可达（degraded 非空），降级比较无从判定');
+      else check('skillsmp 返回空且无 degraded（handler 回归）', false, 'items=0 且 degraded=[]');
+    } else {
+      check('installCount 被降级为不排序', a.items.map((i) => i.id).join('|') === b.items.map((i) => i.id).join('|'));
+    }
   } catch (e) { skip('skillsmp（Cloudflare）'); }
 }
 
@@ -139,7 +149,13 @@ console.log('Test 6: 缓存中毒回归——同 cache 先 name 后默认，默�
     const sorted = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: c2, sort: 'name' });
     const plain = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: c2, sort: '' });
     const fresh = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: makeCache(path.join(safeTempDir(), 'dsh-fs3-' + Date.now())), sort: '' });
-    check('plain == fresh（未被 name 排序污染）', plain.items.map((i) => i.id).join('|') === fresh.items.map((i) => i.id).join('|'));
+    // 同上：三侧都为空的空转绿灯会掩盖污染回归。
+    if (!plain.items.length && !fresh.items.length) {
+      if (plain.degraded && plain.degraded.length) skip('skillsmp 不可达（degraded 非空），缓存污染比较无从判定');
+      else check('skillsmp 返回空且无 degraded（handler 回归）', false, 'items=0 且 degraded=[]');
+    } else {
+      check('plain == fresh（未被 name 排序污染）', plain.items.map((i) => i.id).join('|') === fresh.items.map((i) => i.id).join('|'));
+    }
   } catch (e) { skip('poisoning test（skillsmp 不可达）'); }
 }
 
