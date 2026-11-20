@@ -90,7 +90,8 @@ console.log('');
 console.log('Test 6: 回收站默认折叠 + 条目对齐 + 时间可读');
 {
   const gi = c.indexOf("manageTab === 'skill' ? h('div'");
-  const seg = c.slice(gi, gi + 12000);
+  // 浮层弹出层加入后回收站被推到 ~12.7k；窗口给到 15k 留余量
+  const seg = c.slice(gi, gi + 15000);
   check('回收站标题保留 回收站（N） 形态（结构锁）', seg.includes('回收站（'));
   // 未记录时 getItem 返回 null，null==='1' 为 false → 默认折叠；catch 分支同样 false。
   check('默认折叠（未记录时 false）', /getItem\(TRASH_OPEN_KEY\) === '1'/.test(c));

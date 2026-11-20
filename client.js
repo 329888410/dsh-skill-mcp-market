@@ -325,8 +325,28 @@ window.__ModuleLoader__.load({
       // 上传是低频动作：默认收起，点「＋ 添加技能」才展开；拖拽热区升到整个列表容器。
       const [uploadOpen, setUploadOpen] = useState(false);
       const [dragOver, setDragOver] = useState(false);
+      // 就地错误：上传失败显示在浮层内（页面级 error 槽在视口上方，用户视线不在那）。
+      const [uploadError, setUploadError] = useState('');
+      const uploadRef = useRef(null);
       // 回收站默认折叠成一行（数量已在标题里），不再常驻占首屏。
       const TRASH_OPEN_KEY = 'dsh-skill-mcp-market.trash-open';
+      // 浮层三路关闭：✕ 按钮（渲染里）、Escape、点击浮层外。监听只在打开时挂，关闭即摘除。
+      useEffect(() => {
+        if (!uploadOpen) return;
+        const onKey = (e) => { if (e.key === 'Escape') setUploadOpen(false); };
+        const onDown = (e) => {
+          // 触发按钮必须豁免：mousedown 先关、重渲染后 click 的 !uploadOpen 又开 → 闪回。
+          if (e.target && e.target.closest && e.target.closest('[data-upload-trigger]')) return;
+          if (uploadRef.current && !uploadRef.current.contains(e.target)) setUploadOpen(false);
+        };
+        window.addEventListener('keydown', onKey);
+        document.addEventListener('mousedown', onDown);
+        return () => {
+          window.removeEventListener('keydown', onKey);
+          document.removeEventListener('mousedown', onDown);
+        };
+      }, [uploadOpen]);
+
       const [trashOpen, setTrashOpen] = useState(() => {
         try { return window.localStorage.getItem(TRASH_OPEN_KEY) === '1'; } catch { return false; }
       });
@@ -949,7 +969,7 @@ window.__ModuleLoader__.load({
       const handleSkillDrop = async (e) => {
         e.preventDefault();
         setDragOver(false);
-        setBusy('upload'); setError(''); setNotice('');
+        setBusy('upload'); setUploadError(''); setNotice('');
         try {
           const SKIP_DIRS = new Set(['.git', '.venv', 'venv', 'node_modules', '.idea', '.vscode', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', 'dist', 'build', '.next', '.nuxt', '.svelte-kit']);
           const items = e.dataTransfer ? Array.from(e.dataTransfer.items || []) : [];
@@ -997,8 +1017,9 @@ window.__ModuleLoader__.load({
           const n = result.count || (result.items || []).length;
           setNotice(`已上传 ${n} 个技能（${(result.items || []).map((i) => i.slug).join('、')}，安全扫描通过）`);
           await loadInstalled();
+          setTimeout(() => setUploadOpen(false), 600);
         } catch (err) {
-          setError(`上传失败：${err.message || err}`);
+          setUploadError(`上传失败：${err.message || err}`);
         } finally {
           setBusy('');
         }
@@ -1838,7 +1859,9 @@ window.__ModuleLoader__.load({
                 h('button', { type: 'button', style: S.subTab(manageTab === 'skill'), 'aria-selected': manageTab === 'skill', onClick: () => switchManageTab('skill') }, `SKILL 技能 (${installed.length})`),
                 h('button', { type: 'button', style: S.subTab(manageTab === 'mcp'), 'aria-selected': manageTab === 'mcp', onClick: () => switchManageTab('mcp') }, `MCP 连接器 (${mounted.length})`)),
               manageTab === 'skill' ? h('div', {
-                style: { display: 'flex', flexDirection: 'column', gap: 12, width: '100%' },
+                // position:relative 是浮层的包含块：没有它，absolute 会锚到 S.page，
+                // 浮层飞到整个面板右上角盖住 tab 栏（实测祖先链只有 S.page 有 position）。
+                style: { position: 'relative', display: 'flex', flexDirection: 'column', gap: 12, width: '100%' },
                 // 拖拽热区 = 整个技能列表容器（旧版热区是上传行里的小虚线框，且该框从未闭合）。
                 onDragOver: (e) => { e.preventDefault(); if (!dragOver) setDragOver(true); },
                 onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false); },
@@ -1850,15 +1873,37 @@ window.__ModuleLoader__.load({
               // 弹原生文件夹对话框，效果与 workbuddy 相同）。拖拽事件里 dataTransfer.files
               // 是扁平文件列表，没有 webkitRelativePath，用首个文件的 name 前缀推断根目录。
               uploadOpen ? h('div', {
-                style: { ...S.row, border: '1px dashed var(--dsh-border, #d0d7de)', borderRadius: 8, padding: '10px 14px', gap: 12, alignItems: 'center', flexWrap: 'wrap' },
+                ref: uploadRef,
+                role: 'dialog',
+                'aria-label': '添加技能',
+                // 绝对定位浮层：锚在技能容器右上角，脱离文档流 → 搜索框/列表/回收站零位移
+                //（旧版是插队横幅，实测打开后整页下移 62px）。
+                style: {
+                  position: 'absolute',
+                  right: 0,
+                  top: 46,
+                  zIndex: 60,
+                  width: 'min(430px, 92%)',
+                  background: 'var(--dsh-surface, #ffffff)',
+                  border: '1px solid var(--dsh-border, #d0d7de)',
+                  borderRadius: 10,
+                  boxShadow: '0 12px 32px rgba(15, 23, 42, 0.20)',
+                  padding: 12,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                },
               },
-                h('div', { style: { fontSize: 12, opacity: 0.7 } }, '选择技能文件夹上传，或'),
+                h('div', { style: { ...S.row, justifyContent: 'space-between', flexWrap: 'nowrap' } },
+                  h('span', { style: { fontWeight: 700, fontSize: 13 } }, '添加技能'),
+                  h('button', { type: 'button', style: { ...S.btn(), padding: '0 8px', height: 24, fontSize: 12 }, title: '关闭（Esc）', onClick: () => setUploadOpen(false) }, '✕')),
+                h('div', { style: { ...S.status, fontSize: 12 } }, '选择技能文件夹上传，或'),
                 h('button', {
                   style: S.btn('primary'),
                   disabled: busy === 'upload',
                   onClick: async () => {
                     setBusy('upload');
-                    setError('');
+                    setUploadError('');
                     setNotice('');
                     try {
                       const SKIP_DIRS = new Set(['.git', '.venv', 'venv', 'node_modules', '.idea', '.vscode', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', 'dist', 'build', '.next', '.nuxt', '.svelte-kit']);
@@ -1886,8 +1931,9 @@ window.__ModuleLoader__.load({
                       const n = result.count || (result.items || []).length;
                       setNotice(`已上传 ${n} 个技能（${(result.items || []).map((i) => i.slug).join('、')}，安全扫描通过）`);
                       await loadInstalled();
+                      setTimeout(() => setUploadOpen(false), 600);
                     } catch (e) {
-                      setError(`上传失败：${e.message || e}`);
+                      setUploadError(`上传失败：${e.message || e}`);
                     } finally {
                       setBusy('');
                     }
@@ -1898,7 +1944,7 @@ window.__ModuleLoader__.load({
                   disabled: busy === 'uploadZip',
                   onClick: async () => {
                     setBusy('uploadZip');
-                    setError('');
+                    setUploadError('');
                     setNotice('');
                     try {
                       const input = document.createElement('input');
@@ -1923,14 +1969,20 @@ window.__ModuleLoader__.load({
                       const d = await call('skills.importZip', { dataBase64: btoa(binary), fileName: picked.name });
                       setNotice(`已从 ${d.fileName} 导入 ${d.slug}（${d.files} 个文件，压缩包内 ${d.entries} 项）${d.skipped && d.skipped.length ? `；跳过 ${d.skipped.length} 项` : ''}`);
                       await loadInstalled();
+                      setTimeout(() => setUploadOpen(false), 600);
                     } catch (e) {
-                      setError(`导入 .zip 失败：${e.message || e}`);
+                      setUploadError(`导入 .zip 失败：${e.message || e}`);
                     } finally {
                       setBusy('');
                     }
                   },
                 }, busy === 'uploadZip' ? '导入中…' : '导入 .zip'),
-                h('span', { style: { ...S.status, fontSize: 11 } }, '也可以把技能文件夹直接拖到本列表区域（根目录或一级子目录必须含 SKILL.md）'))
+                h('span', { style: { ...S.status, fontSize: 11 } }, '也可以把技能文件夹直接拖到本列表区域（根目录或一级子目录必须含 SKILL.md）'),
+                h('div', { style: { ...S.status, fontSize: 11, wordBreak: 'break-all' } },
+                  `安装到 ${shortPath((settings && settings.settings && settings.settings.skillDirs && settings.settings.skillDirs[0]) || '(未配置技能目录)', homeDir)}`,
+                  ' · zip ≤ 4MB'),
+                uploadError ? h('div', { style: { ...S.err, wordBreak: 'break-word' } }, uploadError) : null,
+              )
               : null,
               h('div', { style: { ...S.row, gap: 8, flexWrap: 'nowrap' } },
                 h('input', {
@@ -1953,6 +2005,7 @@ window.__ModuleLoader__.load({
                 h('button', {
                   style: S.btn(uploadOpen ? 'primary' : undefined),
                   'aria-expanded': uploadOpen,
+                  'data-upload-trigger': '1',
                   onClick: () => setUploadOpen(!uploadOpen),
                 }, uploadOpen ? '收起上传' : '＋ 添加技能')),
               h('div', { style: { ...S.title, marginBottom: 2, display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
