@@ -580,7 +580,19 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   });
   const degraded = fan.degraded;
   for (const entry of fan.results) {
-    if (!entry.ok) continue;
+    if (!entry.ok) {
+      // 取数失败的源什么也没告诉我们 —— 它既不能证明目录为空，也不能证明只有 1 页。
+      // 旧写法在这里直接 continue，于是 pagesSum 停在 0、pages 落到 Math.max(..., 1)
+      // 的兜底上：一次上游超时被报成「共 1 页 / 共 0 个」，而同一视图的下一页（成功那次）
+      // 又是 pages=undefined —— 一个情况两种口径。单源失败时把两处未知标记都立起来，
+      // 让「失败」与「空目录」在返回值上不再可混淆。多源聚合部分失败时保持既有口径：
+      // 成功源照报数字，坏源只进 degraded（聚合的计数语义由 Test 4 锁住）。
+      if (wanted.length === 1) {
+        pagesUnknown = true;
+        totalUnknown = true;
+      }
+      continue;
+    }
     const name = entry.name;
     const result = entry.result;
     if (result && result.hint) hints.push(name + '：' + result.hint);

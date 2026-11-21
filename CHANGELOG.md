@@ -3,6 +3,12 @@
 - **空页不再被说成「目录已到底」**（同一轮门内实测的第二处不诚实）：trusttools 在门里出现过一次首页静默空响应（items=0、degraded=0、total=0），handler 的 `hasMore` 当时退化成 `items.length >= size` = false，聚合层于是对外宣称「已是最后一页」—— 一次抓取失败被说成整个目录只有这一屏，比谎报总数更误导（用户会以为源已穷尽、不再翻页）。现在 `false` 只有在响应带真实总数证据时才是结论，否则保持 `undefined`（未知），分页器继续显示「可继续加载」。
 - **上游状态 vs 本侧回归的判定收敛成一个 helper**：新增 `emptyWithoutEvidence`（degraded>0 / total>0 / hasMore===true 都算有证据，三者皆无才算上游静默空响应）。test-nocache 与 test-paging 之前各写一套相近判据 —— 两套判据互相打架正是假绿来源，现在两处调用同一函数；真值表 6 例进 test-paging-verdict（含反向破坏：写成恒 true 一律当上游问题，就会被 total>0 却空页那例抓到）。修复后 test-paging 13 passed（旧行为下同一场景判 FAIL —— 门里红、单跑三次绿的那种 flake 消失），test-nocache 13 passed / 1 skipped。
 
+## 0.5.140
+
+- **门禁不再取决于上游当时的心情**（用户 2026-11-22 指出）：`test-paging` 的断言绑在真实上游上，trusttools 一超时它就「门里红、单跑绿」——这既是假红源，也会掩盖下一次真回归（`b33e626` 就是在 gate 报 test-paging 真红时被提交的，纪律违规一并记在此处）。新增 `test/test-paging-deterministic.mjs`：13 项断言全部走 handler 注入（零网络、秒级、可重复），覆盖「单源整取失败」「p1 失败 p2 有货」「取数成功必须照报数字」「多源部分失败保持既有口径」四种形态；`test-paging` 保留为可达性探针——抛错、有一页为空、页大小不足、缓存两次抓取内容不同，一律记 SKIP（信息性），但**重叠、越界页非空、重试后仍空而上游宣称有货**这些只有本侧能造成的形态仍然判红。套件数 57 → 58，`test:chain` 段数与唯一段数由登记完整性检查复核。
+- **顺带修掉探针抓出的真缺陷**：一次上游超时曾被聚合层报成「共 1 页 / 共 0 个」（`pages=1`、`total=0`），而同一视图的下一页（成功那次）又报 `pages=undefined` —— 一个情况两种口径。`pages=1` 来自 `Math.max(pagesSum, ceil(total/size), 1)` 的兜底，取数失败的源什么都没说，却被读成「目录只有一页且为空」。现在单源失败时 `pagesUnknown`/`totalUnknown` 一起置起，失败与空目录在返回值上不再可混淆；多源聚合部分失败保持既有语义（成功源照报数字、坏源进 degraded）。两向证伪：取消置未知 → 红；只丢 `pagesUnknown` 留 `totalUnknown` → 也红。
+- `test-paging` 的 SKIP 分支此前漏计 `skipped`（输出里有 SKIP 行、汇总却说 0 skipped），属「计数与真实集合不符」的同一类缺陷，三处分支全部补上；总结行现在打印 `N passed, M failed, K skipped`。
+
 ## 0.5.139
 
 - **空的那一页自己声明了失败，就不再算本侧分页回归**（门内两条红的同一根因，实测非推断）：trusttools 上游此刻 6/6 次请求都是「来源响应超时（预算 12s）」，门里因此同时红了 test-paging（`FAIL trusttools p1= 0 p2=12`）与 test-nocache（`FAIL 重试后第 2 页仍空而 total=579074 hasMore=true`）。两者缺的是同一个维度：判据只看「上游说还有货却拿到空页」，没看**那个空页自己带回来的 degraded 记录**。上游已经承认这页没给成，就不能拿它去判我们的 page/offset 算术 —— 但反过来，没有 degraded 的空页（该页成功返回却空手）仍必须 FAIL，这条绝不放宽。新增纯函数 `pagePairVerdict`（skip=空页自报失败 / judge=交既有判据 / ok=两页都有条目），test-paging 与 test-nocache 共用，判据不再两处各写一套。真值表 8 例（含「degraded 属于另一页时不豁免本页」这种容易写反的边界），两向证伪：取消自报失败豁免 → 红；去掉 ok 短路 → 红。
