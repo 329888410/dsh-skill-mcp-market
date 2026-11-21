@@ -90,7 +90,13 @@ console.log('Test 6: 语法与零新增 op');
   check('client.js 语法通过', ok);
   const ops = [...c.matchAll(/call\('([\w.]+)'/g)].map((m) => m[1]);
   // 0.5.104 起新增 MCP 回收站三 op（Test 5 的「零新增 op」承诺随之更新为「只增已登记的 op」）
-  const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','mcp.probe','mcp.status','mcp.tools.get','mcp.raw.get','mcp.raw.set','mcp.tools.set','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','mcp.trash','mcp.restore','mcp.trashEmpty','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
+  // op 清单唯一事实源 = index.js 的 case 标签。此前三个套件各抄一份白名单，加一个 op
+  // 就得同步三处，漏一处即假红（skillhub.evaluation 正是这样同时撞红三条）。
+  // 提取一旦失效会变成「所有 op 都未知」这种全面假红，所以规模与核心 op 都要断言。
+  const IX_SRC = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  const IX_OPS = new Set([...IX_SRC.matchAll(/case "([\w.]+)":/g)].map((m) => m[1]));
+  if (IX_OPS.size < 30 || !IX_OPS.has('skills.search')) throw new Error('index.js op 清单提取失效: ' + IX_OPS.size);
+  const known = IX_OPS;
   const unknown = [...new Set(ops)].filter((o) => !known.has(o));
   check('未引入未登记 op', unknown.length === 0, unknown.join(','));
 }

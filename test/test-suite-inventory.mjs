@@ -91,5 +91,24 @@ console.log('Test 4: 仓库根不得有核验临时件（.gate.txt/.msg.txt 事�
   });
   check('版本库根不含点文件临时件', bad.length === 0, bad.join(', '));
 }
+
+console.log('');
+console.log('Test 5: 辅助模块必须有可执行断言覆盖（工具无断言 = 假绿风险）');
+{
+  // edit-lib/anchor-lib/gate-verdict/run-gate 这类辅助模块本身不是套件，但每一个都必须
+  // 被至少一个 test-* 引用（import）或执行（spawn）。否则就是「看起来安全的机制」没人
+  // 验证 —— applier 静默错位事故正是这一类：语法合法、diff 看不出问题、语义已经错了。
+  const helpers = onDisk.filter((f) => !f.startsWith('test-'));
+  const uncovered = [];
+  for (const h of helpers) {
+    let referenced = false;
+    for (const t of onDisk) {
+      if (!t.startsWith('test-')) continue;
+      if (fs.readFileSync(path.join(W, 'test', t), 'utf8').indexOf(h) >= 0) { referenced = true; break; }
+    }
+    if (!referenced) uncovered.push(h + '（没有任何 test-* 引用/执行它）');
+  }
+  check('每个辅助模块都被至少一个套件引用/执行', uncovered.length === 0, uncovered.join(', '));
+}
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

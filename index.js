@@ -27,6 +27,7 @@ import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryD
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
 import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
 import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js";
+import { evaluation as skillhubEvaluation } from "./src/skillhub.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 import { makeRpcGuard } from "./src/rpc-guard.js";
@@ -1547,6 +1548,10 @@ function needsConfirmFor(patch, current) {
           } catch { return { ...local, detailSource: "local" }; }
         }
         return local;
+      }
+      case "skillhub.evaluation": {
+        // 纯读上游公开评测端点，不写任何本地状态；失败原样抛出，由面板显式降级。
+        return await skillhubEvaluation(body.slug);
       }
       case "mcp.update": {
         const patch = body.patch && typeof body.patch === "object" ? body.patch : {};

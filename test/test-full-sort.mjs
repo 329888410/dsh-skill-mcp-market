@@ -47,24 +47,35 @@ console.log('Test 1: supportsSort 与上游真实能力一致');
   check('trusttools installCount', supportsSort('trusttools', 'installCount') === true);
   check('skillhub installCount', supportsSort('skillhub', 'installCount') === true);
   check('lobehub installCount', supportsSort('lobehub', 'installCount') === true);
-  check('clawhub installCount', supportsSort('clawhub', 'installCount') === true);
-  check('modelscope installCount', supportsSort('modelscope', 'installCount') === true);
+  check('clawhub NOT installCount（真实可排字段是下载数）', supportsSort('clawhub', 'installCount') === false);
+  check('modelscope NOT installCount（上游无安装量列）', supportsSort('modelscope', 'installCount') === false);
+  check('clawhub downloadCount（browse sort=downloads / search getter r.downloads）', supportsSort('clawhub', 'downloadCount') === true);
+  check('modelscope downloadCount（DownloadCount 是其唯一量级字段）', supportsSort('modelscope', 'downloadCount') === true);
   check('browse.sh installCount', supportsSort('browse.sh', 'installCount') === true);
   check('skillsmp NOT installCount (CLI 无此 sort)', supportsSort('skillsmp', 'installCount') === false);
 }
 
 const cache = makeCache(path.join(safeTempDir(), 'dsh-fs-' + Date.now()));
 const sz = 12;
+// vals 取 installs：仍被 trusttools / skillhub / browse.sh 的绝对值段使用（那些源
+// 确实按 installCount 排）。clawhub/modelscope 不靠它 —— 它们按 downloads 排，
+// 取值字段见 GLOBAL_SORT_KEY/fieldOf，名称与字段一致。
 const vals = (items) => items.map((i) => Number(i.installs) || 0);
 
+// 每个源用它「实际排序字段」验单调：clawhub 可排的是 downloads，installs 稀疏
+// （60 条样本仅 18 条有值），拿 installs 验单调得到的是字段选错的假乱序而非回归。
+const GLOBAL_SORT_KEY = { trusttools: "installCount", skillhub: "installCount", clawhub: "downloadCount", "browse.sh": "installCount", lobehub: "installCount", modelscope: "downloadCount" };
+const fieldOf = (k) => (k === 'downloadCount' ? 'downloads' : 'installs');
 async function globalSortCheck(label, source, opts = {}) {
   let p1, p2, errored = false;
   try {
-    p1 = await searchSkills({ query: '', source, page: 1, pageSize: sz, cache, sort: 'installCount', ...opts });
-    p2 = await searchSkills({ query: '', source, page: 2, pageSize: sz, cache, sort: 'installCount', ...opts });
+    const sortKey = GLOBAL_SORT_KEY[source] || 'installCount';
+    p1 = await searchSkills({ query: '', source, page: 1, pageSize: sz, cache, sort: sortKey, ...opts });
+    p2 = await searchSkills({ query: '', source, page: 2, pageSize: sz, cache, sort: sortKey, ...opts });
   } catch (e) { errored = true; }
   if (errored || !p1 || !p1.items.length || !p2 || !p2.items.length) { skip(label + '（上游不可达）'); return; }
-  const v1 = vals(p1.items), v2 = vals(p2.items);
+  const f = fieldOf(GLOBAL_SORT_KEY[source] || 'installCount');
+  const v1 = p1.items.map((i) => Number(i[f]) || 0), v2 = p2.items.map((i) => Number(i[f]) || 0);
   check(label + ' p1 单调降序', v1.every((v, k, a) => k === 0 || a[k - 1] >= v), v1.join(','));
   check(label + ' 跨页全局单调', Math.max(...v2) <= Math.min(...v1), 'p1min=' + Math.min(...v1) + ' p2max=' + Math.max(...v2));
   console.log('    ' + label + ' p1 head: ' + v1.slice(0, 3).join(', '));
@@ -104,14 +115,24 @@ console.log('Test 3: 绝对值下限——证明排的是全量而不是窗口')
 
       // 上限级 sanity：installs 全局首条应在数万量级；若上游把该字段清空，这里会变红
       // （实测 60 条样本里 50 条 installs 为 0，但全盘排序的榜首仍是 86,140）。
-      check('skillhub installs 字段仍有数据', top > 20000, 'top=' + top);    }
+      check('skillhub installs 字段仍有数据', top > 20000, 'top=' + top);
+    }
   } catch (e) { skip('skillhub absolute'); }
   try {
-    const r = await searchSkills({ query: '', source: 'clawhub', page: 1, pageSize: sz, cache, sort: 'installCount' });
+    const r = await searchSkills({ query: '', source: 'clawhub', page: 1, pageSize: sz, cache, sort: 'downloadCount' });
     if (!r.items.length && r.degraded && r.degraded.length) { skip('clawhub absolute（上游不可达，见 degraded）'); }
     else {
-      const top = Math.max(...vals(r.items));
-      check('clawhub 首条 > 400,000（全盘 self-improving≈494k）', top > 400000, 'got ' + top);
+      // 该源按 downloads 排（名称与字段一致），绝对值下限也必须读 downloads；
+      // vals() 取的是 installs，用它会得到 18,549 而不是榜首 494,474。
+      const top = Math.max(...r.items.map((i) => Number(i.downloads) || 0));
+      // 绝对值下限判的是「排的是全量而非窗口」。窗口侧的量用一条真实的未排序
+      // 请求去量（不硬编码窗口大小）：实测未排序首页 downloads max≈2,070、installs max=129，
+      // 而下载榜首是 self-improving-agent downloads=494,474 —— 相差两个数量级。
+      // 阈值取窗口上限与榜首之间（10,000）：既不是凭旧注释拍的数字，也不随上游漂移。
+      const plain = await searchSkills({ query: '', source: 'clawhub', page: 1, pageSize: sz, cache });
+      const windowMax = Math.max(...plain.items.map((i) => Number(i.downloads) || 0));
+      check('clawhub 下载榜首条远高于未排序窗口 downloads max', top > Math.max(windowMax * 3, 10000), 'top=' + top + ' 窗口max=' + windowMax);
+      check('clawhub 下载榜首条 > 400,000（实测榜首 self-improving-agent 494,474）', top > 400000, 'got ' + top);
     }
   } catch (e) { skip('clawhub absolute'); }
 }
@@ -193,3 +214,6 @@ console.log('Test 7: 聚合模式（source=all）的排序不得被能力降级�
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed, ' + skipped + ' skipped');
 process.exit(failed ? 1 : 0);
+
+
+

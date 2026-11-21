@@ -372,8 +372,9 @@ async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cache, sort
       upstreamUrl: "",
       skillDir: "",
       reference: raw.slug,
-      // 上游字段叫 installCount（实测 459/479 条有值），面板排序与卡片统一读 installs。
-      installs: Number(raw.installCount ?? raw.downloads ?? 0) || 0,
+      // 上游字段叫 installCount（实测 459/479 条有值），是真安装数 → 名称与字段一致，
+      // 保留 installCount 键；去掉 ?? raw.downloads 回落，避免缺字段的行显示下载数冒充安装数。
+      installs: Number(raw.installCount) || 0,
       updated: raw.updated || "",
       installable: true,
       note: "通过官方 browse CLI 安装（npx browse skills add）",

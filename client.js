@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     // 排序键中文标签。能力表本身来自服务端 settings.get 的 sortCapabilities —— 面板不再内联 CAPS 副本。
     // LABEL 刻意留在面板侧：test-sort-options Test 5 锁 '按星级'/'最新'/'最近更新' 字面量。
     const SORT_LABEL = {
-      installCount: '按安装数', stars: '按星级', newest: '最新',
+      installCount: '按安装数', downloadCount: '按下载数', stars: '按星级', newest: '最新',
       updated: '最近更新', trending: '热门', name: '按名称', ratingAverage: '评分最高',
     };
     // caps=null 表示能力尚未到达 → 只给「默认顺序」，绝不猜键（猜键等于把硬编码换个位置）。
@@ -91,6 +91,14 @@ window.__ModuleLoader__.load({
       return `mc|${o.source}|${cat}|${sort}|${o.query || ''}|${o.page}|${o.size}`;
     };
     const TOOL_BATCH = 60;
+// 分批阈值必须 ≥ 单页上限（下拉里最大 48）：否则「首批」会把用户明确要求
+// 的一页裁掉一半，那是拿性能名义偷内容。此前写 60 —— 大于任何可选页大小，
+// 分批条件永不成立、纯属装饰（测试只锁了「首批≤阈值」这类性质，锁不住
+// 「阈值本身是否合理」，所以补一条首批≥最大每页的不变量）。
+const CARD_BATCH = 48;
+    // 市场卡片分批：与工具浮窗同一口径（首批 CARD_BATCH 张，点「继续显示」再放一批）。
+    // 每页最多 48 条，一次提交整页卡片意味着输入一个字符就重建几十个节点。
+    const shownCards = (list, batch) => list.slice(0, Math.max(1, Math.trunc(batch) || 1) * CARD_BATCH);
     // 已装技能排序：纯前端呈现序，与来源分组正交（分组归属仍由 rank 决定）。
     // default 必须原样返回——服务端顺序本身有含义，不能悄悄重排。
     function sortInstalled(items, mode, isOff) {
@@ -434,6 +442,8 @@ window.__ModuleLoader__.load({
       const [mcpTotal, setMcpTotal] = useState(0);
       const [mcpCategories, setMcpCategories] = useState([]);
       const [size, setSize] = useState(24);
+      // 市场卡片分批游标（第 n 批 = n × CARD_BATCH 张）
+      const [cardBatch, setCardBatch] = useState(1);
       const [sort, setSort] = useState('default');
       const [category, setCategory] = useState('all');
       const [pageJump, setPageJump] = useState('');
@@ -574,17 +584,29 @@ window.__ModuleLoader__.load({
       // 最近一次的查询结果缓存（按 tab+source+category+sort+query 作 key），
       // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
       const resultCacheRef = useRef({});
+      // 上游没有取消接口，所以「乱序落地」只能在应用点拦：每次请求取一个序号，
+      // 回来后若已被更新的请求超车，就整段丢弃 —— 否则先发的慢请求会覆盖后发的结果，
+      // 列表与用户最后选择的源/页不符（这是正确性问题，不只是等待问题）。
+      const reqSeqRef = useRef(0);
+      // MCP 侧同一个缺陷（切源时先发的慢请求覆盖后发），但用独立计数器：技能请求
+      // 只应被更新的技能请求超车，不该被切到 MCP tab 的那次请求抹掉。
+      const mcpSeqRef = useRef(0);
       const [nativeDirs, setNativeDirs] = useState([]);
       // 技能市场的分页：每个源都支持真正的翻页，页数/总数由后端这一页返回的元数据决定
       const [skillsPage, setSkillsPage] = useState(1);
-      const [skillsTotalPages, setSkillsTotalPages] = useState(1);
+      // 与 mcpTotalPages 同口径：0 = 未知总页数（pager 走窗口式）。首个响应到来之前
+      // 不得宣称「已知共 1 页」—— 那是凭空编造的页数。
+      const [skillsTotalPages, setSkillsTotalPages] = useState(0);
       const [skillsTotal, setSkillsTotal] = useState(0);
       const [skillsHasMore, setSkillsHasMore] = useState(false);
 
       const gotoPage = (p) => {
         p = Math.max(1, Math.min(p, 1 << 30));
-        if (tab === 'skills') searchSkills(query, { source, size, page: p });
-        else searchMcps(query, { page: p });
+        // 翻页必须带上当前 tab 的全部查询条件：旧写法技能侧漏 category/sort、MCP 侧
+        // 漏 source/category/sort，全靠 searchX 里的 liveRef 兜底 —— 一旦兜底取值与
+        // 界面不一致（state 更新竞态），翻页就会静默换条件。显式传参消除这层隐式依赖。
+        if (tab === 'skills') searchSkills(query, { source, category, size, page: p, sort });
+        else searchMcps(query, { source: mcpSource, category: mcpCategory, sort: mcpSort, size, page: p });
       };
 
       const pager = (page, totalPages, hasMore, label, total, jumpState, setJumpState) => {
@@ -675,6 +697,7 @@ window.__ModuleLoader__.load({
         const effSort = reqSort === 'default' ? 'installCount' : reqSort;
         const cacheKey = skillCacheKey({ source: src, query: q, category: cat, page: pageNo, size: pageSize, sort: effSort, append });
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
+        const seq = ++reqSeqRef.current; // 本次请求的序号（超车判定基准）
         // 命中缓存：立即渲染旧结果，不白屏；后台再刷新
         if (cached) {
           setSkills(cached.items || []);
@@ -699,6 +722,9 @@ window.__ModuleLoader__.load({
             sort: effSort,
           });
           const rows = d.items || [];
+          // 被超车（更晚发出的同类请求已经回来）→ 整段丢弃，连缓存也不写：把过期
+          // 结果塞进缓存会让下次命中同一个 key 时显示旧数据还标成「缓存」。
+          if (seq !== reqSeqRef.current) return;
           if (cacheKey) {
             resultCacheRef.current[cacheKey] = {
               items: rows,
@@ -741,9 +767,10 @@ window.__ModuleLoader__.load({
             setNotice('');
           }
         } catch (e) {
+          if (seq !== reqSeqRef.current) return; // 过期请求的报错不该盖掉新结果
           setError(String(e.message || e));
         } finally {
-          setBusy('');
+          if (seq === reqSeqRef.current) setBusy(''); // 只由最后一次请求收口 spinner
         }
       }, [sort, liveRef, source, size]);
 
@@ -757,6 +784,7 @@ window.__ModuleLoader__.load({
         // 首屏查询（非 append）命中缓存时立即渲染旧结果，后台再刷新，避免切源白屏
         const cacheKey = mcpCacheKey({ source: nextSource, query: text, category: nextCategory, sort: nextSort, page: nextPage, size: nextSize, append: opts.append });
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
+        const mseq = ++mcpSeqRef.current;
         if (cached) {
           setMcps(cached.items || []);
           // 恢复与这一份缓存绑定的分页元数据：切源再切回来时卡片和页码/总页数必须
@@ -779,6 +807,8 @@ window.__ModuleLoader__.load({
             size: nextSize,
           });
           const rows = d.items || [];
+          // 同技能侧：被更晚发出的 MCP 请求超车就整段丢弃（连缓存也不写）。
+          if (mseq !== mcpSeqRef.current) return;
           if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [], page: d.page || nextPage, totalPages: d.totalPages || 0, total: d.total || rows.length };
           // Append must not repeat a card: the registry pages by version rows, so a server
           // may legitimately return a slug that is already on screen.
@@ -803,9 +833,10 @@ window.__ModuleLoader__.load({
           else if (!(d.items || []).length) setNotice('没有找到匹配的连接器；可直接按注册表名称安装，例如 io.github.Async23/chrome-devtools-mcp。');
           else setNotice('');
         } catch (e) {
+          if (mseq !== mcpSeqRef.current) return;
           setError(String(e.message || e));
         } finally {
-          setBusy('');
+          if (mseq === mcpSeqRef.current) setBusy('');
         }
       }, []);
 
@@ -829,6 +860,22 @@ window.__ModuleLoader__.load({
         searchSkills(query, { source, size, page: 1, sort });
       }, [sort, tab]);
 
+      // 质量评测入口：只在点开时打一次上游（列表零额外请求）。不可达时显式告知，
+      // 不伪造分数、也不用 downloads/stars 凑一个「质量」。
+      const openSkillQuality = async (item) => {
+        const id = String((item && (item.namespace || item.slug)) || '');
+        if (!id) { setError('该条目缺少 skillhub 标识，无法查询评测'); return; }
+        setBusy('quality:' + id);
+        setError('');
+        try {
+          const data = await call('skillhub.evaluation', { slug: id });
+          setDetail({ kind: 'quality', slug: String(item.slug || id), data });
+        } catch (e) {
+          setError('SkillHub 质量评测暂不可达：' + String((e && e.message) || e));
+        } finally {
+          setBusy('');
+        }
+      };
       const openSkillDetail = async (slug) => {
         setBusy(`detail:${slug}`);
         setError('');
@@ -1562,7 +1609,7 @@ window.__ModuleLoader__.load({
       });
       const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 10);
       const visibleSkills = orderedSkills.filter((item) => category === 'all' || item.category === category);
-      const skillCards = visibleSkills.map((item) =>
+      const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
           h('div', { style: S.desc }, item.description || ''),
@@ -1571,10 +1618,19 @@ window.__ModuleLoader__.load({
             item.owner ? h('span', null, `· ${item.owner}`) : null,
             item.category ? h('span', null, `· ${item.category}`) : null,
             item.installs ? h('span', null, `· ${item.installs.toLocaleString()} 次安装`) : null,
+            // 排序依据必须可见：只给「按安装数」而卡片没有安装数时，用户无法核验。
+            // 与安装数同一规则 —— 有值才显示，0/缺失不显示，绝不显示错数。
+            item.downloads ? h('span', null, `· ${Number(item.downloads).toLocaleString()} 次下载`) : null,
             item.stars ? h('span', null, `· ★ ${Number(item.stars).toLocaleString()}`) : null,
             item.describedBy === 'page-meta' ? null : null,
             item.installable === false ? h('span', null, '· 仅可浏览') : null),
           h('div', { style: S.row },
+            item.source === 'skillhub' ? h('button', {
+              style: { ...S.btn(), padding: '0 6px' },
+              title: '查看 SkillHub 官方质量评测（打开详情时才查询，列表不预取）',
+              disabled: busy === 'quality:' + String(item.namespace || item.slug),
+              onClick: () => openSkillQuality(item),
+            }, busy === 'quality:' + String(item.namespace || item.slug) ? '评测中…' : '质量') : null,
             h('button', {
               style: { ...S.btn(), padding: '0 6px' },
               title: detailUrlFor(item) ? '在 DSH 内置浏览器中查看详情' : '该条目没有可打开的详情页',
@@ -1597,7 +1653,7 @@ window.__ModuleLoader__.load({
         if (mcpSort === 'ratingAverage') return (b.rating || 0) - (a.rating || 0);
         return 0;
       });
-      const mcpCards = orderedMcps.map((item) =>
+      const mcpCards = shownCards(orderedMcps, cardBatch).map((item) =>
         h('div', { key: item.id || item.slug, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
           h('div', { style: S.desc }, item.description || ''),
@@ -1696,6 +1752,7 @@ window.__ModuleLoader__.load({
         : visibleTools;
       // 搜索词一变就退回第一批：游标停在上次的末尾时，新搜索的前几条反而看不到。
       useEffect(() => { setToolBatch(1); }, [toolQuery]);
+      useEffect(() => { setCardBatch(1); }, [query, source, mcpSource, size]);
       // 任一判据窄即窄屏：视口窄（手机远控）或面板窄（宿主侧栏挤占）。
       const narrow = narrowViewport || narrowPanel;
       // 批量计数与动作的唯一口径：只算「筛选后仍可见」的选中项。
@@ -2136,7 +2193,7 @@ window.__ModuleLoader__.load({
                       boxShadow: '0 16px 48px rgba(15, 23, 42, 0.28)',
                     },
                   },
-                    h('div', { style: { ...S.title, fontSize: 14 } }, `${detail.kind === 'skill' ? '技能' : 'MCP'}：${detail.slug}`),
+                    h('div', { style: { ...S.title, fontSize: 14 } }, detail.kind === 'quality' ? '质量评测：' + detail.slug : (detail.kind === 'skill' ? '技能' : 'MCP') + '：' + detail.slug),
                     detail.kind === 'mcp' && detail.data && (detail.data.detailSource || detail.data.rating != null || detail.data.installs != null || detail.data.description) ? h('div', { style: { ...S.meta, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 } }, [
                       detail.data.description ? h('span', { key: 'desc', style: { fontSize: 12, opacity: 0.85 } }, detail.data.description) : null,
                       h('div', { key: 'chips', style: S.row }, [
@@ -2148,7 +2205,23 @@ window.__ModuleLoader__.load({
                       detail.data.envRequired && detail.data.envRequired.length ? h('span', { key: 'env', style: { fontSize: 11, opacity: 0.7 } }, `需环境变量：${detail.data.envRequired.join(', ')}`) : null,
                       detail.data.homepage ? h('a', { key: 'hp', style: { fontSize: 11, color: 'var(--dsh-accent, #2f6feb)', cursor: 'pointer' }, onClick: () => { try { window.open(detail.data.homepage, '_blank'); } catch {} } }, detail.data.homepage) : null,
                     ]) : null,
-                    detail.kind === 'skill'
+                    detail.kind === 'quality'
+                      ? h('div', { style: { marginTop: 12 } },
+                          detail.data.summary
+                            ? h('div', { style: { ...S.status, fontSize: 12, lineHeight: 1.5 } }, detail.data.summary)
+                            : h('div', { style: { ...S.status, fontSize: 12 } }, '上游未提供总体小结。'),
+                          (detail.data.dimensions || []).map((d) =>
+                            h('div', { key: d.key, style: { marginTop: 8 } },
+                              h('div', { style: S.row },
+                                h('span', { style: { fontSize: 12, fontWeight: 600 } }, d.label),
+                                d.score != null
+                                  ? h('span', { style: { ...S.chip(), marginLeft: 8 } }, '子项均分 ' + d.score + (d.scored ? '（' + d.scored + ' 项）' : ''))
+                                  : h('span', { style: { ...S.status, marginLeft: 8 } }, '该维度无评分子项'),
+                              ),
+                              d.reason ? h('div', { style: { ...S.status, fontSize: 11, marginTop: 2, whiteSpace: 'pre-wrap' } }, d.reason) : null,
+                            )),
+                        )
+                      : detail.kind === 'skill'
                       ? h('div', { style: { marginTop: 12 } },
                           h('div', { style: S.row },
                             h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '描述'),
@@ -2245,7 +2318,9 @@ window.__ModuleLoader__.load({
                       h('button', { style: S.btn(), onClick: () => { setDetail(null); setMcpRaw(null); setMcpConfirmArmed(false); } }, '关闭'),
                       detail.kind === 'skill'
                         ? h('button', { style: S.btn('primary'), disabled: busy === 'save:skill', onClick: saveSkillEdit }, '保存')
-                        : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, mcpConfirmArmed ? '确认保存（命令已改动）' : '保存并重连'))))
+                        : detail.kind === 'quality'
+                          ? h('span', { style: { fontSize: 11, opacity: 0.6 } }, '只读视图')
+                          : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, mcpConfirmArmed ? '确认保存（命令已改动）' : '保存并重连'))))
               : null,
             // 已装 MCP 工具清单浮窗：点卡片本体打开，列全部工具的名称/描述，参数 schema 逐个可展开。
             mcpTools
@@ -2340,6 +2415,15 @@ window.__ModuleLoader__.load({
                             onClick: () => saveToolDeny(mcpTools.serverName, toolDenyDraft),
                           }, busy === 'saveToolDeny' ? '保存中…' : '保存禁用列表'))
                       : null)
+              : null,
+            // 分批未渲染完时给出显式续加载入口；空态仍由 notice（服务端整页数据）判定，
+            // 不会因为裁切了渲染列表而误报「没有找到」。
+            (tab === 'skills' ? visibleSkills : orderedMcps).length > CARD_BATCH * cardBatch
+              ? h('div', { style: { ...S.row, justifyContent: 'center', marginTop: 8 } },
+                  h('button', { style: S.btn(), onClick: () => setCardBatch((n) => n + 1) },
+                    '继续显示 ' + Math.min(CARD_BATCH, (tab === 'skills' ? visibleSkills : orderedMcps).length - CARD_BATCH * cardBatch) + ' 个'),
+                  h('span', { style: { ...S.status, marginLeft: 6 } },
+                    '还有 ' + ((tab === 'skills' ? visibleSkills : orderedMcps).length - CARD_BATCH * cardBatch) + ' 个未渲染'))
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.134
+
+- **乱序落地守卫（结果正确性，不只是速度）**：client.js 此前没有任何请求序号——快速切源时先发的慢请求后落地，会把后发请求的结果**整段覆盖**，列表与用户最后选择的源/页不符。现在每次请求取序号、回来后若已被超车就丢弃（连缓存也不写：过期结果进缓存会让下次命中显示旧数据还标成「缓存」）；catch/finally 同样按序号收口，过期请求的报错不再盖掉新结果、spinner 只由最后一次请求关闭。技能与 MCP 用**两个独立计数器**（切 tab 的那次请求不该抹掉另一侧的结果）。Test 14/14b 用「先发 40ms + 后发 5ms」的行为测试锁住；改前实测落地顺序是 `skillsmp#p2 → clawhub#p1`（后发的结果被先发的盖掉）。
+- **分页默认口径统一**：`skillsTotalPages` 默认 1 而 `mcpTotalPages` 默认 0，同一字段两种语义——技能侧在首个响应到来前显示「第 1 / 1 页」，等于凭空宣称已知总页数。pager 里 `unknown = !totalPages`，所以统一默认为 0（未知）。Test 15 同时锁页码/总数/hasMore 三族状态的默认值成对一致。
+- **市场卡片分批渲染**：沿用工具浮窗已有形态（`CARD_BATCH=60` + 游标 +「继续显示 N 个」）。此前一次提交整页卡片（每页最多 48 条，聚合页更宽）；`shownCards(list, batch)` 是纯函数，首批≤阈值、按批单调、批够时覆盖全集、不足一批不误裁、空列表仍为空——空态判定继续只看服务端整页 `d.items`，不会因为裁切渲染列表而误报「没有找到」。
+- **gotoPage 显式带全部条件**：旧写法技能侧漏 `category`/`sort`、MCP 侧只传 `page`（漏 `source`/`category`/`sort`），全靠 `liveRef` 兜底；兜底取值与界面不一致时（state 更新竞态）翻页会**静默换条件**。现在两侧都显式传当前值，Test 17 断言的是实参值而不只是键存在。
+- **SkillHub 新增「按下载数」+ 卡片显示下载数（用户 2026-11-21 拍板）**：上游 `sortBy=installs` 与 `sortBy=downloads` 都有效且跨页单调，榜首不同（installs→self-improving-agent、downloads→dev-god）；而 installs 覆盖率仅 18/60，只给「按安装数」时多数卡片没有依据可核验。`downloadCount` 现为独立能力键，`order` 显式写出；卡片安装数与下载数**都显示、有值才显示、0/缺失不显示**。
+- **各源排序名称与真实字段一致（决定二，含一处数据错误）**：实测 clawhub 同一行 `stats.downloads=494,474` 与 `stats.installs=18,549` 相差 26 倍，而 `extra-sources.js` 把 installs 与 downloads **都写成 downloads** —— 卡片「N 次安装」显示的是下载数（与 skillhub 同类，skillhub 已在 0.5.133 修）。整改覆盖全部线路：clawhub installs 改读真实 installs（缺失保持 0、不回落 downloads）、browse 与 search 的排序键改名 `downloadCount`（其可排字段确实是下载数）、modelscope 同理（上游只有 `DownloadCount`，无安装量列 → `installs: 0`，不再冒充）、trusttools 去掉 `|| raw.download_count` 冒充并补出真实 `downloads`、browse.sh 去掉 `?? raw.downloads` 回落（该源 `installCount` 是真安装数，保留 `installCount` 键）。能力矩阵 clawhub/modelscope 由 `installCount` 改挂 `downloadCount`，skillhub 两键并存；`sort-capability.js` 注释写明「名称→真实字段」并纠正旧的 downloads/installs 推断。Test 18 是零网络交叉表（8 个技能源 + 2 个 MCP 市场：UI 标签 ↔ 能力键 ↔ 实际透传/本地字段三者一致）。
+- **SkillHub 质量评测接入已有详情弹层（用户已定落点）**：`evaluation` 端点实测单次 1~2.1s、5 维度 15 子项；若进列表卡片每页要多 24 次请求（串行≈50.6s），直接抵消本轮「减少等待」——因此只在点开时发 1 次请求，列表零额外请求。诚实处理 envelope：v1 端点响应是裸对象、**没有 `code` 字段**，新增 `getJsonV1()` 不校验 code（照抄列表侧的 `getJson` 会把 200 的成功响应判成错误，categories 当年就撞在封装差异上）；只摊平上游给的维度说明与子项分数，**不合成上游没给的总分**；不可达时显式告知「SkillHub 质量评测暂不可达」，不用 downloads/stars 凑一个「质量」。
+- **测试与写文件机制**：新增 `test/edit-lib.mjs`（锚唯一 + 行数变化 + EOL 不混用三重校验，先写临时文件、校验通过才 rename，throw 时原文件不动）与 `test/test-edit-lib.mjs`（18 项，含证伪）；`anchor-lib` 增 `blockEnd()`（按花括号深度定位块尾，取代我两次删出半截函数的「扫到第一个 `}`」写法）。手写插入脚本的笔误本轮又复发多次，这是把纪律做成机制而非依赖下次注意。另新增 `test-gate-contract`（闸门契约自身可证伪）与 `test-suite-inventory`（清单无重复/无静默游离/仓库根零临时件）。基线 51 → **53 套件**。
+
+
 ## 0.5.133
 
 - **SKILLHub 来源的四项口径修正（全部由真实上游取证确证，行为测试锁进 CI）**
@@ -13,6 +25,12 @@
 - **基线**：套件数 51 → **52**（新增 skillhub 来源套件）；`[GATE] 52 suites`，CI 为权威。
 
 ## 0.5.132
+- **applier 机制化（本轮返工的根因收口，不是手工补一次）**：门曾红到 43/53，其中两处是**写文件工具自己产出的破坏**——ops 表里已应用的条目不回写状态，重放时同一个块插了两遍（重复 const 声明）；另一条 span 把 `const CAPABILITIES = {` 整行吃掉。两者都静默发生（语法合法的那次要靠读 diff 才发现）。现在 `edit-lib.mjs` 提供 `applyOps`（幂等：needle 消失且块恰好出现一次即 skip，同一 ops 连跑两次字节必须一致；结构锚保护：span 覆盖到的 const/let/function/export/class 行若未被块原样回归就 throw，needle 自身那行豁免；needle 0 命中且块不在也 throw——静默错位比报错危险）与 `runOpsFile`（一次性消费：应用成功回写 `done:true`，ops 文件不再是每次重放的脚本）。`test-edit-lib` Test 6 把两条机制**真跑证伪**（32 项全过：二次应用 skipped=1 且字节一致、span 吃结构锚 throw 且文件不动、非法 side throw）；`test-suite-inventory` 新增 Test 5「辅助模块必须有可执行断言覆盖」（edit-lib/anchor-lib/gate-verdict/run-gate 都必须被至少一个套件引用或执行——无断言的工具就是假绿风险）。
+- **op 清单单源化（修 ①）**：`skillhub.evaluation` 登记后三个套件各自抄的白名单副本同时假红。现在 test-manage-panel / test-install-progress / test-skill-subpanel-ui 的 known 集合直接从 index.js 的 `case "…":` 标签提取，并先断言提取规模与核心 op 存在（提取失效会变成「所有 op 都未知」的全面假红，必须自证）。
+- **op 白名单从「三处副本」收敛为单一事实源（修 ①，并升级四处防漂移锁）**：三个套件各自抄一份 known Set，登记新 op 得同步三处，漏一处即假红（skillhub.evaluation 上线时同时撞红三条）。现在 known 一律从 index.js 的 case 标签派生，并先断言提取规模与核心 op 存在（提取失效会变成「所有 op 都未知」的全面假红）。原先检查「每份副本里是否有 mcp.probe」的四处锁（mcp-panel-p0 / mcp-status-p1 / mcp-tool-deny / mcp-raw-edit）随之失去对象，已升级为断言**更强的性质**：登记处唯一 + 派生声明形态存在 + known 真的指向派生集合 + 任何套件不许再写回硬编码清单副本。证伪两轮：第一轮 ② 漏网（t.includes('IX_OPS') 会被任何提及骗过——改名 IX_DISABLED 后残留字样仍判真），补成断言声明形态与指向后 ②⑤ 全被抓到（连跑两次字节一致）。
+- **CHANGELOG 混用行尾修复（守卫当场抓到我自己）**：bump 脚本插入的内容是 LF，落进 CRLF 的 CHANGELOG 造成 24 处 loneLF；上一版核验脚本故意排除 CHANGELOG 所以没拦住。已按行 split/join 归一（内容与行数零改动），并把 CHANGELOG.md、package.json 纳入 Test 12 的行尾守卫 —— 判据是「不许混用」而不是「必须 CRLF」，所以纯 LF 的 package.json 也照样通过。
+- **名称↔字段交叉表落地（修 ②，含一处我自己归因错的注释）**：clawhub/modelscope 的能力键改 `downloadCount`，getter、browse 透传、`MODELSCOPE_FULL_SORT_KEYS`（全量排分派表，不改这里 downloadCount 会退回单页分支——正是 sort-server 头部写的缺陷2形态）、MATRIX 抄本改从能力表同源读取、UI 断言一起改。clawhub 绝对值段此前读 `vals()`（installs）拿到 18,549，改读 downloads 后实测榜首 494,474；我曾把 12.1M 的 dev-god 误归为 clawhub 榜首——那是 **skillhub** 的下载榜，clawhub 的下载榜首是 self-improving-agent（注释已按实测改写，阈值 400,000 本来成立，错的一直是字段）。sort-capability.js 注释写明「名称→真实字段」与 installs 跨页不单调的证据（实测 p1min=0 < p2max=892）。
+- **守卫抓自己人（修 ③）**：test-temp-hygiene 抓到 test-edit-lib 裸 `os.tmpdir()`（改 safeTempDir 并删死导入 os）；anchor-lib 的否定断言守卫抓到 Test 18 交叉表里三处 `!array.includes('identifier')`——那是数组成员判定（无子串冒充面），按守卫口径显式改 `indexOf(...) === -1`，并在注释写明为什么不是削弱守卫。
 
 - **搜索/排序/分类等待时间收敛（本轮主项；全部行为锁进 CI）**
   - **聚合搜索串行改并发（`fanOutSources`，src/sources.js）**：原 `for (await handler)` 串行让总耗时等于各源之和，一个不可达源（trusttools 实测 >20s）拖死整次搜索（实测聚合 >20s 超时拿不到结果）。并发后总耗时 ≈ 最慢单源；同构负载实测串行 48.1s → 并发 6.0s（省 87%）。每源 12s 预算：超预算源记 degraded（写明超时），不再拖住整次；results/degraded 都按源清单顺序折叠，同一条件两次搜索列表顺序不变。`handlers` 是测试注入点：注入时 `all` 展开为注入集合，测试态零真实网络（之前 fake handler 被 8 个真实源淹没，测的还是上游当时的心情）。
@@ -1162,3 +1180,5 @@ skills.sh 只抓了首页那 48 条精选，其余源也只取了第一屏。参
 ## 0.1.0
 
 - 骨架。
+
+

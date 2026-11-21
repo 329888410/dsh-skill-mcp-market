@@ -106,11 +106,11 @@ console.log('Test 2: index.js 接线');
 }
 
 console.log('');
-console.log('Test 3: 白名单同步');
-for (const f of ['test-manage-panel.mjs', 'test-install-progress.mjs']) {
+console.log('Test 3: op 登记单源化（tools.get/set 无需三处同步）');
+for (const f of ['test-manage-panel.mjs', 'test-install-progress.mjs', 'test-skill-subpanel-ui.mjs']) {
   const t = read('test/' + f);
-  check(f + ' 含 mcp.tools.get', t.includes('mcp.tools.get'));
-  check(f + ' 含 mcp.tools.set', t.includes('mcp.tools.set'));
+  check(f + ' 从 index.js 派生（声明形态 + known 指向）', t.includes('const IX_OPS = new Set(') && t.includes('const known = IX_OPS;'), '');
+  check(f + ' 无硬编码白名单副本（副本会漂移）', !t.includes("new Set(['skills.list"), '');
 }
 
 console.log('');

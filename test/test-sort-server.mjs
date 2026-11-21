@@ -29,8 +29,8 @@ const LOBEHUB_SKILLS_VOCAB = ["createdAt", "updatedAt", "stars", "installCount",
 // 矩阵对 lobehub / modelscope / clawhub 的声称（sort-capability.js:25,29,31）。
 const MATRIX = {
   lobehub: ["installCount", "stars", "newest", "updated", "name"],
-  modelscope: ["installCount", "stars", "newest", "updated", "name"],
-  clawhub: ["installCount", "stars", "newest", "updated", "trending", "name"],
+modelscope: ["downloadCount", "stars", "newest", "updated", "name"],
+clawhub: ["downloadCount", "stars", "newest", "updated", "trending", "name"],
 };
 
 console.log('');
@@ -140,8 +140,12 @@ console.log('Test 3: 缺陷2 — modelscope 5 个矩阵键必须都走全量拉�
   check('searchModelScope 用 modelScopeSortMode', /const sortMode = modelScopeSortMode\(sort\)/.test(seg));
   const getters = es.MODELSCOPE_SORT_GETTERS;
   if (getters) {
-    const missing = MATRIX.modelscope.filter((k) => typeof getters[k] !== 'function');
-    check('5 键 getter 齐备', missing.length === 0, missing.join(','));
+  // MATRIX 抄本必须与能力表同源，否则「getter 齐备」是在跟一份本地副本较劲。
+  const { sortKeysFor: capKeys } = await import('../src/sort-capability.js');
+  const msCaps = capKeys('modelscope');
+  check('MATRIX.modelscope 与能力表一致', JSON.stringify(MATRIX.modelscope) === JSON.stringify(msCaps), JSON.stringify(MATRIX.modelscope) + ' vs ' + JSON.stringify(msCaps));
+  const missing = msCaps.filter((k) => typeof getters[k] !== 'function');
+  check('modelscope 能力键 getter 齐备', missing.length === 0, msCaps.join(',') + ' 缺:' + missing.join(','));
   } else skip('MODELSCOPE_SORT_GETTERS 未导出');
 }
 
@@ -151,7 +155,9 @@ console.log('Test 4: 缺陷3 — clawhub search 的 getter 必须有字段支撑
   const getters = es.CLAWHUB_SEARCH_SORT_GETTERS;
   check('导出 CLAWHUB_SEARCH_SORT_GETTERS', getters && typeof getters === 'object');
   if (getters) {
-    check('installCount 仍读 downloads', typeof getters.installCount === 'function');
+    // 矩阵键已改为 downloadCount；这里再断言 getters.installCount 就是锁一个
+    // 已被纠正的旧键（名称与真实字段一致整改的直接后果）。
+    check('downloadCount getter 存在（读 r.downloads）', typeof getters.downloadCount === 'function');
     check('name 仍读 displayName/slug', typeof getters.name === 'function');
     // 实测 search 行：updatedAt 顶层齐全（epoch ms）；createdAt/stars 只在 native.skill.* 内（5/10 覆盖）。
     check('updated getter 读顶层 updatedAt', typeof getters.updatedAt === 'function' || typeof getters.updated === 'function');
@@ -185,8 +191,8 @@ console.log('Test 5: 缺陷3 — 真实 sortRawRows + getter 在合成行上的�
     check('newest 降序，缺 native 的行沉底', nw.length === 4 && nw[3] === 0 && desc(nw), nw.join(','));
     const st = es.sortRawRows(clone(), 'stars', g).map((r) => r.native?.skill?.stats?.stars ?? 0);
     check('stars 降序，缺 native 的行沉底', desc(st) && st[st.length - 1] === 0, st.join(','));
-    const ic = es.sortRawRows(clone(), 'installCount', g).map((r) => r.downloads);
-    check('installCount 降序单调', desc(ic), ic.join(','));
+    const ic = es.sortRawRows(clone(), 'downloadCount', g).map((r) => r.downloads);
+    check('downloadCount 降序单调', desc(ic), ic.join(','));
     const nm = es.sortRawRows(clone(), 'name', g).map((r) => String(r.displayName));
     check('name 升序', nm.join('|') === [...nm].sort((a, b) => a.localeCompare(b)).join('|'), nm.join('|'));
     const tr = es.sortRawRows(clone(), 'trending', g).map((r) => r.id).join(',');

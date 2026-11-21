@@ -86,7 +86,11 @@ console.log('Test 7: 能力表服务端语义（直接 import 纯函数）');
   const { sortKeysFor, sortKeysForMcp } = await import('../src/sort-capability.js');
   check('clawhub browse 含 trending', sortKeysFor('clawhub').includes('trending'));
   check('clawhub search 不含 trending（search 行无字段支撑）', !sortKeysFor('clawhub', { hasQuery: true }).includes('trending'));
-  check('clawhub search 仍含其余 5 键', JSON.stringify(sortKeysFor('clawhub', { hasQuery: true })) === '["installCount","stars","newest","updated","name"]', JSON.stringify(sortKeysFor('clawhub', { hasQuery: true })));
+  const clawSearch = sortKeysFor('clawhub', { hasQuery: true });
+  // 名实不符已纠正：能力表不再宣称 installCount，改宣称真实可排的 downloadCount。
+  check('clawhub search 不含 installCount（纠正后）', clawSearch.indexOf('installCount') === -1, clawSearch.join(','));
+  check('clawhub search 含 downloadCount', clawSearch.indexOf('downloadCount') >= 0, clawSearch.join(','));
+  check('clawhub search 其余 4 键仍在', ['stars', 'newest', 'updated', 'name'].every((k) => clawSearch.indexOf(k) >= 0), clawSearch.join(','));
   check('lobehub MCP 无查询为空（CLI 拒收 --sort）', sortKeysForMcp('lobehub').length === 0);
   check('lobehub MCP 带查询两键', JSON.stringify(sortKeysForMcp('lobehub', { hasQuery: true })) === '["installCount","ratingAverage"]');
   check('registry MCP 两路径都空', sortKeysForMcp('registry').length === 0 && sortKeysForMcp('registry', { hasQuery: true }).length === 0);

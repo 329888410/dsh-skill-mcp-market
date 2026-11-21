@@ -114,7 +114,13 @@ console.log('Test 8: 既有结构锁不被破坏');
   check('MCP 段仍在技能段之后', c.indexOf("manageTab === 'mcp' ? h('div'") > c.indexOf("manageTab === 'skill' ? h('div'"));
   check('未引入未登记 op', (() => {
     const ops = [...new Set([...c.matchAll(/call\('([\w.]+)'/g)].map((m) => m[1]))];
-    const known = new Set(['skills.list','mcp.list','settings.get','skills.search','mcp.search','skills.detail','mcp.detail','mcp.probe','mcp.status','skills.update','mcp.update','skills.install','mcp.install','skills.toggle','mcp.toggle','skills.uninstall','settings.set','skills.trash','skills.restore','skills.trashEmpty','mcp.trash','mcp.restore','mcp.trashEmpty','mcp.tools.get','mcp.raw.get','mcp.raw.set','mcp.tools.set','sessions.scan','sessions.repair','market.openDir','mcp.uninstall','skills.upload','skills.importZip']);
+    // op 清单唯一事实源 = index.js 的 case 标签。此前三个套件各抄一份白名单，加一个 op
+    // 就得同步三处，漏一处即假红（skillhub.evaluation 正是这样同时撞红三条）。
+    // 提取一旦失效会变成「所有 op 都未知」这种全面假红，所以规模与核心 op 都要断言。
+    const IX_SRC = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+    const IX_OPS = new Set([...IX_SRC.matchAll(/case "([\w.]+)":/g)].map((m) => m[1]));
+    if (IX_OPS.size < 30 || !IX_OPS.has('skills.search')) throw new Error('index.js op 清单提取失效: ' + IX_OPS.size);
+    const known = IX_OPS;
     return ops.filter((o) => !known.has(o)).length === 0;
   })());
 }

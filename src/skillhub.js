@@ -16,6 +16,66 @@ async function getJson(url, timeoutMs = 20000) {
   }
 }
 
+
+// v1 端点的响应是裸对象（实测顶层键 createdAt,dimensions,skillId,summary,updatedAt,
+// userSummary,versionId），没有列表接口那层 code/message/data 封装。因此必须另走一条
+// 不校验 code 的取数路径 —— 套用上面的 getJson 会把 200 的成功响应判成错误（当年
+// categories 就是撞在这个差异上，端点还写错了，详见下方注释）。
+async function getJsonV1(url, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { headers: UA, signal: controller.signal });
+    if (!response.ok) throw new Error('SkillHub v1 HTTP ' + response.status);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const DIMENSION_LABELS = {
+  trust: '可信度',
+  reliability: '可靠性',
+  adaptability: '适配性',
+  convention: '规范性',
+  effectiveness: '有效性',
+};
+
+/**
+ * 读取某个 Skill 的官方质量评测（SkillHub Open API 的 evaluation 端点）。
+ * 只做上游字段的如实摊平：每个维度给出维度级说明与该维度子项分数。
+ * 绝不合成一个上游没有给的总分，也不用 downloads/stars 之类字段凑数；
+ * 上游不可达时直接抛错，由面板显式降级告知（返回空对象会被当成「有数据」）。
+ */
+export async function evaluation(slug) {
+  const id = String(slug || '').trim();
+  if (!id) throw new Error('缺少 skill 标识');
+  const data = await getJsonV1('https://api.skillhub.cn/api/v1/skills/' + encodeURIComponent(id) + '/evaluation');
+  const dims = data && data.dimensions && typeof data.dimensions === 'object' ? data.dimensions : {};
+  const rows = [];
+  for (const key of Object.keys(dims)) {
+    const dim = dims[key] || {};
+    const items = dim.items && typeof dim.items === 'object' ? dim.items : {};
+    const scores = Object.keys(items)
+      .map((k) => Number(items[k] && items[k].score))
+      .filter((n) => Number.isFinite(n));
+    rows.push({
+      key,
+      label: DIMENSION_LABELS[key] || key,
+      reason: String(dim.userReason || dim.reason || ''),
+      // 维度分取该维度子项的均值，并在文案里说明它是子项均值而非上游给的维度分；
+      // 子项全缺时保持 null（不显示），不猜。
+      score: scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null,
+      scored: scores.length,
+    });
+  }
+  return {
+    slug: id,
+    summary: String((data && (data.userSummary || data.summary)) || ''),
+    dimensions: rows,
+    updatedAt: Number(data && data.updatedAt) || 0,
+  };
+}
 function toItem(raw) {
   const namespace = raw.namespace || {};
   const canonical = namespace.canonicalName || raw.slug || "";
@@ -59,7 +119,10 @@ export async function searchSkills({ query = "", page = 1, pageSize = 20, catego
   //     实测两榜首条不同，installs→self-improving-agent、downloads→dev-god）；
   //   updated → updated_at（文档字段名带 _at；sortBy=updated 会被上游当成未知名）；
   //   name → 上游实测返回 code:400 空列表，只能本地排（不发 sortBy=name）。
-  const serverSort = sort === "installCount" ? "installs" : sort === "stars" ? "stars" : sort === "updated" ? "updated_at" : "";
+  // downloadCount 是独立键（用户 2026-11-21 拍板）：installs 覆盖率仅 18/60，
+  // 只给「按安装数」时多数卡片没有依据可核验，而 sortBy=downloads 实测同样服务端
+  // 全盘单调（榜首 dev-god），两榜首条不同 → 两个键都给、各排各的字段。
+  const serverSort = sort === "installCount" ? "installs" : sort === "downloadCount" ? "downloads" : sort === "stars" ? "stars" : sort === "updated" ? "updated_at" : "";
   const params = new URLSearchParams();
   // 关键词参数名必须是 keyword：实测 q=pdf 返回 total=233498（≈全量 233,498，等于没搜），
   // keyword=pdf 返回 5614。旧代码传 q，所以 SkillHub 的搜索一直无效，只因仍返回条目而看着像成功。

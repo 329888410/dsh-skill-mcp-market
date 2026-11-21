@@ -61,3 +61,36 @@ export function absent(src, needle) {
   }
   return hits === 0;
 }
+
+// blockEnd(src, startIdx) —— 从 startIdx（该行须含开括号）起按花括号深度找到配对
+// 闭括号所在行，跳过字符串、模板串与注释。
+// 为什么进库：我两次靠「扫到第一个 trim()==='}' 就停」来定位块尾，结果停在 while/for
+// 的内层闭合上，删走半截函数、留下孤立 return（Illegal return statement）。深度扫描
+// 是唯一可靠的写法，不该每次临时手搓。
+export function blockEnd(src, startIdx, label) {
+  const NL = String.fromCharCode(10);
+  const lines = String(src).replace(/\r\n/g, NL).split(NL);
+  if (startIdx < 0 || startIdx >= lines.length) {
+    throw new Error('blockEnd: startIdx ' + startIdx + ' 越界（' + (label || '') + '）');
+  }
+  let depth = 0;
+  let seenOpen = false;
+  for (let i = startIdx; i < lines.length; i++) {
+    const line = lines[i];
+    let q = 0;
+    for (let x = 0; x < line.length; x++) {
+      const ch = line.charCodeAt(x);
+      if (q) { if (ch === 92) x++; else if (ch === q) q = 0; continue; }
+      if (ch === 39 || ch === 34 || ch === 96) { q = ch; continue; }
+      if (ch === 47 && line.charCodeAt(x + 1) === 47) break;
+      if (ch === 47 && line.charCodeAt(x + 1) === 42) { const e = line.indexOf('*/', x + 2); if (e < 0) { x = line.length; } else { x = e + 1; } continue; }
+      if (ch === 123) { depth += 1; seenOpen = true; }
+      else if (ch === 125) {
+        if (!seenOpen) throw new Error('blockEnd: 起点之前出现闭括号（' + (label || '') + '）');
+        depth -= 1;
+        if (depth === 0) return i;
+      }
+    }
+  }
+  throw new Error('blockEnd: 未找到配对闭括号（深度停在 ' + depth + '，' + (label || '') + '）');
+}

@@ -19,7 +19,8 @@ console.log('Test 1: 没有安装数据的源必须声明不支持按安装数�
   check('skillsmp NOT installCount (CLI 无此 sort)', supportsSort('skillsmp', 'installCount') === false);
   check('browse.sh supports installCount (459/479 rows)', supportsSort('browse.sh', 'installCount') === true);
   check('trusttools supports installCount', supportsSort('trusttools', 'installCount') === true);
-  check('modelscope supports installCount', supportsSort('modelscope', 'installCount') === true);
+  check('modelscope NOT installCount (上游只有 DownloadCount)', supportsSort('modelscope', 'installCount') === false);
+  check('modelscope supports downloadCount', supportsSort('modelscope', 'downloadCount') === true);
   check('skillhub supports installCount', supportsSort('skillhub', 'installCount') === true);
 }
 

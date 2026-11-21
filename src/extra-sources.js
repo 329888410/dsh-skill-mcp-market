@@ -89,10 +89,14 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
       homepage: `https://clawhub.ai${raw.canonicalUrl || `/${reference}`}`,
       upstreamUrl: "",
       installRef: reference,
-      // browse 端点的量在 stats.downloads，search 端点在 raw.downloads；两处都要读，
-      // 否则 browse 的 installs 恒为 0（实测卡片与排序全瞎）。
+      // 两个量各取各的上游字段，不再互相复制。实测同一行 stats 里 downloads=494,474、
+      // installs=18,549 —— 相差 26 倍：旧写法把 installs 也写成 downloads，卡片上的
+      // 「N 次安装」实际是下载数（与 skillhub 那处同类的数据错误）。
+      // browse 端点的量在 stats.*，search 端点在顶层 raw.downloads；两处都要读。
       downloads: Number(raw.downloads ?? raw.stats?.downloads ?? raw.metrics?.rolling60DayInstalls ?? 0) || 0,
-      installs: Number(raw.downloads ?? raw.stats?.downloads ?? raw.metrics?.rolling60DayInstalls ?? 0) || 0,
+      // installs 只认真实 installs 字段；缺失或为 0 就保持 0 —— 面板对 0 不显示该段，
+      // 宁可不显示也不显示错数（不回落到 downloads）。
+      installs: Number(raw.installs ?? raw.stats?.installs ?? 0) || 0,
       category: raw.category || "",
       // 排序键的展示字段必须与 getter **同源**，否则「排了但看起来没排」：
       // browse 行量在 stats.*；search 行（实测 21 键）stars/createdAt 只挂在 native.skill.* 里，
@@ -112,7 +116,8 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
 //   canonicalUrl,displayName,downloads,featured,icon,install,links,metrics,native,official,
 //   ownerHandle,publisher,score,slug,source,sourceIdentity,summary,trust,updatedAt,version,owner
 // 支撑情况（同一批 10 行实测）：
-//   installCount → 顶层 downloads（10/10，number）
+//   downloadCount → 顶层 downloads（10/10，number）；search 行没有安装数字段，
+//                   旧键名 installCount 属名实不符（同一数据在 browse 行才有 stats.installs）
 //   updated      → 顶层 updatedAt（10/10，epoch ms）
 //   newest       → native.skill.createdAt（仅 5/10 有 native；缺失行按 0 沉底）
 //   stars        → native.skill.stats.stars（同上 5/10；顶层 stars/stats.stars 在 search 行上恒空，
@@ -120,7 +125,7 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
 //   trending     → 无字段支撑：score 是相关性分桶（除前两条外全等），metrics.rolling60DayInstalls
 //                  稀疏近零 → 故意不提供 getter，保持上游序（矩阵与线路的这一格仍不一致，已上报 lead）。
 export const CLAWHUB_SEARCH_SORT_GETTERS = {
-  installCount: (r) => r.downloads ?? r.metrics?.rolling60DayInstalls,
+  downloadCount: (r) => r.downloads ?? r.metrics?.rolling60DayInstalls,
   name: (r) => r.displayName || r.slug,
   updated: (r) => Number(r.updatedAt) || 0,
   newest: (r) => Number(r.native?.skill?.createdAt) || 0,
@@ -231,8 +236,9 @@ out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length /
   // 旧实现是「预载 N 条再本地排」——那是窗口近似，禁止；现在把 sort 透传给上游，
   // 沿 nextCursor 累积到当前页深度即可保证全局序正确。
   // 上游 sort 值实测：downloads/stars/newest/updated/trending/name 均服务端全盘排序；
-  // installs 不单调（数据质量差）→ 用 downloads 代替。
-  const browseSort = sort === "installCount" ? "downloads"
+  // installs 不单调（数据质量差）→ 该源只能用下载数排，因此键名如实叫 downloadCount，
+  // 不再顶着「按安装数」的名字排下载数（名称必须与排序方法一致）。
+  const browseSort = sort === "downloadCount" ? "downloads"
     : sort === "stars" ? "stars"
       : sort === "newest" ? "newest"
         : sort === "updated" ? "updated"
@@ -401,7 +407,10 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
       ref: raw.branch || "main",
       skillDir: path,
       stars: Number(raw.stars || 0),
-      installs: Number(raw.install_count || raw.download_count || 0),
+      // 上游 sort_by=install_count 与 install_count 字段都是真实安装量 → 名称与字段一致；
+      // 去掉 || raw.download_count 回落，避免用下载数冒充安装数。
+      installs: Number(raw.install_count || 0),
+      downloads: Number(raw.download_count || 0),
       security: raw.security_level || "",
       tags: Array.isArray(raw.tags) ? raw.tags : [],
       category: (Array.isArray(raw.tags) && raw.tags[0]) || "",
@@ -655,7 +664,10 @@ const MODELSCOPE_SKILLS_URL = "https://modelscope.cn/api/v1/dolphin/skills";
 // 矩阵（sort-capability.js:31）对 modelscope 声称 installCount/stars/newest/updated/name。
 // 上游没有任何服务端 sort，所以「支持」= 全量拉取后本地排。少一个键进全量分支，
 // 就是那一键只在单页内有序（跨页错乱），即「声称支持、线路不生效」。
-export const MODELSCOPE_FULL_SORT_KEYS = ["installCount", "stars", "newest", "updated", "name"];
+// 与 MODELSCOPE_SORT_GETTERS 同步：ModelScope 上游只有 DownloadCount（下载数），没有安装量列。
+// 全量排分派表必须认这个键，否则 downloadCount 退回单页分支 —— 正是本套件头部写的
+// 「缺陷2」形态（只对一页排序、跨页错乱）。
+export const MODELSCOPE_FULL_SORT_KEYS = ["downloadCount", "stars", "newest", "updated", "name"];
 
 /** 该排序键是否需要全量拉取 + 本地排 + 切页；false = 保持上游分页（快，一次调用）。 */
 export function modelScopeSortMode(sort) {
@@ -663,8 +675,10 @@ export function modelScopeSortMode(sort) {
 }
 
 // 排序键 → 上游行字段（实测列名）：DownloadCount / SourceStar|Likes / GmtCreate / GmtModify|LastSyncTime / DisplayName|Name
+// 注意 DownloadCount 是下载数不是安装数（该源上游没有安装量列），所以键名叫 downloadCount ——
+// 旧名 installCount 会让卡片显示「N 次安装」而数字其实是下载数。
 export const MODELSCOPE_SORT_GETTERS = {
-  installCount: (r) => r.DownloadCount,
+  downloadCount: (r) => r.DownloadCount,
   stars: (r) => r.SourceStar ?? r.Likes,
   newest: (r) => Date.parse(r.GmtCreate) || Number(r.GmtCreate) || 0,
   updated: (r) => Date.parse(r.GmtModify || r.LastSyncTime) || 0,
@@ -768,7 +782,9 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
       ref: branch,
       skillDir,
       downloads: Number(raw.DownloadCount || 0),
-    installs: Number(raw.DownloadCount || 0),
+      // 该源上游无安装量列：installs 保持 0（面板不显示），不把下载数冒充安装数。
+      // 注：此前行被多缩进两个空格（771 行），一并修正。
+      installs: 0,
       // 展示字段与 MODELSCOPE_SORT_GETTERS 同源（stars=SourceStar|Likes，时间戳同 :665-668 的读法）：
       // 此前 modelscope 卡片不带这几个字段，「按星级/按最新」排完在界面上无从核验。
       // 字段名沿用 clawhub 的既有约定（:100-101 的 createdAt/updatedAt），不另造新名。

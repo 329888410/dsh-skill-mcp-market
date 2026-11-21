@@ -20,20 +20,34 @@
 //   modelscope   无任何服务端 sort（实测 9 种参数名全部被忽略）；全量拉取（上游深度上限≈45k）
 //                后本地排 DownloadCount/SourceStar/GmtCreate/GmtModify/Name
 
-export const SORT_KEYS = ["installCount", "stars", "newest", "updated", "trending", "name"];
+// downloadCount 是独立键：它与 installCount 在上游是两个不同字段（skillhub/clawhub/modelscope
+// 实测都有各自的 downloads/DownloadCount 与 installs），混成一个键就必然有源的名称与字段不符。
+export const SORT_KEYS = ["installCount", "downloadCount", "stars", "newest", "updated", "trending", "name"];
 
+// 名称 → 真实字段（用户 2026-11-21 拍板：各源的排序方法按真实情况命名，名称必须与实现一致）：
+//   installCount  → 该源行上真有「安装数」字段并用它排：skills.sh(installs)、trusttools(sort_by=install_count /
+//                 install_count)、browse.sh(installCount)、lobehub(--sort installCount)、skillhub(sortBy=installs)
+//   downloadCount → 排的是下载数：clawhub(browse sort=downloads、search getter r.downloads)、
+//                 modelscope(本地 getter r.DownloadCount)、skillhub(sortBy=downloads)
+// clawhub 旧格写成 installCount 属名实不符：实测同一行 stats.installs=18,549 与 stats.downloads=494,474
+//   clawhub      browse 端点 sort=downloads|stars|newest|updated|trending|name 全部服务端全盘排序
+//                （实测单调）；sort=installs 跨页**不单调**（实测 p1min=0 < p2max=892，字段稀疏：
+//                60 条样本仅 18 条有值）→ 不宣称 installCount，键名如实叫 downloadCount；
+//                search 端点 URL 不认 sort，本地 getter 同样只有 downloads 可用。
 const CAPABILITIES = {
   "skills.sh": ["installCount", "name"],
-  // clawhub：browse（空查询）路径 6 键全部服务端全盘排序（实测 sort=downloads/stars/newest/updated/trending/name）；
+  // clawhub：browse 路径 sort=downloads/stars/newest/updated/trending/name 全部服务端全盘排序（实测单调）；
   // search（带查询）路径 trending 无字段支撑（score 是相关性分桶、rolling60DayInstalls 稀疏近零），
   // 其余键由 handler 的本地 getter 覆盖（stars/newest 取自 native.skill.*，updated 取顶层 updatedAt）。
-  "clawhub": ["installCount", "stars", "newest", "updated", "trending", "name"],
+  "clawhub": ["downloadCount", "stars", "newest", "updated", "trending", "name"],
   "skillsmp": ["name"],
   "trusttools": ["installCount", "name"],
   "browse.sh": ["installCount", "updated", "name"],
   "lobehub": ["installCount", "stars", "newest", "updated", "name"],
-  "skillhub": ["installCount", "stars", "updated", "name"],
-  "modelscope": ["installCount", "stars", "newest", "updated", "name"],
+  // skillhub：installs 与 downloads 都是上游真实字段（实测 self-improving-agent 86,140 / 1,736,606，
+  // 两榜首条也不同）→ 两个键都给，各自透传对应 sortBy。
+  "skillhub": ["installCount", "downloadCount", "stars", "updated", "name"],
+  "modelscope": ["downloadCount", "stars", "newest", "updated", "name"],
 };
 
 /** 该源是否支持该排序（false = 保持上游默认序，绝不近似或乱排）。 */

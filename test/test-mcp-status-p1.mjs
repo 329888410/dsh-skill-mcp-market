@@ -55,9 +55,11 @@ console.log('Test 3: 面板显示生命周期而非布尔');
 }
 
 console.log('');
-console.log('Test 4: op 登记一致（status 进两处白名单）');
-for (const f of ['test-manage-panel.mjs', 'test-install-progress.mjs']) {
-  check(f + ' 含 mcp.status', /mcp\.status/.test(read('test/' + f)));
+console.log('Test 4: op 登记单源化（status 无需多处同步）');
+for (const f of ['test-manage-panel.mjs', 'test-install-progress.mjs', 'test-skill-subpanel-ui.mjs']) {
+  const t = read('test/' + f);
+  check(f + ' 从 index.js 派生（含 status）', t.includes('const IX_OPS = new Set(') && t.includes('const known = IX_OPS;') && read('index.js').includes('case ' + String.fromCharCode(34) + 'mcp.status' + String.fromCharCode(34)), '');
+  check(f + ' 无硬编码白名单副本', !t.includes("new Set(['skills.list"), '');
 }
 
 console.log('');

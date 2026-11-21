@@ -35,11 +35,18 @@ console.log('Test 2: 服务端新增 mcp.probe op（封装已有内部方法）'
 }
 
 console.log('');
-console.log('Test 3: 白名单三处同步（mcp.probe 加入，防止漂移锁误伤）');
-// test-rpc-surface 是动态提取 client op 比对服务端 case，没有硬编码白名单，故只查两处 known Set
-for (const f of ['test-manage-panel.mjs', 'test-install-progress.mjs']) {
-  const t = read('test/' + f);
-  check(f + ' 含 mcp.probe', /mcp\.probe/.test(t));
+console.log('Test 3: op 登记单源化（三处副本正是漂移假红的根源）');
+// 旧锁逐处检查「每个套件的硬编码白名单里有 mcp.probe」—— 那是给 3 份副本打补丁，
+// 而副本本身就是 skillhub.evaluation 上线时同时假红三条的原因（登记只需一处）。
+// known 现在一律从 index.js 的 case 标签派生，所以锁升级为更强的性质：
+// 登记只此一处，且任何套件都不许再写回硬编码 op 清单副本。
+{
+  check('index.js 仍是唯一登记处（case "mcp.probe"）', read('index.js').includes('case "mcp.probe"'));
+  for (const f of ['test-manage-panel.mjs', 'test-install-progress.mjs', 'test-skill-subpanel-ui.mjs']) {
+    const t = read('test/' + f);
+    check(f + ' 从 index.js 派生 op 清单（声明形态 + known 指向，不接受仅提及）', t.includes('const IX_OPS = new Set(') && t.includes('const known = IX_OPS;') && t.includes('index.js'), '');
+    check(f + ' 无硬编码白名单副本（副本会漂移）', !t.includes("new Set(['skills.list"), '');
+  }
 }
 
 console.log('');

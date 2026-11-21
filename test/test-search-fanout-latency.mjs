@@ -17,7 +17,7 @@
 // 并行化实现为可注入纯函数（fake handler 驱动），不依赖网络，CI 上可重复。
 // 动态 import：静态 import 在缺导出时会在模块实例化阶段就抛 SyntaxError，
 // 整个套件一条断言都跑不到 —— 那看起来像「加载错误」，实际是 RED 没被读出来。
-import { sliceBetween, countHits, absent } from './anchor-lib.mjs';
+import { sliceBetween, countHits, absent, blockEnd } from './anchor-lib.mjs';
 let fanOutSources = null, searchSkills = null, importError = '';
 try {
   const mod = await import('../src/sources.js');
@@ -431,7 +431,11 @@ console.log('Test 12: 交付文件行尾必须统一（平台中立不变量）'
   // 部分行就用 LF join 回去（本轮 splice 脚本真就这么把 client.js 写坏过一次）。
   // 至于「整体从 CRLF 变成 LF」，CI 上无法与正常 checkout 区分，它由写入脚本自己的 EOL
   // 自检负责（每个脚本写完读回统计，不符即 throw）—— 职责不同，不要在这里假装能查。
-  const deliverables = ['client.js', 'index.js', 'src/sources.js', 'src/mcp.js', 'src/tool-filter.js'];
+  const deliverables = ['client.js', 'index.js', 'src/sources.js', 'src/mcp.js', 'src/tool-filter.js',
+    // CHANGELOG.md / package.json 同样是脚本会写的仓库文件：上一轮把 LF 内容插进
+    // CRLF 的 CHANGELOG，混用行尾直到逐行核对才看见（当时的自检故意排除了它）。
+    // 判据是「不许混用」而不是「必须 CRLF」，所以纯 LF 的 package.json 也通过。
+    'CHANGELOG.md', 'package.json'];
   const mixed = [];
   for (const rel of deliverables) {
     let buf;
@@ -482,6 +486,396 @@ console.log('Test 13: 不可达源的 total 不得随页码虚高（计数与真
     check('过滤后 total 等于可见集合', r3.total === r3.items.length, 'total=' + r3.total + ' items=' + r3.items.length);
     check('过滤掉的条数如实暴露', r3.filteredOut === 1, r3.filteredOut);
   }
+}
+
+console.log('');
+console.log('Test 14: 请求序号守卫 —— 先发请求的结果不得覆盖后发请求');
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const W = path.resolve(import.meta.dirname, '..');
+  const c = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
+  // 现场取证：改前 client.js 里 AbortController=0、requestSeq=0 —— 没有取消与乱序防护。
+  // 症状：快速切源时先发的慢请求后落地，把后发请求的结果盖掉，列表与用户最后选的源
+  // 不符（这是结果错误，不只是慢）。
+  const bodyStart = 'const searchSkills = useCallback(async (text, options) => {';
+  const bodyEnd = '}, [sort, liveRef, source, size]);';
+  const bgn = c.indexOf(bodyStart);
+  const edn = c.indexOf(bodyEnd, bgn);
+  check('searchSkills 函数体可定位', bgn > 0 && edn > bgn, bgn + '/' + edn);
+  if (bgn > 0 && edn > bgn) {
+    const body = c.slice(bgn + bodyStart.length, edn);
+    // 函数体直接跑起来（注入 free variables），测的是行为而不是正则形状
+    const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
+      '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage,' +
+      '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setNotice, setError, setBusy,' +
+      '    skillCacheKey, resolvePageSize } = deps;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
+    const fired = [];
+    const delays = {};
+    const env = {
+      liveRef: { current: { source: 'clawhub', category: 'all' } },
+      resultCacheRef: { current: {} },
+      reqSeqRef: { current: 0 },
+      size: 24,
+      sort: '',
+      skillCacheKey: () => '',
+      resolvePageSize: (o, s) => (o && o.size) || s,
+      setSkills: (rows) => fired.push(rows),
+      setSkillsPage: () => {}, setSkillsTotalPages: () => {}, setSkillsTotal: () => {},
+      setSkillsHasMore: () => {}, setNotice: () => {}, setError: () => {}, setBusy: () => {},
+      call: async (op, p) => {
+        const tag = p.source + '#p' + p.page;
+        await new Promise((r) => setTimeout(r, delays[tag] || 0));
+        return { items: [{ id: tag, slug: tag }], pages: 2, total: 48, hasMore: true, hints: [], degraded: [], sourceErrors: [] };
+      },
+    };
+    const run = mk(env);
+    delays['clawhub#p1'] = 40;   // 先发但慢
+    delays['skillsmp#p2'] = 5;   // 后发但快
+    const pa = run('x', { source: 'clawhub', page: 1 });
+    const pb = run('x', { source: 'skillsmp', page: 2 });
+    await Promise.all([pa, pb]);
+    const tags = fired.filter((x) => Array.isArray(x) && x.length).map((x) => x[0].slug);
+    console.log('   setSkills 落地顺序: ' + JSON.stringify(tags));
+    check('最后一次落地来自后发请求', tags.length > 0 && tags[tags.length - 1] === 'skillsmp#p2', tags.join(' → '));
+    check('先发慢请求的结果被丢弃', !tags.includes('clawhub#p1'), tags.join(' → '));
+    check('序号载体 reqSeqRef 已声明', /const reqSeqRef = useRef\(0\)/.test(c), '');
+  }
+}
+
+console.log('');
+console.log('Test 15: 两侧 totalPages 默认口径必须一致（0=未知总页数）');
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const W = path.resolve(import.meta.dirname, '..');
+  const c = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
+  // 改前：skillsTotalPages 默认 1、mcpTotalPages 默认 0。同一字段两种语义：技能侧在首次
+  // 响应前显示「第 1 / 1 页」（凭空编造已知总页数），MCP 侧显示「第 1 页（可继续加载）」。
+  // pager 里 unknown = !totalPages，因此诚实的统一默认只能是 0（未知）。
+  const grab = (name) => {
+    const cap = name.charAt(0).toUpperCase() + name.slice(1);
+    const m = new RegExp('const \\[(' + name + '), set' + cap + '\\] = useState\\(([^)]*)\\)').exec(c);
+    return m ? m[2].trim() : null;
+  };
+  const defSk = grab('skillsTotalPages');
+  const defMc = grab('mcpTotalPages');
+  console.log('   skillsTotalPages=' + JSON.stringify(defSk) + ' mcpTotalPages=' + JSON.stringify(defMc));
+  check('两侧默认值都取到', defSk !== null && defMc !== null, defSk + '/' + defMc);
+  check('两侧默认值相同', defSk === defMc, 'skills=' + defSk + ' mcp=' + defMc);
+  check('统一默认为 0（未知，不编造总页数）', defSk === '0' && defMc === '0', 'skills=' + defSk + ' mcp=' + defMc);
+  // 同族状态默认值也必须成对一致（页码、总数、hasMore）
+  const pairs = [['skillsPage', 'mcpPage'], ['skillsTotal', 'mcpTotal'], ['skillsHasMore', 'mcpHasMore']];
+  const mismatched = [];
+  for (const [a, b] of pairs) { const va = grab(a), vb = grab(b); if (va !== vb) mismatched.push(a + '=' + va + ' vs ' + b + '=' + vb); }
+  check('其余分页状态默认值成对一致', mismatched.length === 0, mismatched.join(' | '));
+}
+
+console.log('');
+console.log('Test 16: 市场卡片分批渲染（首批有上限，且不产生空态误报）');
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const W = path.resolve(import.meta.dirname, '..');
+  const c = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
+  // 沿用工具浮窗已有形态（TOOL_BATCH/toolBatch）。市场列表此前一次提交整页卡片：每页 48
+  // 条时输入一个字符就重建几十个节点，是明显浪费。
+  const bgn = c.indexOf('const shownCards = (list, batch) =>');
+  check('shownCards 已抽为纯函数', bgn > 0, bgn);
+  if (bgn > 0) {
+    let depth = 0, q = 0, end = -1;
+    for (let i = bgn; i < c.length; i++) {
+      const ch = c.charCodeAt(i);
+      if (q) { if (ch === 92) i++; else if (ch === q) q = 0; continue; }
+      if (ch === 39 || ch === 34 || ch === 96) { q = ch; continue; }
+      if (ch === 123) depth++;
+      else if (ch === 125) { depth--; if (depth === 0) { end = i; break; } }
+    }
+    const batchNum = Number((c.match(/const CARD_BATCH = (\d+);/) || [])[1] || 0);
+    const fn = new Function('CARD_BATCH', c.slice(bgn, end + 1) + String.fromCharCode(10) + 'return shownCards;')(batchNum);
+    const N = (n) => Array.from({ length: n }, (x, i) => ({ id: 'i' + i }));
+    check('CARD_BATCH 为正数', batchNum > 0, batchNum);
+    // 关键不变量：首批必须容得下用户能要求的最大一页，否则「分批」是在偷内容。
+    // 每页选项从源码里读（不是把答案写进正则）：找 \[n, n, ...\].map((n) => 形态。
+    const sizeSel = /\[([\d,\s]+)\]\.map\(\(n\) =>/.exec(c);
+    const pageChoices = sizeSel ? sizeSel[1].split(',').map((x) => Number(x.trim())).filter((n) => n > 0) : [];
+    check('每页条数选项可读', pageChoices.length >= 2, JSON.stringify(pageChoices));
+    check('首批不裁掉用户要求的一页', batchNum >= Math.max.apply(null, pageChoices), 'CARD_BATCH=' + batchNum + ' 最大每页=' + Math.max.apply(null, pageChoices));
+    // 另一侧也要锁：阈值大于现实最大列表时，分批条件永不成立 = 等于没实现
+    // （60 就是这样，它大于单页上限 48）。现实最大列表是聚合页：每源各返回最多
+    // 一页，上限 = 最大每页 × 来源数。来源数从 client.js 的来源 chip 行通用解析
+    // （任何引号包裹的短标识都算），不写死数字：写死 8 会在加源那天变假红，
+    // 只匹配某两个名字的排列顺序则会在 chip 换序那天变假红。
+    const chipLine = (c.split(/\r?\n/).find(function (l) {
+      return l.includes("'skills.sh'") && l.includes("'modelscope'");
+    }) || '');
+    const sourceCount = chipLine ? (chipLine.match(/'[^']{2,20}'/g) || []).length : 0;
+    check('来源数可读且合理', sourceCount >= 6 && sourceCount <= 12, sourceCount);
+    check('分批阈值不超过现实最大列表', batchNum <= Math.max.apply(null, pageChoices) * sourceCount,
+      'CARD_BATCH=' + batchNum + ' 现实上限=' + Math.max.apply(null, pageChoices) * sourceCount);
+    check('首批不超过阈值', fn(N(150), 1).length <= batchNum && fn(N(150), 1).length > 0, fn(N(150), 1).length);
+    check('按批单调增长', fn(N(150), 1).length <= fn(N(150), 2).length && fn(N(150), 2).length <= fn(N(150), 3).length, '');
+    check('批数足够时覆盖全集', fn(N(150), 4).length === 150, fn(N(150), 4).length);
+    check('不足一批时原样返回（不误裁）', fn(N(24), 1).length === 24, '');
+    check('空列表仍为空（空态由 notice 负责，不由分批制造）', fn([], 1).length === 0, '');
+  }
+  check('技能卡片走分批', c.includes('shownCards(visibleSkills, cardBatch).map'), '');
+  check('MCP 卡片走同一口径', c.includes('shownCards(orderedMcps, cardBatch).map'), '');
+  check('继续显示按钮存在', c.includes('继续显示'), '');
+  // 空态误报防线：结果为空的判定必须仍基于服务端整页数据，而不是被裁切的渲染列表
+  check('空态判定仍看 d.items', c.includes('if (!(d.items || []).length)'), '');
+  // 条件变了必须回到首批（与工具浮窗 setToolBatch(1) 同规则）
+  check('条件变化重置首批', c.includes('useEffect(() => { setCardBatch(1); }, [query, source, mcpSource, size]);'), '');
+}
+
+console.log('');
+console.log('Test 17: gotoPage 必须显式带当前条件（不再靠 liveRef 兜底）');
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const W = path.resolve(import.meta.dirname, '..');
+  const c = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
+  const gs = 'const gotoPage = (p) => {';
+  const bgn = c.indexOf(gs);
+  check('gotoPage 可定位', bgn > 0, bgn);
+  if (bgn > 0) {
+    // 块尾交给 anchor-lib 的 blockEnd（按花括号深度，跳过字符串与注释）。
+    // 不用 c.indexOf('};', bgn) 猜：它会停在第一个 };，我两次靠这种写法删块
+    // 都删出半截函数（留下孤立 return 导致 Illegal return statement）。
+    const allLines = c.split(/\r?\n/);
+    const lineIdx = allLines.findIndex((l) => l.includes(gs));
+    if (lineIdx < 0) throw new Error('gotoPage 行未找到');
+    const endLine = blockEnd(c, lineIdx, 'gotoPage');
+    const body = allLines.slice(lineIdx + 1, endLine).join(String.fromCharCode(10));
+    const mk = new Function('t', 'return (p) => {' + String.fromCharCode(10) +
+      '  const { tab, query, source, category, size, sort, mcpSource, mcpCategory, mcpSort, searchSkills, searchMcps } = t;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
+    const ctx = {
+      query: 'pdf', source: 'lobehub', category: 'dev', size: 24, sort: 'stars',
+      mcpSource: 'registry', mcpCategory: 'ai-agent', mcpSort: 'installCount',
+      searchSkills: null, searchMcps: null,
+    };
+    const seen = {};
+    ctx.tab = 'skills';
+    ctx.searchSkills = (q, o) => { seen.sk = { q, o }; };
+    ctx.searchMcps = () => {};
+    mk(ctx)(3);
+    console.log('   skills 分支实参: ' + JSON.stringify(seen.sk && seen.sk.o));
+    check('技能翻页保留查询词', Boolean(seen.sk) && seen.sk.q === 'pdf', JSON.stringify(seen.sk));
+    // 断言值本身（不是只看键存在）：键在但传了 liveRef 的兜底值同样不合格。
+    check('技能翻页带上当前 source/category/sort 的实际值', Boolean(seen.sk) && seen.sk.o.source === ctx.source && seen.sk.o.category === ctx.category && seen.sk.o.sort === ctx.sort && seen.sk.o.size === ctx.size, JSON.stringify(seen.sk && seen.sk.o));
+    seen.mc = null;
+    ctx.tab = 'mcp';
+    ctx.searchSkills = () => {};
+    ctx.searchMcps = (q, o) => { seen.mc = { q, o }; };
+    mk(ctx)(2);
+    console.log('   mcp 分支实参: ' + JSON.stringify(seen.mc && seen.mc.o));
+    check('MCP 翻页带上当前 source/category/sort 的实际值', Boolean(seen.mc) && seen.mc.o.source === ctx.mcpSource && seen.mc.o.category === ctx.mcpCategory && seen.mc.o.sort === ctx.mcpSort && seen.mc.o.size === ctx.size, JSON.stringify(seen.mc && seen.mc.o));
+    check('MCP 翻页保留查询词', Boolean(seen.mc) && seen.mc.q === 'pdf', JSON.stringify(seen.mc));
+  }
+}
+
+console.log('');
+console.log('Test 14b: MCP 路径同样必须有乱序守卫（不能只锁技能侧）');
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const W = path.resolve(import.meta.dirname, '..');
+  const c = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
+  const bodyStart = 'const searchMcps = useCallback(async (text, options) => {';
+  const bgn = c.indexOf(bodyStart);
+  check('searchMcps 函数体可定位', bgn > 0, bgn);
+  if (bgn > 0) {
+    const lines = c.split(/\r?\n/);
+    const lineIdx = lines.findIndex((l) => l.includes(bodyStart));
+    const endLine = blockEnd(c, lineIdx, 'searchMcps');
+    const body = lines.slice(lineIdx + 1, endLine).join(String.fromCharCode(10));
+    const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
+      '  const { mcpSource, mcpCategory, mcpSort, size, mcpCacheKey, resolvePageSize, resultCacheRef, mcpSeqRef,' +
+      '    call, setMcps, setMcpPage, setMcpTotalPages, setMcpTotal, setMcpHasMore, setMcpCategories,' +
+      '    setNotice, setError, setBusy } = deps;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
+    const fired = [];
+    const delays = {};
+    const env = {
+      mcpSource: 'registry', mcpCategory: 'all', mcpSort: 'default', size: 24,
+      mcpCacheKey: () => '',
+      resolvePageSize: (o, s) => (o && o.size) || s,
+      resultCacheRef: { current: {} },
+      mcpSeqRef: { current: 0 },
+      // setMcps 可能被传入 updater 函数（append 分支），两种形态都要能落地记录
+      setMcps: (arg) => fired.push(typeof arg === 'function' ? arg([]) : arg),
+      setMcpPage: () => {}, setMcpTotalPages: () => {}, setMcpTotal: () => {},
+      setMcpHasMore: () => {}, setMcpCategories: () => {}, setNotice: () => {},
+      setError: () => {}, setBusy: () => {},
+      call: async (op, p) => {
+        const tag = p.source + '#p' + p.page;
+        await new Promise((r) => setTimeout(r, delays[tag] || 0));
+        return { items: [{ id: tag, slug: tag }], page: p.page, totalPages: 3, total: 72, canLoadMore: true, categories: [] };
+      },
+    };
+    const run = mk(env);
+    delays['lobehub#p1'] = 45;   // 先发但慢（切到 lobehub）
+    delays['registry#p1'] = 5;   // 后发但快（切回 registry）
+    const pa = run('x', { source: 'lobehub' });
+    const pb = run('y', { source: 'registry' });
+    await Promise.all([pa, pb]);
+    const tags = fired.filter((x) => Array.isArray(x) && x.length).map((x) => x[0].slug);
+    console.log('   setMcps 落地顺序: ' + JSON.stringify(tags));
+    check('MCP 最后一次落地来自后发请求', tags.length > 0 && tags[tags.length - 1] === 'registry#p1', tags.join(' → '));
+    check('MCP 先发慢请求的结果被丢弃', !tags.includes('lobehub#p1'), tags.join(' → '));
+    check('MCP 序号载体 mcpSeqRef 已声明', /const mcpSeqRef = useRef\(0\)/.test(c), '');
+    // 两个 tab 各自一个计数器：技能请求不该被 MCP 请求超车（否则切 tab 会抹掉技能结果）
+    check('技能与 MCP 用独立计数器', /reqSeqRef = useRef\(0\)/.test(c) && /mcpSeqRef = useRef\(0\)/.test(c), '');
+  }
+}
+
+console.log('');
+console.log('Test 18: 排序名称 ↔ 能力矩阵键 ↔ 真实字段 三者一致（零网络交叉表）');
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const W = path.resolve(import.meta.dirname, '..');
+  const cli = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
+  const ex = fs.readFileSync(path.join(W, 'src/extra-sources.js'), 'utf8');
+  const cap = fs.readFileSync(path.join(W, 'src/sort-capability.js'), 'utf8');
+  const sh = fs.readFileSync(path.join(W, 'src/skillhub.js'), 'utf8');
+  const agg = fs.readFileSync(path.join(W, 'src/sources.js'), 'utf8');
+  // UI 标签表抽出来跑（不是正则形状）：每个能力键都必须有中文名
+  const lb = cli.indexOf('const SORT_LABEL = {');
+  check('SORT_LABEL 可定位', lb > 0, lb);
+  let labels = {};
+  if (lb > 0) {
+    const s = cli.slice(lb, cli.indexOf('};', lb) + 2);
+    labels = new Function(s.replace('const SORT_LABEL =', 'return') + String.fromCharCode(10))();
+  }
+  const mod = await import('../src/sort-capability.js');
+  const KEYS = mod.SORT_KEYS;
+  check('每个能力键都有中文标签', KEYS.every((k) => typeof labels[k] === 'string' && labels[k].length > 0), KEYS.filter((k) => !labels[k]).join(','));
+
+  // ── 决定一：按下载数成为独立能力键 ──
+  check('downloadCount 已进入 SORT_KEYS', KEYS.includes('downloadCount'), KEYS.join(','));
+  check('downloadCount 的中文名是「按下载数」', labels.downloadCount === '按下载数', labels.downloadCount);
+  check('installCount 仍叫「按安装数」（两者不混用）', labels.installCount === '按安装数', labels.installCount);
+
+  // ── 决定二：名称与真实字段一致（逐源交叉断言）──
+  // clawhub：上游 sort=installs 不单调，真实可排的是 downloads ⇒ 必须挂 downloadCount，
+  //          不能继续顶着「按安装数」的名字排下载数（用户原话：名称与排序方法相一致）。
+  const chKeys = mod.sortKeysFor('clawhub');
+  check('clawhub 提供 downloadCount', chKeys.includes('downloadCount'), chKeys.join(','));
+  // chKeys 是 sortKeysFor 返回的数组：includes 在这里是**成员判定**（精确等值），
+  // 没有子串冒充面。为与否定断言守卫的判定口径一致，显式写成 indexOf === -1。
+  check('clawhub 不再提供 installCount（名实不符）', chKeys.indexOf('installCount') === -1, chKeys.join(','));
+  check('clawhub browse 映射 downloadCount→downloads', /downloadCount\?\s*:\s*"downloads"|downloadCount"?\s*\?\s*"downloads"/.test(ex) || ex.includes('sort === "downloadCount" ? "downloads"'), '');
+  check('clawhub search getter downloadCount 读 downloads', ex.includes('downloadCount: (r) => r.downloads') || /downloadCount:\s*\(r\)\s*=>\s*r\.downloads/.test(ex), '');
+  // modelscope：无服务端 sort，本地 getter 排 DownloadCount ⇒ 同样是下载数不是安装数
+  const msKeys = mod.sortKeysFor('modelscope');
+  check('modelscope 提供 downloadCount', msKeys.includes('downloadCount'), msKeys.join(','));
+  // 同上：数组成员判定显式化（守卫只拦源文本子串匹配那种冒充面）。
+  check('modelscope 不再提供 installCount（DownloadCount 是下载数）', msKeys.indexOf('installCount') === -1, msKeys.join(','));
+  check('MODELSCOPE getter 含 downloadCount→DownloadCount', /downloadCount:\s*\(r\)\s*=>\s*Number\(r\.DownloadCount|downloadCount:\s*\(r\)\s*=>\s*r\.DownloadCount/.test(ex), '');
+  // skillhub：installs 与 downloads 都是上游真实字段 ⇒ 两个键都给，各自映射到对应 sortBy
+  const shKeys = mod.sortKeysFor('skillhub');
+  check('skillhub 同时提供 installCount 与 downloadCount', shKeys.includes('installCount') && shKeys.includes('downloadCount'), shKeys.join(','));
+  check('skillhub downloadCount→sortBy=downloads', sh.includes('sort === "downloadCount" ? "downloads"') || sh.includes('? "downloads"'), '');
+  check('skillhub 服务端排序仍显式带 order', sh.includes('params.set("order", "desc")'), '');
+  // 名实相符的源保留 installCount：trusttools(sort_by=install_count)、skills.sh(字段 installs)、
+  // browse.sh(字段 installCount)、lobehub(--sort installCount)
+  for (const s of ['trusttools', 'skills.sh', 'browse.sh', 'lobehub']) {
+    check(s + ' 保留 installCount（该源真实存在安装数字段）', mod.sortKeysFor(s).includes('installCount'), mod.sortKeysFor(s).join(','));
+  }
+  // 聚合 all：跨源 downloads 字段覆盖率不齐（skills.sh 无该字段），按它排会让缺字段源整体沉底
+  // ⇒ 聚合不提供 downloadCount，各源仍各自服务端有序。
+  const allKeys = mod.sortKeysFor('all');
+  // 同上：数组成员判定显式化。
+  check('聚合 all 不提供 downloadCount（覆盖率不齐会沉底无字段来源）', allKeys.indexOf('downloadCount') === -1, allKeys.join(','));
+  check('聚合分支不排 downloadCount', !/sort === "downloadCount"/.test(agg), '');
+  // ── 数据错误修复：clawhub installs 不得等于 downloads ──
+  check('clawhub installs 读真实 installs 字段', /installs:\s*Number\(raw\.installs \?\? raw\.stats\?\.installs/.test(ex) || ex.includes('raw.stats?.installs'), '');
+  check('clawhub installs 不再复制 downloads', !/installs: Number\(raw\.downloads \?\? raw\.stats\?\.downloads \?\? raw\.metrics\?\.rolling60DayInstalls \?\? 0\) \|\| 0,/.test(ex), '');
+  check('clawhub downloads 仍取下载数', ex.includes('downloads: Number(raw.downloads ?? raw.stats?.downloads'), '');
+  // ── 卡片必须显示排序依据（两数有值才显示）──
+  // 断言的是性质而不是语法：真值守卫（0/缺失不显示）、千分位、独立一条；两站点各一条。
+  // 零反斜杠写法：CR/LF 走 fromCharCode（载荷降级曾把 \r\n 变成真实换行、
+  // 将一行拆成两行 —— 这正是本行曾经坏掉的原因，用它自己修自己）。
+  const CRc = String.fromCharCode(13), NLc = String.fromCharCode(10);
+  const cliLines = cli.split(CRc).join(String()).split(NLc);
+  const dlLines = cliLines.filter((l) => l.includes("item.downloads ? h('span'") && l.includes('次下载') && l.includes('toLocaleString'));
+  check('下载数一条且带真值守卫与千分位', dlLines.length === 1, dlLines.length);
+  check('安装数同样有真值守卫', cliLines.filter((l) => l.includes("item.installs ? h('span'") && l.includes('次安装')).length === 2, '');
+  check('卡片安装数仍是有值才显示', cli.includes("次安装") && cli.includes('item.installs ?'), '');
+  // ── sort-capability 注释必须写清「名称→真实字段」 ──
+  check('注释写明 downloadCount 的线路', /downloadCount/.test(cap) && cap.includes('DownloadCount') && cap.includes('downloads'), '');
+}
+
+console.log('');
+console.log('Test 19: SkillHub evaluation 接入详情弹层（打开才请求、不可达显式降级）');
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const W = path.resolve(import.meta.dirname, '..');
+  const NL = String.fromCharCode(10);
+  const cli = fs.readFileSync(path.join(W, 'client.js'), 'utf8').replace(/\r\n/g, NL);
+  const ix = fs.readFileSync(path.join(W, 'index.js'), 'utf8').replace(/\r\n/g, NL);
+  const sh = fs.readFileSync(path.join(W, 'src/skillhub.js'), 'utf8').replace(/\r\n/g, NL);
+  const codeOf = (t) => t.split(NL).filter((l) => {
+    const s = l.trimStart();
+    return !s.startsWith('//') && !s.startsWith('*') && !s.startsWith('/*');
+  }).join(NL);
+  const shCode = codeOf(sh);
+  const mod = await import('../src/skillhub.js');
+
+  console.log('  19a 取数路径（诚实 envelope：v1 端点没有 code 字段）');
+  check('evaluation 已导出', shCode.includes('export async function evaluation('), '');
+  check('走 /api/v1/skills/{slug}/evaluation', shCode.includes('/api/v1/skills/') && shCode.includes('/evaluation'), '');
+  // categories 那类的教训：getJson 要求 payload.code===0，而 v1 端点的响应是裸对象、
+  // 没有 code 字段 —— 直接套用会把成功响应判成错误。必须有独立取数路径（函数名就是锁）。
+  check('v1 取数不要求 code 字段', shCode.includes('async function getJsonV1('), '');
+  check('主列表取数仍校验 code（两套路径并存）', shCode.includes('payload?.code !== 0'), '');
+
+  console.log('  19b 行为：桩响应（无 code 封装）必须能解析出维度与小结');
+  const EV = {
+    skillId: 1, versionId: 2,
+    dimensions: {
+      trust: { userReason: '', items: { scan: { score: 4.5, userReason: '安全扫描通过' } } },
+      reliability: { userReason: '', items: { stability: { score: 4.2 } } },
+    },
+    userSummary: '整体质量良好',
+    updatedAt: 1773850000000,
+  };
+  const orig = globalThis.fetch;
+  const urls = [];
+  try {
+    globalThis.fetch = async (u) => { urls.push(String(u)); return { ok: true, status: 200, json: async () => EV }; };
+    const r = await mod.evaluation('self-improving-agent');
+    check('URL 指向该 slug 的 evaluation', urls[0].includes('/api/v1/skills/self-improving-agent/evaluation'), urls[0]);
+    check('无 code 字段也能解析出小结', r && r.summary === '整体质量良好', JSON.stringify(r && r.summary));
+    check('维度如实带出且有分数', Array.isArray(r.dimensions) && r.dimensions.length === 2 && r.dimensions.some((d) => typeof d.score === 'number'), JSON.stringify(r.dimensions));
+    check('不合成上游没给的总分', !('score' in r) || r.score == null, JSON.stringify(r.score));
+  } catch (e) {
+    check('桩请求不抛错', false, String(e && e.message || e).slice(0, 90));
+  } finally {
+    globalThis.fetch = orig;
+  }
+  // 不可达必须显式失败（面板据此降级告知），不能返回空对象冒充「有数据」
+  const orig2 = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
+    let threw = '';
+    try { await mod.evaluation('x'); } catch (e) { threw = String(e && e.message || e); }
+    check('上游不可达时抛错而非静默返回空', /503|不可达|失败/.test(threw), threw.slice(0, 70));
+  } finally {
+    globalThis.fetch = orig2;
+  }
+
+  console.log('  19c 面板：入口只在 skillhub，且打开详情前零额外请求');
+  check('RPC case 已注册', ix.includes('case "skillhub.evaluation"'), '');
+  // 「打开时请求一次」用 split 计数，不用正则（避免字符类里的引号）
+  const callCount = cli.split("call('skillhub.evaluation'").length - 1;
+  check('面板只在打开时请求一次', callCount === 1, callCount);
+  check('列表渲染零额外请求（未被 map 里调用）', !cli.includes('.map(() => call('), '');
+  check('质量按钮仅对 skillhub 条目出现', cli.includes("item.source === 'skillhub'") && cli.includes('质量'), '');
+  check('渲染分支存在 quality 形态', cli.includes("'quality'") || cli.includes('detailQuality'), '');
+  check('不可达时显式降级告知', cli.includes('暂不可达'), '');
+  check('降级文案不伪造分数', cli.includes('暂不可达'), '');
 }
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

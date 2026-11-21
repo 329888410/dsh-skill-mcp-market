@@ -139,10 +139,12 @@ console.log('Test 4: op 注册与白名单');
 {
   check('case "mcp.raw.get"', ix.includes('case "mcp.raw.get"'));
   check('case "mcp.raw.set"', ix.includes('case "mcp.raw.set"'));
-  for (const f of ['test-manage-panel.mjs', 'test-install-progress.mjs']) {
+  for (const f of ['test-manage-panel.mjs', 'test-install-progress.mjs', 'test-skill-subpanel-ui.mjs']) {
     const t = read('test/' + f);
-    check(f + ' 含 mcp.raw.get', t.includes('mcp.raw.get'));
-    check(f + ' 含 mcp.raw.set', t.includes('mcp.raw.set'));
+    // 白名单已从「三处副本」收敛为从 index.js 派生的单一清单：副本本身就是
+    // skillhub.evaluation 三条假红的根源，所以这里锁「不许再出现硬编码副本」。
+    check(f + ' 从 index.js 派生 op 清单（声明形态 + known 指向）', t.includes('const IX_OPS = new Set(') && t.includes('const known = IX_OPS;'), '');
+    check(f + ' 无硬编码白名单副本', !t.includes("new Set(['skills.list"), '');
   }
   const rg = read('src/rpc-guard.js');
   check('raw.set 需 confirm（改定义属破坏性）', /"mcp\.raw\.set"/.test(rg));
