@@ -1241,6 +1241,19 @@ const CARD_BATCH = 48;
 
       // 各源详情页 URL 推导（统一通过 DSH 内置 sidebar-right browser tab 打开）。
       // 每个源都要给出可打开的地址：全部源的全部技能卡片都必须有「详情」按钮。
+      // embedBlockedFor(item) —— 该源的详情页是否**拒绝**被宿主内置浏览器承载。
+      // 宿主内置浏览器是以框架方式显示页面的，而实测响应头（直打真实页面）：
+      //   clawhub / skills.sh / github(skillsmp) → X-Frame-Options: DENY 且 CSP
+      //     frame-ancestors 'none'；skillhub → SAMEORIGIN；modelscope → 'self'。
+      // 这五个源都拒绝被非同源的宿主框架承载，点开只会是 Chromium 的灰色禁止图标；
+      // lobehub、browse.sh 实测未设限，trusttools 未测 —— 未测的源不进名单，因为
+      // 凭猜测限制用户与谎报内容同罪。宿主工具条上的「关闭沙箱限制」实测无效：
+      // 拦截来自页面级 CSP，不是宿主沙箱，所以这不是能绕的开。
+      const embedBlockedFor = (item) => {
+        const blocked = ['clawhub', 'skills.sh', 'skillsmp', 'skillhub', 'modelscope'];
+        return blocked.includes(String((item && item.source) || ''));
+      };
+      
       const detailUrlFor = (item) => {
         if (!item) return '';
         const source = item.source;
@@ -1728,8 +1741,8 @@ const CARD_BATCH = 48;
             }, busy === 'quality:' + String(item.namespace || item.slug) ? '评测中…' : '质量') : null,
             h('button', {
               style: { ...S.btn(), padding: '0 6px' },
-              title: detailUrlFor(item) ? '在 DSH 内置浏览器中查看详情' : '该条目没有可打开的详情页',
-              disabled: !detailUrlFor(item),
+              title: embedBlockedFor(item) ? '该站点拒绝被内嵌，内置浏览器里只会是空白拦截页（请改用安装或上游站点查看）' : detailUrlFor(item) ? '在 DSH 内置浏览器中查看详情' : '该条目没有可打开的详情页',
+              disabled: !detailUrlFor(item) || embedBlockedFor(item),
               onClick: () => openDetail(item),
             }, '详情'),
             (installed ?? []).some((x) => x.slug === item.slug)
@@ -1764,10 +1777,10 @@ const CARD_BATCH = 48;
           h('div', { style: S.meta }, h('span', null, item.slug)),
           item.note ? h('div', { style: S.status }, item.note) : null,
            h('div', { style: S.row },
-             detailUrlFor(item) ? h('button', {
+             detailUrlFor(item) && !embedBlockedFor(item) ? h('button', {
                style: { ...S.btn(), padding: '0 6px' },
-               title: detailUrlFor(item) ? '在 DSH 内置浏览器中查看详情' : '该条目没有可打开的详情页',
-               disabled: !detailUrlFor(item),
+               title: embedBlockedFor(item) ? '该站点拒绝被内嵌，内置浏览器里只会是空白拦截页（请改用安装或上游站点查看）' : detailUrlFor(item) ? '在 DSH 内置浏览器中查看详情' : '该条目没有可打开的详情页',
+               disabled: !detailUrlFor(item) || embedBlockedFor(item),
                onClick: () => openDetail(item),
              }, '详情') : null,
              h('button', {

@@ -3,6 +3,12 @@
 - **空页不再被说成「目录已到底」**（同一轮门内实测的第二处不诚实）：trusttools 在门里出现过一次首页静默空响应（items=0、degraded=0、total=0），handler 的 `hasMore` 当时退化成 `items.length >= size` = false，聚合层于是对外宣称「已是最后一页」—— 一次抓取失败被说成整个目录只有这一屏，比谎报总数更误导（用户会以为源已穷尽、不再翻页）。现在 `false` 只有在响应带真实总数证据时才是结论，否则保持 `undefined`（未知），分页器继续显示「可继续加载」。
 - **上游状态 vs 本侧回归的判定收敛成一个 helper**：新增 `emptyWithoutEvidence`（degraded>0 / total>0 / hasMore===true 都算有证据，三者皆无才算上游静默空响应）。test-nocache 与 test-paging 之前各写一套相近判据 —— 两套判据互相打架正是假绿来源，现在两处调用同一函数；真值表 6 例进 test-paging-verdict（含反向破坏：写成恒 true 一律当上游问题，就会被 total>0 却空页那例抓到）。修复后 test-paging 13 passed（旧行为下同一场景判 FAIL —— 门里红、单跑三次绿的那种 flake 消失），test-nocache 13 passed / 1 skipped。
 
+## 0.5.141
+
+- **详情入口从「有 URL」升级为「打得开」**（用户指出：不是我们的代码 ≠ 不用我们负责）：live 实测点 clawhub 卡片的「详情」，停靠 tab 打开 `https://clawhub.ai/<owner>/<slug>`，页面主体只有 Chromium 的灰色禁止图标，console 稳定报 `Framing 'https://clawhub.ai/' violates ... frame-ancestors 'none'`；宿主工具条上的「关闭沙箱限制」实测无效（拦截来自页面级 CSP，不是宿主沙箱）——所以这不是能绕的开。逐源直打真实页面读响应头：clawhub / skills.sh / github(skillsmp) 回 `X-Frame-Options: DENY` 且 CSP `frame-ancestors 'none'`，skillhub 回 `SAMEORIGIN`、modelscope 回 `'self'`，这五个源都拒绝被非同源的宿主框架承载；lobehub、browse.sh 实测未设限，trusttools 未测（因此不进名单）。新增 `embedBlockedFor`（名单只收实测拒绝的源，没实测过的源不置灰——凭猜测限制用户与谎报内容同罪），技能卡与 MCP 卡两处入口同口径：被拦时按钮置灰、title 改为「该站点拒绝被内嵌，内置浏览器里只会是空白拦截页」，不再承诺一个拿不到的结果。四向证伪（取消名单 / 名单漏 skillhub / MCP 卡不接判定 / title 退回旧承诺）全部变红。
+- **「无本插件报错」的口径改成按【触发方】判定**（不该按报错文本里有没有我们的文件名，否则这类问题永远落在判据缝隙里）：新增 `test/live-audit.mjs` 纯函数（`classify` / `signature` / `audit`），相位由 live 脚本在每次点击前后打点，`TRIGGERED`（点击本插件按钮后才出现的签名）与 `PLUGIN`（文本命中插件面）计入待处理，宿主基线噪声豁免。实测校准过程如实记录：第一版把宿主 GUI 自己每几秒就刷的 `GET /api/changes.summary → 404` 也算成本侧触发（过度归因），改为按**签名首次出现**定性后收敛为 2 条（CSP 拦截 + 点击后新出现的 bfcache 断连）。`signature` 的归一化逐步注入证伪，URL 剥离 / 会话 id 归一 / 空白归一三步去掉后断言仍全绿 —— 属装饰代码，已删除，只保留被真实断言咬住的数字归一，注释同步改到与实际一致。真值表 9 例进 test-ux-honesty（54 项）。
+- **fanout 套件的 chip 行解析改为「歧义即失败」**：它原本用 find() 取「第一条同时含 skills.sh 与 modelscope 的行」，本轮新增的 `embedBlockedFor` 名单行恰好也含这两个源名并抢先命中，于是数出 5 个源（断言红）。按 anchor-lib 的立场改成候选行必须唯一、命中数不为 1 就显式失败，不再静默挑一条。
+
 ## 0.5.140
 
 - **门禁不再取决于上游当时的心情**（用户 2026-11-22 指出）：`test-paging` 的断言绑在真实上游上，trusttools 一超时它就「门里红、单跑绿」——这既是假红源，也会掩盖下一次真回归（`b33e626` 就是在 gate 报 test-paging 真红时被提交的，纪律违规一并记在此处）。新增 `test/test-paging-deterministic.mjs`：13 项断言全部走 handler 注入（零网络、秒级、可重复），覆盖「单源整取失败」「p1 失败 p2 有货」「取数成功必须照报数字」「多源部分失败保持既有口径」四种形态；`test-paging` 保留为可达性探针——抛错、有一页为空、页大小不足、缓存两次抓取内容不同，一律记 SKIP（信息性），但**重叠、越界页非空、重试后仍空而上游宣称有货**这些只有本侧能造成的形态仍然判红。套件数 57 → 58，`test:chain` 段数与唯一段数由登记完整性检查复核。

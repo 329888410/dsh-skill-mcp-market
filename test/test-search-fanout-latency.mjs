@@ -634,9 +634,14 @@ console.log('Test 16: 市场卡片分批渲染（首批有上限，且不产生�
     // 一页，上限 = 最大每页 × 来源数。来源数从 client.js 的来源 chip 行通用解析
     // （任何引号包裹的短标识都算），不写死数字：写死 8 会在加源那天变假红，
     // 只匹配某两个名字的排列顺序则会在 chip 换序那天变假红。
-    const chipLine = (c.split(/\r?\n/).find(function (l) {
-      return l.includes("'skills.sh'") && l.includes("'modelscope'");
-    }) || '');
+    // 候选行必须唯一：用 find() 取第一条命中行会在「别处也出现这两个源名」时
+    // 静默选错（本轮新增的 embedBlockedFor 名单行就抢先命中，数出 5 个源）。
+    // 按 anchor-lib 的立场：锚有歧义就显式失败，绝不静默挑一条。
+    const chipHits = c.split(/\r?\n/).map(function (l, i) { return { i: i + 1, l: l }; }).filter(function (x) {
+      return x.l.includes("'skills.sh'") && x.l.includes("'modelscope'") && x.l.includes('.map((key)');
+    });
+    check('chip 列表行唯一（歧义即失败，不静默取第一条）', chipHits.length === 1, chipHits.map((x) => x.i).join(','));
+    const chipLine = chipHits.length === 1 ? chipHits[0].l : '';
     const sourceCount = chipLine ? (chipLine.match(/'[^']{2,20}'/g) || []).length : 0;
     check('来源数可读且合理', sourceCount >= 6 && sourceCount <= 12, sourceCount);
     check('分批阈值不超过现实最大列表', batchNum <= Math.max.apply(null, pageChoices) * sourceCount,
