@@ -917,6 +917,11 @@ window.__ModuleLoader__.load({
         try {
           const data = await call('mcp.detail', { serverName });
           setMcpToolOpen('');
+          // 上一条搜索的陈旧词与游标必须清掉：否则在连接器 A 搜过 click、关掉再打开 B 时，
+          // B 的清单会被这个跟 B 无关的词过滤掉，而标题写着「匹配 x/y」——用户读到的是
+          // 「B 只有这些工具」，实际是上一条搜索的残留。那是假陈述，不是小不便。
+          setToolQuery('');
+          setToolBatch(1);
           // hasDetails 区分两件事：服务端根本没这个字段（旧版本，需重启）vs 真的一个工具都没有。
           // 把前者说成「还没发布工具」是假陈述。
           setMcpTools({
@@ -1735,6 +1740,10 @@ window.__ModuleLoader__.load({
       // 用户选了排序就先排再分组：同一来源组内的先后可控，
       // 组与组之间仍按 rank（避免排序把来源层级搞乱）。
       const sortedInstalled = sortInstalled(filteredInstalled, manageSkillSort, skillStateOff);
+      // 排序是否真的改变了可见顺序：非 default 却逐项相同 → 界面上看不出任何区别。
+      // 判据用可验证事实（排序前后逐项比较），不猜「每组只有一项」这种间接原因。
+      const sortOrderUnchanged = manageSkillSort !== 'default' && filteredInstalled.length > 0 &&
+        sortedInstalled.every((x, i) => x === filteredInstalled[i]);
       // 按来源层级分组（rank 200 用户 → 500 插件提供），折叠状态存 localStorage
       const installedGrouped = (() => {
         const map = new Map();
@@ -2483,6 +2492,7 @@ window.__ModuleLoader__.load({
                   },
                 }, h('option', { value: 'default' }, '默认顺序'), h('option', { value: 'name' }, '按名称'),
                   h('option', { value: 'on' }, '启用优先'), h('option', { value: 'off' }, '停用优先')),
+                sortOrderUnchanged ? h('span', { style: { ...S.status, fontSize: 11, color: '#b26a00' } }, '排序没有改变可见顺序（每个来源组内只有一项）') : null,
                 nativeDirs.length > 0
                   ? h('span', { style: { fontSize: 11, opacity: 0.6, fontWeight: 400 } }, `含 DSH 内置 ${nativeDirs.length} 个目录`)
                   : null,
