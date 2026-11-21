@@ -5,6 +5,7 @@ import { makeCache, searchSkills, ALL_SOURCES, skillsShCatalog } from "../src/so
 const cache = makeCache(tmpdir());
 const pageSize = 12;
 let failures = 0;
+let checks = 0;
 
 function ids(rows) {
   return (rows || []).map((x) => x.id);
@@ -34,6 +35,7 @@ for (const source of ALL_SOURCES) {
     const unreachable = Array.isArray(p1.degraded) && p1.degraded.some((d) => d.source === source);
     const empty = p1.items.length === 0 && b.length === 0 && unreachable;
     const ok = empty || (p1.items.length > 0 && b.length > 0 && (overlap.length === 0 || boundaryDrift));
+    checks += 1;
     if (!ok) failures += 1;
     console.log(
       `${ok ? (empty ? "SKIP" : "OK  ") : "FAIL"} ${source.padEnd(14)} p1=${String(a.length).padStart(2)} p2=${String(b.length).padStart(2)} ` +
@@ -46,6 +48,7 @@ for (const source of ALL_SOURCES) {
       console.log(`     p2=${b.slice(0, 3).join(" | ")}`);
     }
   } catch (e) {
+    checks += 1;
     failures += 1;
     console.log(`FAIL ${source.padEnd(14)} ${String(e.message || e).slice(0, 160)}`);
   }
@@ -56,6 +59,7 @@ const all1 = await searchSkills({ query: "", source: "all", page: 1, pageSize, c
 const all2 = await searchSkills({ query: "", source: "all", page: 2, pageSize, cache });
 const dup = ids(all2.items).filter((id) => ids(all1.items).includes(id));
 console.log(`\nall: p1=${all1.items.length} p2=${all2.items.length} overlap=${dup.length} hasMore=${all1.hasMore} total=${all1.total}`);
+checks += 1;
 if (all2.items.length === 0) failures += 1;
 
 // 关键词搜索也翻页（skills.sh 搜索 API 没有 offset，靠 depth 切片）
@@ -63,6 +67,7 @@ const q1 = await searchSkills({ query: "agent", source: "skills.sh", page: 1, pa
 const q2 = await searchSkills({ query: "agent", source: "skills.sh", page: 2, pageSize, cache });
 const qd = ids(q2.items).filter((id) => ids(q1.items).includes(id));
 console.log(`skills.sh 搜索 agent: p1=${q1.items.length} p2=${q2.items.length} overlap=${qd.length} hasMore=${q1.hasMore}`);
+checks += 1;
 if (q1.items.length === 0 || q2.items.length === 0 || qd.length > 0) failures += 1;
 
 // MCP 官方注册表：cursor 分页 —— 连续三页零重叠、缓存命中后仍能翻、越界页为空
@@ -78,6 +83,7 @@ if (q1.items.length === 0 || q2.items.length === 0 || qd.length > 0) failures +=
   const overlaps = pageIds.flatMap((list, i) => (i === 0 ? [] : list.filter((id) => pageIds.slice(0, i).flat().includes(id))));
   const okSizes = pageIds.every((list) => list.length === REGISTRY_PAGE_SIZE);
   console.log(`\nregistry(\u5b98\u65b9\u6ce8\u518c\u8868) p1/p2/p3 = ${pageIds.map((l) => l.length).join("/")} overlap=${overlaps.length} hasMore@p3=${hasMoreAt3}`);
+  checks += 1;
   if (!okSizes || overlaps.length > 0) failures += 1;
 
   // 缓存命中后（第二次读 p1）仍然要能翻页：cursor 必须随缓存一起保存
@@ -86,12 +92,16 @@ if (q1.items.length === 0 || q2.items.length === 0 || qd.length > 0) failures +=
   const cachedOverlap = ids(again2.items).filter((id) => ids(again1.items).includes(id));
   const cachedOk = ids(again1.items).join() === pageIds[0].join() && ids(again2.items).join() === pageIds[1].join();
   console.log(`registry \u7f13\u5b58\u547d\u4e2d p1/p2 \u4e0e\u9996\u6b21\u4e00\u81f4=${cachedOk} overlap=${cachedOverlap.length}`);
+  checks += 1;
   if (!cachedOk || cachedOverlap.length > 0) failures += 1;
 
   const beyond = await searchMcpRegistryPage({ query: "", page: 9999, pageSize: REGISTRY_PAGE_SIZE, cache });
   console.log(`registry \u8d8a\u754c\u9875 9999 \u2014 ${beyond.items.length} \u6761, hasMore=${beyond.hasMore}`);
+  checks += 1;
   if (beyond.items.length !== 0 || beyond.hasMore) failures += 1;
 }
 
 console.log(failures === 0 ? "\nALL PAGING CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
+// run-gate 契约：最后一行必须是「N passed, M failed」，否则判 NO-SUMMARY（闸门宁缺毋滥）。
+console.log(`${checks - failures} passed, ${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);

@@ -155,4 +155,7 @@ function check(name, ok, detail = "") {
 
 console.log(`\n${pass} 项通过，${failures.length} 项失败`);
 if (failures.length) console.log("失败项：\n- " + failures.join("\n- "));
+// run-gate 契约：最后一行必须是「N passed, M failed」。中文总结行匹配不上会被判
+// NO-SUMMARY —— 闸门宁缺毋滥：没有规范总结说明可能中途崩了没跑完，不能替它放行。
+console.log(`${pass} passed, ${failures.length} failed`);
 process.exit(failures.length ? 1 : 0);

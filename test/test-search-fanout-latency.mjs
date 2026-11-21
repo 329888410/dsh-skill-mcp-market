@@ -420,28 +420,38 @@ console.log('Test 11: 分页摘要必须把数量接到真实数据（悬空标�
 }
 
 console.log('');
-console.log('Test 12: 交付文件 EOL 约定（防逐字节比对被漂移破坏）');
+console.log('Test 12: 交付文件行尾必须统一（平台中立不变量）');
 {
   const fs = await import('node:fs');
   const path = await import('node:path');
   const W = path.resolve(import.meta.dirname, '..');
-  const CR = String.fromCharCode(13), NL = String.fromCharCode(10);
-  // 本轮踩过：插入脚本 join(NL) 把 client.js 从 CRLF 转成 3004 个 loneLF。
-  // core.autocrlf=true 下工作区源文件本应 CRLF；EOL 漂移会直接破坏
-  // npm↔profile↔repo 逐字节比对，所以这条必须进 CI 而不是靠事后人工核对。
+  // 这里曾经是「必须 CRLF」——那是错的：core.autocrlf 在 Windows 是 true、在 Linux CI
+  // 是 false，同一份 blob checkout 出来一边全 CRLF、一边全 LF，断言在任何 Linux 上必红。
+  // 平台中立的不变量是**不许混用**：一个文件里同时存在 CRLF 与孤立 LF，说明有脚本只改了
+  // 部分行就用 LF join 回去（本轮 splice 脚本真就这么把 client.js 写坏过一次）。
+  // 至于「整体从 CRLF 变成 LF」，CI 上无法与正常 checkout 区分，它由写入脚本自己的 EOL
+  // 自检负责（每个脚本写完读回统计，不符即 throw）—— 职责不同，不要在这里假装能查。
   const deliverables = ['client.js', 'index.js', 'src/sources.js', 'src/mcp.js', 'src/tool-filter.js'];
-  const bad = [];
+  const mixed = [];
   for (const rel of deliverables) {
-    const b = fs.readFileSync(path.join(W, rel));
+    let buf;
+    try { buf = fs.readFileSync(path.join(W, rel)); } catch { continue; }
     let cr = 0, lf = 0;
-    for (let i = 0; i < b.length; i++) {
-      if (b[i] === 13 && b[i + 1] === 10) cr++;
-      else if (b[i] === 10 && (i === 0 || b[i - 1] !== 13)) lf++;
+    for (let i = 0; i < buf.length; i++) {
+      if (buf[i] === 13 && buf[i + 1] === 10) cr++;
+      else if (buf[i] === 10 && (i === 0 || buf[i - 1] !== 13)) lf++;
     }
-    if (lf !== 0) bad.push(rel + ' loneLF=' + lf);
-    if (cr === 0) bad.push(rel + ' 零 CRLF（约定被整体改掉）');
+    if (cr > 0 && lf > 0) mixed.push(rel + ' CRLF=' + cr + ' loneLF=' + lf);
   }
-  check('交付 js 文件全部 CRLF 且无 loneLF', bad.length === 0, bad.join(' / '));
+  check('交付 js 无混合行尾', mixed.length === 0, mixed.join(' / '));
+  // 自检本身要能识别混合（构造一个混合串验证计数器没写错）
+  const probe = Buffer.from('a' + String.fromCharCode(13, 10) + 'b' + String.fromCharCode(10) + 'c');
+  let pc = 0, pl = 0;
+  for (let i = 0; i < probe.length; i++) {
+    if (probe[i] === 13 && probe[i + 1] === 10) pc++;
+    else if (probe[i] === 10 && (i === 0 || probe[i - 1] !== 13)) pl++;
+  }
+  check('计数器能识别混合行尾', pc === 1 && pl === 1, 'CRLF=' + pc + ' loneLF=' + pl);
 }
 
 console.log('');

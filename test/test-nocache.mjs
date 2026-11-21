@@ -4,7 +4,9 @@
 import { ALL_SOURCES, searchSkills, warmMarketCache } from "../src/sources.js";
 
 let failures = 0;
+let checks = 0;
 function check(ok, label, detail = "") {
+  checks += 1;
   if (!ok) failures += 1;
   console.log(`${ok ? "OK  " : "FAIL"} ${label}${detail ? ` — ${detail}` : ""}`);
 }
@@ -53,4 +55,7 @@ try {
 
 console.log(`（不可达而跳过的源: ${skipped}）`);
 console.log(failures === 0 ? "\nNO-CACHE CHECKS PASSED" : `\nNO-CACHE CHECKS FAILED (${failures})`);
+// run-gate 契约：最后一行必须是「N passed, M failed」。中文总结行匹配不上会被判
+// NO-SUMMARY —— 闸门宁缺毋滥：没有规范总结说明可能中途崩了没跑完，不能替它放行。
+console.log(`${checks - failures} passed, ${failures} failed, ${skipped} skipped`);
 process.exit(failures === 0 ? 0 : 1);
