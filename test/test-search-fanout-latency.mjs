@@ -828,9 +828,15 @@ console.log('Test 18: 排序名称 ↔ 能力矩阵键 ↔ 真实字段 三者�
   // 将一行拆成两行 —— 这正是本行曾经坏掉的原因，用它自己修自己）。
   const CRc = String.fromCharCode(13), NLc = String.fromCharCode(10);
   const cliLines = cli.split(CRc).join(String()).split(NLc);
-  const dlLines = cliLines.filter((l) => l.includes("item.downloads ? h('span'") && l.includes('次下载') && l.includes('toLocaleString'));
-  check('下载数一条且带真值守卫与千分位', dlLines.length === 1, dlLines.length);
-  check('安装数同样有真值守卫', cliLines.filter((l) => l.includes("item.installs ? h('span'") && l.includes('次安装')).length === 2, '');
+  const dlGuarded = cliLines.filter((l) => l.includes('visibleCounts(item).downloads') && l.includes('次下载') && l.includes('toLocaleString'));
+  const inGuarded = cliLines.filter((l) => l.includes('visibleCounts(item).installs') && l.includes('次安装'));
+  const inDirect = cliLines.filter((l) => l.includes("item.installs ? h('span'") && l.includes('次安装'));
+  // 锁升级为真形：技能卡两个计数现在都过 visibleCounts（同源相等时不显示安装数），
+  // MCP 卡的安装数是上游真实字段（那一侧没有 downloads 兄弟字段），仍是直接守卫。
+  // 三处分开钉：否则「包了一层守卫」与「压根没包」在旧文本锁下长得一模一样。
+  check('技能卡下载数一条且过同源守卫', dlGuarded.length === 1, dlGuarded.length);
+  check('技能卡安装数过同源守卫（相等时不显示）', inGuarded.length === 1, inGuarded.length);
+  check('MCP 卡安装数仍是直接守卫（该侧无 downloads 兄弟字段）', inDirect.length === 1, inDirect.length);
   check('卡片安装数仍是有值才显示', cli.includes("次安装") && cli.includes('item.installs ?'), '');
   // ── sort-capability 注释必须写清「名称→真实字段」 ──
   check('注释写明 downloadCount 的线路', /downloadCount/.test(cap) && cap.includes('DownloadCount') && cap.includes('downloads'), '');

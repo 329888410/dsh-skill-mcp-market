@@ -22,6 +22,7 @@
 import fs from 'node:fs';
 import { makeCache, searchSkills } from '../src/sources.js';
 import { safeTempDir } from '../src/home.js';
+import { blockEnd } from './anchor-lib.mjs';
 
 let passed = 0, failed = 0;
 const check = (n, c, d) => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + String(d).slice(0, 160) : '')); } };
@@ -142,10 +143,9 @@ console.log('Test 7: client 侧对服务端 total 做不信任校验（宿主不
   const st = srcLines.findIndex((l) => l.trimStart().startsWith('const trustedTotal ='));
   check('client 存在 trustedTotal 判据', st >= 0, '未找到');
   if (st >= 0) {
-    const tail = srcLines.slice(st, st + 10).join(String.fromCharCode(10));
-    const from = tail.indexOf('(');
-    const upto = tail.indexOf('};', from);
-    const fn = new Function('return (' + tail.slice(from, upto + 1) + ')')();
+    const endL = blockEnd(clientSrc, st, 'trustedTotal');
+    const body = srcLines.slice(st, endL + 1).join(String.fromCharCode(10));
+    const fn = new Function('return (' + body.slice(body.indexOf('('), body.lastIndexOf('}') + 1) + ')')();
     check('首页透传报告值', fn(25, 25, 1) === 25, String(fn(25, 25, 1)));
     check('后续页与基准一致则可信', fn(25, 25, 3) === 25, String(fn(25, 25, 3)));
     check('随页增长的数不可信', fn(25, 49, 2) === undefined, String(fn(25, 49, 2)));
@@ -154,6 +154,40 @@ console.log('Test 7: client 侧对服务端 total 做不信任校验（宿主不
     check('页码非法按首页处理', fn(13, 13, 0) === 13, String(fn(13, 13, 0)));
     const wired = srcLines.filter((l) => l.indexOf('trustedTotal(') >= 0).length;
     check('技能与 MCP 两侧都接线（至少 2 处调用）', wired >= 2, wired);
+  }
+}
+
+console.log('');
+
+console.log('');
+console.log('Test 8: 卡片不得显示被复制出来的安装数（live 实测两数相等）');
+{
+  // live 实测（0.5.136 装好后，面板直连仍在跑的旧服务进程）：clawhub 卡片显示
+  // 「283,509 次安装 · 283,509 次下载」，而上游同一行是 downloads=283,509、
+  // installs=12,282 —— 两数相等正是 0.5.134 在服务端修掉的那个复制缺陷（installs
+  // 被写成 downloads）。服务端修复要等模块重载，宿主永不重启，所以客户端必须自己
+  // 拦：既然实测真实数据里两个字段不相等，那么相等就只能来自复制 → 宁可不显示
+  // 安装数，也不显示一个错数。判据是结构性质（两字段是否同源相等），不是阈值。
+  const clientSrc = fs.readFileSync(new URL('../client.js', import.meta.url), 'utf8');
+  const cl = clientSrc.split(String.fromCharCode(10));
+  const st = cl.findIndex((l) => l.trimStart().startsWith('const visibleCounts ='));
+  check('client 存在 visibleCounts 判据', st >= 0, '未找到');
+  if (st >= 0) {
+    const endL = blockEnd(clientSrc, st, 'visibleCounts');
+    const body = cl.slice(st, endL + 1).join(String.fromCharCode(10));
+    const fn = new Function('return (' + body.slice(body.indexOf('('), body.lastIndexOf('}') + 1) + ')')();
+    const a1 = fn({ installs: 283509, downloads: 283509 });
+    check('两数相等 → 安装数不显示（被复制的假数）', a1.installs === null && a1.downloads === 283509, JSON.stringify(a1));
+    const a2 = fn({ installs: 12282, downloads: 283509 });
+    check('两数不同 → 各自如实显示', a2.installs === 12282 && a2.downloads === 283509, JSON.stringify(a2));
+    const a3 = fn({ installs: 0, downloads: 283509 });
+    check('安装数缺失（0）→ 仍不显示（原规则保留）', a3.installs === null && a3.downloads === 283509, JSON.stringify(a3));
+    const a4 = fn({ installs: 90 });
+    check('只有安装数（无下载字段）→ 照常显示', a4.installs === 90 && a4.downloads === null, JSON.stringify(a4));
+    const a5 = fn({ installs: 5, downloads: 0 });
+    check('downloads 为 0 时不构成同源证据', a5.installs === 5, JSON.stringify(a5));
+    const wired = cl.filter((l) => l.indexOf('visibleCounts(') >= 0).length;
+    check('技能卡与详情弹层都接线（至少 2 处调用）', wired >= 2, wired);
   }
 }
 

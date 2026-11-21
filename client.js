@@ -163,6 +163,19 @@ const CARD_BATCH = 48;
     // 面板阈值：技能工具行控件合计 ~420px（input minWidth120 + select 96 + 按钮×2 + gap），
     // 低于 560 必然挤，留一档余量给滚动条与内边距。
     const NARROW_PANEL_WIDTH = 560;
+
+    // 卡片计数「有值才显示」之外还要认同源：实测上游真实数据的 installs 与 downloads
+    // 永不相等（clawhub 同一行 installs=12,282 / downloads=283,509），所以两数完全相等
+    // 只可能是服务端把 downloads 复制进了 installs（0.5.134 已在服务端修掉）。宿主永不
+    // 重启，旧进程仍在复制，因此客户端自己拦：那种情况下不显示安装数，绝不显示错数。
+    // 详情弹层的安装数走同一判据（原本 0 会显示「安装 0」，现在与卡片一致不显示）。
+    const visibleCounts = (item) => {
+      const inst = Number(item && item.installs) || 0;
+      const down = Number(item && item.downloads) || 0;
+      const out = { installs: inst || null, downloads: down || null };
+      if (!inst || (down && inst === down)) out.installs = null;
+      return out;
+    };
     function readNarrowViewport() {
       try {
         if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
@@ -1700,10 +1713,10 @@ const CARD_BATCH = 48;
             h('span', null, item.sourceLabel || item.source),
             item.owner ? h('span', null, `· ${item.owner}`) : null,
             item.category ? h('span', null, `· ${item.category}`) : null,
-            item.installs ? h('span', null, `· ${Number(item.installs).toLocaleString()} 次安装`) : null,
+            visibleCounts(item).installs ? h('span', null, `· ${Number(item.installs).toLocaleString()} 次安装`) : null,
             // 排序依据必须可见：只给「按安装数」而卡片没有安装数时，用户无法核验。
             // 与安装数同一规则 —— 有值才显示，0/缺失不显示，绝不显示错数。
-            item.downloads ? h('span', null, `· ${Number(item.downloads).toLocaleString()} 次下载`) : null,
+            visibleCounts(item).downloads ? h('span', null, `· ${Number(item.downloads).toLocaleString()} 次下载`) : null,
             item.stars ? h('span', null, `· ★ ${Number(item.stars).toLocaleString()}`) : null,
             item.installable === false ? h('span', null, '· 仅可浏览') : null),
           h('div', { style: S.row },
@@ -2276,11 +2289,11 @@ const CARD_BATCH = 48;
                     },
                   },
                     h('div', { style: { ...S.title, fontSize: 14 } }, detail.kind === 'quality' ? '质量评测：' + detail.slug : (detail.kind === 'skill' ? '技能' : 'MCP') + '：' + detail.slug),
-                    detail.kind === 'mcp' && detail.data && (detail.data.detailSource || detail.data.rating != null || detail.data.installs != null || detail.data.description) ? h('div', { style: { ...S.meta, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 } }, [
+                    detail.kind === 'mcp' && detail.data && (detail.data.detailSource || detail.data.rating != null || visibleCounts(detail.data).installs != null || detail.data.description) ? h('div', { style: { ...S.meta, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 } }, [
                       detail.data.description ? h('span', { key: 'desc', style: { fontSize: 12, opacity: 0.85 } }, detail.data.description) : null,
                       h('div', { key: 'chips', style: S.row }, [
                         detail.data.rating != null ? h('span', { key: 'rating', style: S.chip() }, `评分 ${detail.data.rating}`) : null,
-                        detail.data.installs != null ? h('span', { key: 'installs', style: S.chip() }, `安装 ${Number(detail.data.installs).toLocaleString()}`) : null,
+                        visibleCounts(detail.data).installs != null ? h('span', { key: 'installs', style: S.chip() }, `安装 ${Number(visibleCounts(detail.data).installs).toLocaleString()}`) : null,
                         detail.data.category ? h('span', { key: 'cat', style: S.chip() }, detail.data.category) : null,
                         detail.data.detailSource ? h('span', { key: 'src', style: { fontSize: 11, opacity: 0.6 } }, `详情来源：${detail.data.detailSource}`) : null,
                       ]),
