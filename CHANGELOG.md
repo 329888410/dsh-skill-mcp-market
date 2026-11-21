@@ -3,6 +3,16 @@
 - **空页不再被说成「目录已到底」**（同一轮门内实测的第二处不诚实）：trusttools 在门里出现过一次首页静默空响应（items=0、degraded=0、total=0），handler 的 `hasMore` 当时退化成 `items.length >= size` = false，聚合层于是对外宣称「已是最后一页」—— 一次抓取失败被说成整个目录只有这一屏，比谎报总数更误导（用户会以为源已穷尽、不再翻页）。现在 `false` 只有在响应带真实总数证据时才是结论，否则保持 `undefined`（未知），分页器继续显示「可继续加载」。
 - **上游状态 vs 本侧回归的判定收敛成一个 helper**：新增 `emptyWithoutEvidence`（degraded>0 / total>0 / hasMore===true 都算有证据，三者皆无才算上游静默空响应）。test-nocache 与 test-paging 之前各写一套相近判据 —— 两套判据互相打架正是假绿来源，现在两处调用同一函数；真值表 6 例进 test-paging-verdict（含反向破坏：写成恒 true 一律当上游问题，就会被 total>0 却空页那例抓到）。修复后 test-paging 13 passed（旧行为下同一场景判 FAIL —— 门里红、单跑三次绿的那种 flake 消失），test-nocache 13 passed / 1 skipped。
 
+## 0.5.139
+
+- **空的那一页自己声明了失败，就不再算本侧分页回归**（门内两条红的同一根因，实测非推断）：trusttools 上游此刻 6/6 次请求都是「来源响应超时（预算 12s）」，门里因此同时红了 test-paging（`FAIL trusttools p1= 0 p2=12`）与 test-nocache（`FAIL 重试后第 2 页仍空而 total=579074 hasMore=true`）。两者缺的是同一个维度：判据只看「上游说还有货却拿到空页」，没看**那个空页自己带回来的 degraded 记录**。上游已经承认这页没给成，就不能拿它去判我们的 page/offset 算术 —— 但反过来，没有 degraded 的空页（该页成功返回却空手）仍必须 FAIL，这条绝不放宽。新增纯函数 `pagePairVerdict`（skip=空页自报失败 / judge=交既有判据 / ok=两页都有条目），test-paging 与 test-nocache 共用，判据不再两处各写一套。真值表 8 例（含「degraded 属于另一页时不豁免本页」这种容易写反的边界），两向证伪：取消自报失败豁免 → 红；去掉 ok 短路 → 红。
+
+## 0.5.138
+
+- **clawhub 的分类 chip 从「永远不出现」变成可用**：实测上游 browse 行根本没有 category 键（三行样本的键是 ownerHandle/slug/displayName/summary/description/topics/tags/stats/createdAt/updatedAt/latestVersion/metadata），分类的真实载体是 topics 数组（50 行样本里 38 行非空，如 ["self-improvement","context"]）；我方 mapClawHubRows 读的是 raw.category || "" → 恒空，面板由 item.category 派生的分类 chip 对 clawhub 永远不出现。新增 clawhubCategoryOf（上游真给了 category 就优先用，否则取 topics 首项并小写归一，两者皆无返回空），只用在 mapClawHubRows 体内 —— 553 行等属于 lobehub/trusttools 的映射保留 raw.category，因为那些源的上游行真有该字段，全文件一刀切禁止会误杀。判据范围锁在函数体内（blockEnd 定界）。离线直打真实上游：browse 24 条中 7 条有分类，面板可派生 7 个分类。search 端点行既无 topics 也无 category（实测 21 键）→ 仍为空，这是事实而不是缺陷，因此不编造分类。
+- **分类过滤保留的「无分类信息条目」现在如实计数**：本地过滤的语义是「无分类或匹配才保留」—— 没有分类信息的条目被保留（严格过滤会让不提供分类的源整源消失，那是数据丢失而不是过滤），但界面上从没说这件事：实测选 douyin 返回 18 条，其中 17 条并非 douyin。修法不是改过滤语义，而是把保留量写进 categoryNote（另有 N 项该源未标注分类，按「无分类不过滤」一并保留），N=0 时不写。真值表含边界：本页全无分类时 filteredOut=0（旧写法一条说明都不给）同样必须告知。两向证伪：把保留量恒置 0 → 红；把 note 措辞保留但丢掉具体数字 → 也红（判据要的是数字，不是关键词）。
+- test-clawhub-quality 从 30 项增至 48 项。
+
 ## 0.5.137
 
 - **卡片不再显示被复制出来的安装数（客户端拦，live 可验证）**：装上 0.5.136 后 live 实测 clawhub 每张卡都是「283,509 次安装 · 283,509 次下载」，而上游同一行是 downloads=283,509 / installs=12,282 —— 复制来自仍在运行的旧服务进程（0.5.134 已在服务端把两个字段各取各的，宿主永不重启意味着那份代码还没被加载）。既然实测真实数据里两字段永不相等，卡片上相等就只能来自复制：客户端新增 `visibleCounts` 同源判据（installs 与 downloads 同为非零且相等 → 安装数不显示），「有值才显示、0/缺失不显示」的原规则保留；详情弹层的显示条件与渲染两处同判据（只改其一会出现「区域显示但内容为空」）。真值表 6 例 + 两向证伪（去掉相等判据被抓、连带抹掉下载数也被抓），test-clawhub-quality 共 30 项。

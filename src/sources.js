@@ -651,6 +651,10 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     } else {
       visible = items.filter((item) => !item.category || item.category === catNeedle);
       filteredOut = items.length - visible.length;
+      // 没有分类信息的条目是被**保留**的（严格过滤会让不提供分类的源整源消失，
+      // 那是数据丢失而不是过滤），所以它们也在 visible 里。不写出来的话，用户选
+      // douyin 看到 18 条会以为都是 douyin —— 实测正是这样（1 条 douyin + 17 条无分类）。
+      const keptUncat = visible.filter((item) => !item.category).length;
       if (filteredOut > 0) {
         // 本地过滤只作用于当前页：上游的 total/pages 是按未过滤集合算的，
         // 继续沿用就是与实际不符的计数。重算为可见集合，并说明这是本地兜底过滤。
@@ -660,6 +664,10 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
         hasMore = false;
         categoryNote = "分类为面板本地过滤（仅当前页），已过滤掉 " + filteredOut +
           " 项；分类过滤只作用于当前页，上游不提供过滤后的总数";
+      }
+      if (keptUncat > 0) {
+        categoryNote = (categoryNote ? categoryNote + "；" : "") +
+          "另有 " + keptUncat + " 项该源未标注分类，按「无分类不过滤」一并保留";
       }
     }
   }

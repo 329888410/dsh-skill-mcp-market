@@ -3,7 +3,7 @@
 //
 // test-nocache 直打真实上游，SKIP/重试分支没法靠上游恰好坏一次来验证 —— 那等于
 // 没有锁。判定抽成纯函数后每条边界都能钉死，尤其「放宽绝不放行真回归」。
-import { overlapVerdict, emptyPageAction, emptyWithoutEvidence } from './paging-verdict.mjs';
+import { overlapVerdict, emptyPageAction, emptyWithoutEvidence, pagePairVerdict } from './paging-verdict.mjs';
 import fs from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -67,6 +67,33 @@ console.log('Test 7: emptyWithoutEvidence —— 上游静默空响应不得伪�
   // 反向破坏：写成恒 true（一律当上游问题）就会放过 total>0 却空页这种真回归
   const weakened = () => true;
   check('削弱成恒 true 会被 total>0 那例抓到（判据有效）', weakened({ total: 9 }) !== ew({ degraded: 0, total: 9, hasMore: false }));
+}
+
+console.log('');
+console.log('');
+console.log('Test 8: pagePairVerdict —— 空页由上游自报失败时不得算本侧回归');
+{
+  // 门内两条红的同一根因（实测 trusttools 6/6 次均 degraded=来源响应超时）：
+  //   test-paging  FAIL trusttools p1= 0 p2=12 —— 第 1 页超时、第 2 页正常；
+  //   test-nocache FAIL 重试后第 2 页仍空而 total=579074 hasMore=true —— 第 2 页超时。
+  // 两次都是「空的那一页自己声明了失败」。上游承认失败的页不能用来判我们的分页算术；
+  // 但没有 degraded 时（该页成功返回却空手 + 上游说还有货）仍必须 FAIL，这条不能放宽。
+  // 动态 import：函数还不存在时静态 import 会让套件在链接期崩掉（NO-SUMMARY），
+  // 拿不到「具体哪条判据失败」的原文。
+  let mod = null, err = '';
+  try { mod = await import('./paging-verdict.mjs'); } catch (e) { err = String(e && e.message || e); }
+  const fn = mod && mod.pagePairVerdict;
+  check('导出 pagePairVerdict', typeof fn === 'function', err || '未导出');
+  if (typeof fn === 'function') {
+    const p = (o) => fn(o).verdict;
+    check('两页都有条目 → ok（不干预）', p({ p1: 12, p2: 12, p1Degraded: 0, p2Degraded: 0 }) === 'ok');
+    check('p1 超时且 p1 空 → skip（实测 test-paging 那条红）', p({ p1: 0, p2: 12, p1Degraded: 1, p2Degraded: 0 }) === 'skip');
+    check('p2 超时且 p2 空 → skip（实测 test-nocache 那条红）', p({ p1: 12, p2: 0, p1Degraded: 0, p2Degraded: 1 }) === 'skip');
+    check('没有 degraded 的空页不算外部状态 → judge', p({ p1: 12, p2: 0, p1Degraded: 0, p2Degraded: 0 }) === 'judge');
+    check('degraded 属于另一页时不豁免本页 → judge', p({ p1: 0, p2: 12, p1Degraded: 0, p2Degraded: 1 }) === 'judge');
+    check('两条都有问题 → skip 优先于 ok', p({ p1: 0, p2: 0, p1Degraded: 1, p2Degraded: 1 }) === 'skip');
+    check('skip 理由写明是自报失败', /自报失败|degraded/.test(fn({ p1: 0, p2: 12, p1Degraded: 1, p2Degraded: 0 }).reason), '');
+  }
 }
 
 console.log('');

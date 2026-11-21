@@ -192,6 +192,81 @@ console.log('Test 8: 卡片不得显示被复制出来的安装数（live 实测
 }
 
 console.log('');
+
+console.log('');
+console.log('Test 9: clawhub 的分类载体是 topics（上游无 category 键）');
+{
+  // 取证：browse 行 50 条样本里 topics 非空 38、tags 是 {"latest":"4.0.5"} 这种对象、
+  // 行上根本没有 category 键；search 行 21 个键里既没有 topics 也没有 category。
+  // 我方 mapClawHubRows 写的是 category: raw.category || "" → 恒空，于是面板的
+  // 分类 chip（由 item.category 派生）对 clawhub 永远不出现。
+  // 用动态 import：函数尚不存在时 ESM 静态 import 会让整个套件在链接期崩掉
+  // （NO-SUMMARY），拿不到「具体哪条判据失败」的原文。
+  let mod = null;
+  let err = '';
+  try { mod = await import('../src/extra-sources.js'); } catch (e) { err = String(e && e.message || e); }
+  const fn = mod && mod.clawhubCategoryOf;
+  check('extra-sources 导出 clawhubCategoryOf', typeof fn === 'function', err || '未导出');
+  if (typeof fn === 'function') {
+    check('topics 首项作为分类（小写）', fn({ topics: ['Self-Improvement', 'context'] }) === 'self-improvement', JSON.stringify(fn({ topics: ['Self-Improvement', 'context'] })));
+    check('上游真给了 category 时优先用它', fn({ category: 'Dev', topics: ['x'] }) === 'Dev', JSON.stringify(fn({ category: 'Dev', topics: ['x'] })));
+    check('topics 空数组 → 空（不编造分类）', fn({ topics: [] }) === '', JSON.stringify(fn({ topics: [] })));
+    check('topics 非数组（tags 那种对象）→ 空', fn({ topics: { latest: '4.0.5' } }) === '', JSON.stringify(fn({ topics: { latest: '4.0.5' } })));
+    check('search 行（两者皆无）→ 空', fn({ displayName: 'Pdf', downloads: 1 }) === '', '');
+    check('空入参不抛', fn(null) === '' && fn(undefined) === '');
+    check('首个空 topic 被跳过', fn({ topics: ['', ' GitHub '] }) === 'github', JSON.stringify(fn({ topics: ['', ' GitHub '] })));
+  }
+  // 接线：mapClawHubRows 必须调用它，而不是留着 raw.category 那个上游没有的键
+  const esSrc = fs.readFileSync(new URL('../src/extra-sources.js', import.meta.url), 'utf8');
+  check('mapClawHubRows 已接线', esSrc.indexOf('category: clawhubCategoryOf(raw)') >= 0, '');
+  // 判据范围锁在 mapClawHubRows 体内：lobehub/trusttools 的上游行**真有** category
+  // 字段（extra-sources.js:553 等处保留 raw.category 是对的），全文件一刀切禁止会把
+  // 别的源的合法映射一起判死。
+  const esLines = esSrc.split(String.fromCharCode(10));
+  const mStart = esLines.findIndex((l) => l.trimStart().startsWith('function mapClawHubRows('));
+  if (mStart < 0) throw new Error('mapClawHubRows 起点未找到');
+  const mEnd = blockEnd(esSrc, mStart, 'mapClawHubRows');
+  const mBody = esLines.slice(mStart, mEnd + 1).join(String.fromCharCode(10));
+  check('mapClawHubRows 体内不再读上游不存在的 raw.category', mBody.indexOf('raw.category') < 0, '');
+  check('mapClawHubRows 体内确实用 clawhubCategoryOf', mBody.indexOf('category: clawhubCategoryOf(raw)') >= 0, '');
+}
+
+console.log('');
+
+console.log('');
+console.log('Test 10: 分类过滤保留的「无分类信息条目」必须如实告知');
+{
+  // 实测：clawhub 选分类 douyin → 返回 18 条，其中 17 条 category 不是 douyin。
+  // 因为本地过滤是 items.filter((i) => !i.category || i.category === needle)：
+  // 没有分类信息的条目被**保留**（聚合 all 场景下这是必要的 —— 严格过滤会让
+  // 不提供分类的源整源消失，那是数据丢失而不是过滤）。问题在于界面没说这件事，
+  // 用户以为自己看到的是「douyin 的 18 条」。修法不是改过滤语义，而是把保留量
+  // 写进 categoryNote，让计数与用户看到的东西对得上。
+  const rows = [
+    { slug: 'a', category: 'douyin' },
+    { slug: 'b', category: '' },
+    { slug: 'c', category: '' },
+    { slug: 'd', category: 'tiktok' },
+  ];
+  const h = { cf: async () => ({ items: rows.slice(), total: rows.length, hasMore: false }) };
+  const r = await searchSkills({ query: '', source: 'cf', page: 1, pageSize: 24, cache, handlers: h, category: 'douyin', budgetMs: 5000 });
+  check('无分类条目仍保留（不整源丢失）', r.items.length === 3, r.items.map((x) => x.slug).join(','));
+  check('真正匹配的条目在其中', r.items.some((x) => x.slug === 'a'));
+  check('note 写明保留数量与原因（另有 2 项未标注分类）', /另有 2 项/.test(r.categoryNote || '') && /未标注分类/.test(r.categoryNote || ''), JSON.stringify(r.categoryNote));
+  check('note 同时说明过滤掉的数量', /过滤掉 1/.test(r.categoryNote || ''), JSON.stringify(r.categoryNote));
+  // 全都有分类且严格匹配时，不该出现「无分类信息」字样（避免噪声）
+  const h2 = { cf2: async () => ({ items: [{ slug: 'x', category: 'a' }, { slug: 'y', category: 'b' }], total: 2, hasMore: false }) };
+  const r2 = await searchSkills({ query: '', source: 'cf2', page: 1, pageSize: 24, cache, handlers: h2, category: 'a', budgetMs: 5000 });
+  check('无保留项时不写无关说明', r2.categoryNote.indexOf('无分类信息') < 0, JSON.stringify(r2.categoryNote));
+  check('该场景仍如实报过滤掉 1 条', /过滤掉 1/.test(r2.categoryNote || ''), JSON.stringify(r2.categoryNote));
+  // 边界：本页条目全无分类信息时 filteredOut=0，旧写法一条说明都不给 ——
+  // 用户选 douyin 却看到 0 条 douyin，同样是对不上的计数。
+  const h3 = { cf3: async () => ({ items: [{ slug: 'p', category: 'x' }, { slug: 'q', category: '' }], total: 2, hasMore: false }) };
+  const r3 = await searchSkills({ query: '', source: 'cf3', page: 1, pageSize: 24, cache, handlers: h3, category: 'nope', budgetMs: 5000 });
+  check('无一匹配时保留量也如实告知', r3.items.length === 1 && /另有 1 项/.test(r3.categoryNote || ''), r3.items.length + ' / ' + JSON.stringify(r3.categoryNote));
+}
+
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
 

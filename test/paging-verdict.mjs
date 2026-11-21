@@ -45,6 +45,22 @@ export function emptyPageAction(o) {
 // 都算有证据；三者皆无 = 上游静默空响应：既不能证明分页契约被违反，也不能宣称
 // 目录到底 —— 只能记 SKIP。本轮门内实测 trusttools 一次 p1=0/p2=12（degraded=0、
 // total=0），单跑三次全绿；把这种上游状态判成本仓库回归，得到的就是随心情 flake 的门。
+// pagePairVerdict —— 相邻两页里出现空页时，先问「这一页自己有没有声明失败」。
+// 空页只有在它**没有**自报失败时才可能是我们的分页算术错了；上游自己说超时/不可达
+// 的页不能用来判本侧契约（实测 trusttools 6/6 次 degraded=来源响应超时，本轮门内
+// 两条红都是这个形态：一次 p1=0/p2=12，一次 p1=12/p2=0 且重试后仍 0）。
+// skip = 无从判定（外部状态）；judge = 交给既有判据继续定性。
+export function pagePairVerdict(o) {
+  const p1 = Number(o.p1) || 0;
+  const p2 = Number(o.p2) || 0;
+  const d1 = Number(o.p1Degraded) || 0;
+  const d2 = Number(o.p2Degraded) || 0;
+  if (p1 > 0 && p2 > 0) return { verdict: 'ok', reason: '' };
+  const selfFailed = (p1 === 0 && d1 > 0) || (p2 === 0 && d2 > 0);
+  if (selfFailed) return { verdict: 'skip', reason: '空的那一页自报失败（degraded 有记录）：上游状态，不用于判本侧分页契约' };
+  return { verdict: 'judge', reason: '' };
+}
+
 export function emptyWithoutEvidence(o) {
   if (Number(o.degraded) > 0) return false;
   if ((Number(o.total) || 0) > 0) return false;

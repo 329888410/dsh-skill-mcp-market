@@ -70,6 +70,26 @@ async function getJsonClawHub(url, attempt = 0) {
   }
 }
 
+// clawhubCategoryOf —— clawhub 行上的分类载体是 topics 数组（实测 browse 50 行里 38 行
+// 非空，如 ["self-improvement","context"]），上游**没有** category 键（三行样本的键是
+// ownerHandle/slug/displayName/summary/description/topics/tags/stats/createdAt/updatedAt/
+// latestVersion/metadata）；旧写法 raw.category || "" 因此恒空，面板的分类 chip 对
+// clawhub 永远不出现。取 topics 首项当分类是**近似**：面板的分类过滤只作用于当前页并
+// 会用 categoryNote 明说（sources.js 的本地过滤分支），所以近似不会伪装成服务端过滤。
+// search 端点行上既无 topics 也无 category（实测 21 键）→ 仍返回空，分类 chip 不出现，
+// 这是事实而不是缺陷。
+export function clawhubCategoryOf(raw) {
+  const direct = String((raw && raw.category) || "").trim();
+  if (direct) return direct;
+  const topics = raw && raw.topics;
+  if (!Array.isArray(topics)) return "";
+  for (const t of topics) {
+    const s = String(t || "").trim().toLowerCase();
+    if (s) return s;
+  }
+  return "";
+}
+
 function mapClawHubRows(rows, q, mode, limitOverride) {
   const limit = limitOverride ?? 24;
   const items = (Array.isArray(rows) ? rows : []).slice(0, limit).map((raw) => {
@@ -97,7 +117,7 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
       // installs 只认真实 installs 字段；缺失或为 0 就保持 0 —— 面板对 0 不显示该段，
       // 宁可不显示也不显示错数（不回落到 downloads）。
       installs: Number(raw.installs ?? raw.stats?.installs ?? 0) || 0,
-      category: raw.category || "",
+      category: clawhubCategoryOf(raw),
       // 排序键的展示字段必须与 getter **同源**，否则「排了但看起来没排」：
       // browse 行量在 stats.*；search 行（实测 21 键）stars/createdAt 只挂在 native.skill.* 里，
       // 顶层没有 stars/createdAt → 旧写法在 search 卡片上恒为 0，按 stars 排完看起来像没排。

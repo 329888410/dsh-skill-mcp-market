@@ -2,7 +2,7 @@
 // source layer WITHOUT a cache object. That path used to crash with
 // "fallbackCache is not defined" after the 0.5.10 paging rewrite, so keep it covered.
 import { ALL_SOURCES, searchSkills, warmMarketCache } from "../src/sources.js";
-import { overlapVerdict, emptyPageAction, emptyWithoutEvidence } from './paging-verdict.mjs';
+import { overlapVerdict, emptyPageAction, emptyWithoutEvidence, pagePairVerdict } from './paging-verdict.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -56,6 +56,18 @@ for (const source of ALL_SOURCES) {
     const vd = overlapVerdict({ source, overlap, pageCount: p1.items.length, sortedOverlap });
     if (vd.verdict === 'skip') { skipped += 1; console.log('SKIP ' + source + ' overlap=' + overlap + ' — ' + vd.reason); continue; }
     const ep = emptyPageAction({ p1: p1.items.length, p2: p2.items.length, total: p1.total, hasMore: p1.hasMore, attempt: ep1.verdict === 'retry' ? 2 : 1 });
+    // 重试之后再看：空页若由该页自报失败（degraded），是上游状态，不判本侧回归。
+    const pvN = pagePairVerdict({
+      p1: p1.items.length,
+      p2: p2.items.length,
+      p1Degraded: (p1.degraded || []).length,
+      p2Degraded: (p2.degraded || []).length,
+    });
+    if (pvN.verdict === 'skip') {
+      skipped += 1;
+      console.log('SKIP ' + source + ' ' + pvN.reason + '（p1=' + p1.items.length + ' p2=' + p2.items.length + '）');
+      continue;
+    }
     check(p1.items.length > 0 && ep.verdict === 'ok' && vd.verdict === 'ok',
       [vd.reason, ep.reason].filter(Boolean).join('；') || ('total=' + p1.total + ' hasMore=' + p1.hasMore));
   } catch (error) {

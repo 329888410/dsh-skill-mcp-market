@@ -1,7 +1,7 @@
 // 逐个源验证「下一页」真的取到不同的条目（而不是重复第一页）。
 import { safeTempDir } from "../src/home.js";
 import { makeCache, searchSkills, ALL_SOURCES, skillsShCatalog } from "../src/sources.js";
-import { overlapVerdict, emptyPageAction, emptyWithoutEvidence } from "./paging-verdict.mjs";
+import { overlapVerdict, emptyPageAction, emptyWithoutEvidence, pagePairVerdict } from "./paging-verdict.mjs";
 
 const cache = makeCache(safeTempDir());
 const pageSize = 12;
@@ -61,6 +61,18 @@ for (const source of ALL_SOURCES) {
     });
     if ((p1.items.length === 0 || b.length === 0) && noEvidence) {
       console.log(`SKIP ${source.padEnd(14)} 有页为空且无总数证据（p1=${p1.items.length} p2=${b.length}）—— 上游静默空响应，无从判定本侧契约`);
+      continue;
+    }
+    // 空页若由该页自己声明失败（degraded）→ 外部状态，不能拿来判本侧分页算术。
+    const pv = pagePairVerdict({
+      p1: p1.items.length,
+      p2: b.length,
+      p1Degraded: (p1.degraded || []).length,
+      p2Degraded: (p2.degraded || []).length,
+    });
+    if (pv.verdict === 'skip') {
+      checks += 1;
+      console.log("SKIP " + source.padEnd(14) + " " + pv.reason + "（p1=" + p1.items.length + " p2=" + b.length + "）");
       continue;
     }
     const empty = p1.items.length === 0 && b.length === 0 && unreachable;
