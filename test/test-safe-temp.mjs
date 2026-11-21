@@ -14,7 +14,7 @@ console.log('Test 1: safeTempDir 返回真实可用的目录');
 {
   const d = safeTempDir();
   check('absolute path', path.isAbsolute(d), d);
-  check('no literal undefined', !d.includes('undefined'), d);
+  check('no literal undefined', !d.split(/[\\/]+/).some((seg) => seg === 'undefined'), d);
   check('directory exists or creatable', (() => { try { fs.mkdirSync(d, { recursive: true }); return fs.existsSync(d); } catch { return false; } })(), d);
 }
 

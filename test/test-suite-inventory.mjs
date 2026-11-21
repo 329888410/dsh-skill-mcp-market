@@ -64,5 +64,32 @@ console.log('Test 3: 门内套件文件都存在');
 }
 
 console.log('');
+
+console.log('');
+console.log('Test 4: 仓库根不得有核验临时件（.gate.txt/.msg.txt 事故的根因锁）');
+{
+  const { execFileSync } = await import('node:child_process');
+  const run = (a) => { try { return execFileSync('git', a, { cwd: W, encoding: 'utf8' }); } catch { return ''; } };
+  const st = run(['status', '--porcelain']);
+  const stray = [];
+  for (const line of st.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    // 未跟踪的点文件 = 核验脚本写在仓库根的临时件。历史事故：f074f0b 曾用 git add -A
+    // 把 .gate.txt/.msg.txt 收进提交（只能 amend 剔除 + 重打 tag）；.al-err.txt/.al-out.txt
+    // 句柄残留是同一根因。正确做法是写到仓库外（我现在的脚本用 C:\Users\Public\dsh-scratch）。
+    if (line.trimStart().startsWith('??')) {
+      const p = line.slice(3).trim();
+      if (p.startsWith('.')) stray.push(p);
+    }
+  }
+  check('工作树无未跟踪的临时点文件', stray.length === 0, stray.join(', '));
+  const tracked = run(['ls-files']).split(/\r?\n/).filter(Boolean);
+  const bad = tracked.filter((x) => {
+    if (x.indexOf('/') >= 0) return false;
+    if (x === '.gitignore' || x === '.npmignore') return false;
+    return x.startsWith('.');
+  });
+  check('版本库根不含点文件临时件', bad.length === 0, bad.join(', '));
+}
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

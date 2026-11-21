@@ -5,9 +5,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
+import { absent } from './anchor-lib.mjs';
 
 const W = path.resolve(import.meta.dirname, '..');
 const read = (f) => fs.readFileSync(path.join(W, f), 'utf8');
+// 同 test-cleanup：死代码断言只对代码生效，且纯标识符 needle 必须用 absent 防子串冒充。
+const codeOnly = (t) => t.split(/\r?\n/).map((l) => {
+  const s = l.trimStart();
+  if (s.startsWith('//') || s.startsWith('*') || s.startsWith('/*')) return '';
+  const c = l.indexOf('//');
+  return c >= 0 ? l.slice(0, c) : l;
+}).join('\n');
 
 let passed = 0, failed = 0;
 const check = (name, cond, detail = '') => {
@@ -29,7 +37,7 @@ console.log('\nTest 1: 技能来源 chip 里没有 unreachable 的 all 分支');
 console.log('\nTest 2: LOAD_MORE_CAPABLE 死导出已移除');
 {
   const sources = read('src/sources.js');
-  check('LOAD_MORE_CAPABLE gone from sources.js', !sources.includes('LOAD_MORE_CAPABLE'));
+  check('LOAD_MORE_CAPABLE gone from sources.js', absent(codeOnly(sources), 'LOAD_MORE_CAPABLE'), '');
 }
 
 console.log('\nTest 3: 保留 MCP 工具仍在用的 all 聚合（不能删）');

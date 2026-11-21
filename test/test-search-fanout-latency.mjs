@@ -17,7 +17,7 @@
 // 并行化实现为可注入纯函数（fake handler 驱动），不依赖网络，CI 上可重复。
 // 动态 import：静态 import 在缺导出时会在模块实例化阶段就抛 SyntaxError，
 // 整个套件一条断言都跑不到 —— 那看起来像「加载错误」，实际是 RED 没被读出来。
-import { sliceBetween, countHits } from './anchor-lib.mjs';
+import { sliceBetween, countHits, absent } from './anchor-lib.mjs';
 let fanOutSources = null, searchSkills = null, importError = '';
 try {
   const mod = await import('../src/sources.js');
@@ -339,7 +339,7 @@ console.log('Test 10: 分页器死代码清理（含锚唯一性锁）');
     code.includes('const pageItems = pageWindow(page, n, 5)') && code.includes('gotoPage(page - 1)') && code.includes('gotoPage(page + 1)'), '');
   // 死代码：shown 只声明从不使用；windowed 参数在 pageWindow 抽出后已无人读取
   check('死变量 shown 已清除', !code.includes('const shown = '), (code.match(/const shown[^\r\n]*/) || [''])[0].slice(0, 70));
-  check('死参数 windowed 已从签名移除', !firstLine.includes('windowed'), firstLine.trim().slice(0, 100));
+  check('死参数 windowed 已从签名移除', absent(firstLine, 'windowed'), firstLine.trim().slice(0, 100));
   check('调用点不再传 windowed 实参', !c.includes(', tab === ' + String.fromCharCode(39) + 'skills' + String.fromCharCode(39) + ' ? false : true)'), '');
 }
 console.log('');

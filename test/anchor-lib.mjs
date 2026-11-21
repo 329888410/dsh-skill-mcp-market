@@ -41,3 +41,23 @@ export function sliceBetween(src, startNeedle, endNeedle, label) {
   if (b <= a) throw new Error('锚顺序颠倒 ' + label + '：尾 ' + b + ' <= 起 ' + a);
   return src.slice(a, b);
 }
+
+// absent(src, needle) —— 否定断言专用的「非冲突」判定。
+//
+// 为什么需要它：`!src.includes('windowed')` 这类断言想说的是「这个标识符不该再出现」，
+// 但 includes() 是子串匹配：把它换成 pageWindow 这种**包含它的更长合法标识符**，
+// 断言就会误红。同类假阳性本仓库连犯两次（Test 11 的 skillsTotalPages 冒充 skillsTotal、
+// test-profile-sync 的 pageWindow 冒充 pageWin），所以它不是孤例而是共性风险。
+//
+// 规则：只有当 needle 两侧都不是标识符字符（[A-Za-z0-9_]）时才算「出现了这个标识符」。
+// 两侧故意不含 $：模板插值 `X（${...}` 的 $ 紧跟中文标签，若当边界会把真存在误判成不存在。
+export function absent(src, needle) {
+  if (needle === "") throw new Error("absent: needle 不得为空串");
+  const isId = (ch) => ch !== undefined && ch >= "0" && (ch <= "9" || (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_");
+  let i = -1;
+  let hits = 0;
+  while ((i = src.indexOf(needle, i + 1)) >= 0) {
+    if (!isId(src[i - 1]) && !isId(src[i + needle.length])) hits += 1;
+  }
+  return hits === 0;
+}

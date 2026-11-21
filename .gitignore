@@ -10,3 +10,16 @@ Thumbs.db
 test/test-results.json
 test-results.json
 .dsh-tmp/
+
+# ── 核验临时件兜底（历史事故：.gate.txt/.msg.txt 曾被 git add -A 收进提交）
+# 核验脚本应写到仓库外；这些模式保证即便误写进仓库根也不会进版本库，
+# test-suite-inventory 的 Test 4 再检查工作树里不存在未跟踪的点文件。
+.gate*.txt
+.msg*.txt
+.entry.md
+.commit-msg.txt
+.pjhead.tmp
+.al-err.txt
+.al-out.txt
+.scratch-*
+# 核验脚本自身的临时件（.b/.fx/.ins/.rr/.at/… 一律不该进版本库；Test 4 会检查工作树）

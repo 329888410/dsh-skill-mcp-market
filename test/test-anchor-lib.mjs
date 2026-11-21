@@ -6,7 +6,7 @@
 // 空串，于是核验报 FALSE —— 而实现其实是完整的。「核验脚本自己出错」比实现出错更危险：
 // 它给出的结论看起来是实测。所以这里用证伪用例锁死：非唯一锚必须 throw，绝不返回
 // 一个可能是空窗口的结果。
-import { countHits, once, lineOf, sliceBetween } from './anchor-lib.mjs';
+import { countHits, once, lineOf, sliceBetween, absent } from './anchor-lib.mjs';
 
 let passed = 0, failed = 0;
 const check = (n, cond, d) => { if (cond) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + String(d).slice(0, 150) + ']' : '')); } };
@@ -83,5 +83,144 @@ console.log('Test 5: 对真实 client.js 复现当年误报（回归锁）');
 }
 
 console.log('');
+
+console.log('');
+console.log('Test 6: absent() —— 否定断言的非冲突判定（子串冒充面回归锁）');
+{
+  // 本仓库连犯两次同类假阳性：!includes('windowed') 被 windowedIn 触发、
+  // !includes('pageWin') 被 pageWindow 触发。absent() 只把「独立标识符」算出现，
+  // 被更长合法标识符包住的一律不算。
+  check('独立出现算存在', absent('const windowed = 1', 'windowed') === false, '');
+  check('作为更长标识符的子串不算存在（证伪核心）', absent('const windowedIn = 1', 'windowed'), '');
+  check('作为前缀的更长标识符也不算', absent('pageWindow(page, n, 5)', 'pageWin'), '');
+  check('完全没有则 absent', absent('const size = 1', 'windowed'), '');
+  // 边界：下划线/字母算标识符延续，空白/标点/括号算分隔
+  check('前接下划线视为更长标识符', absent('x_windowed = 1', 'windowed'), '');
+  check('后接数字视为更长标识符', absent('windowed2 = 1', 'windowed'), '');
+  check('括号包裹仍视为独立', absent('f(windowed);', 'windowed') === false, '');
+  check('模板插值紧跟 ${ 仍视为独立', absent('标签（${x}', '标签（') === false, '');
+  // 多次独立出现
+  check('多次独立仍算存在', absent('a=windowed; b=windowed;', 'windowed') === false, '');
+  // 空 needle 必须拒绝（与 countHits 同规则）
+  let threw = '';
+  try { absent('abc', ''); } catch (e) { threw = String(e.message); }
+  check('空 needle 被拒绝', /不得为空/.test(threw), threw.slice(0, 60));
+  // 真实源码验证：client.js 现在有 pageWindow，用旧断言 'pageWin' 会被误红，
+  // 而 absent('pageWin') 必须为真（旧死代码确实不在）
+  const fs2 = await import('node:fs');
+  const path2 = await import('node:path');
+  const c0 = fs2.readFileSync(path2.resolve(import.meta.dirname, '..', 'client.js'), 'utf8');
+  // 判定范围必须是代码而非散文：注释里提一句被删掉的参数名是正常的历史说明，
+  // 把它算成「标识符仍存在」就是断言越界。剥整行注释后再判。
+  const c = c0.split(String.fromCharCode(10)).filter(function (l) {
+    const s = l.trimStart();
+    return !s.startsWith('//') && !s.startsWith('*') && !s.startsWith('/*');
+  }).join(String.fromCharCode(10));
+  check('真实 client.js 含 pageWindow（冒充面存在）', c.includes('pageWindow'), '');
+  check('但 absent(pageWin) 仍为真（旧助手确实不在）', absent(c, 'pageWin'), '');
+  check('absent(windowed) 为真（签名死参数已删）', absent(c, 'windowed'), '');
+  // client.js:593 仍有一句过时注释描述 windowed 参数语义 —— 散文不算命中，
+  // 但它是真实的注释缺陷，随下一个 shipped 批次（src/skillhub.js 修正）一并删除。
+}
+
+
+console.log('');
+console.log('Test 7: 常驻守卫 —— 否定断言不得存在子串冒充面');
+{
+  // 同类假阳性连犯两次（Test 11 的 skillsTotalPages 冒充 skillsTotal、profile-sync 的
+  // pageWindow 冒充 pageWin），说明是共性风险而非孤例。规则：断言「某标识符不该出现」
+  // 且被检串完全由标识符字符组成时，必须用 absent()；裸 !x.includes('plainId') 是子串
+  // 匹配，未来一个更长的合法标识符（appendFileSyncSafe 之类）就会把它误红。
+  // 含点/横杠/空格的 needle（'frame.check'、'const shown = Math.min'）没有冒充面，
+  // 允许保持 includes。扫描只取代码：注释里的历史说明不算违规，也不算命中。
+  const fs7 = await import('node:fs');
+  const path7 = await import('node:path');
+  const dir = path7.resolve(import.meta.dirname);
+  const strip = function (t) {
+    const out = [];
+    for (const l of t.split(/\r?\n/)) {
+      const s = l.trimStart();
+      if (s.startsWith('//') || s.startsWith('*') || s.startsWith('/*')) { out.push(''); continue; }
+      const c = l.indexOf('//');
+      out.push(c >= 0 ? l.slice(0, c) : l);
+    }
+    return out.join('\n');
+  };
+  const QUOTE_A = String.fromCharCode(39);
+  const QUOTE_B = String.fromCharCode(34);
+  const IDCH = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$';
+  function plainIdent(s) {
+    if (!s) return false;
+    if (!'_$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(s[0])) return false;
+    for (const ch of s) if (!IDCH.includes(ch)) return false;
+    return true;
+  }
+  // 逐字符找 !<接收者>.includes('<needle>') 形态（不用正则，避开字符类引号转义）。
+  // 两条收窄规则都有实例支撑，目的是「不逼正确代码为闸门让路」：
+  // ① ! 与 .includes( 之间若出现 .test( / || / &&，那个 ! 否定的是别的子表达式
+  //    （误报实例：!/sameCommand|commandChanged/.test(mj) || mj.includes('rawSetAcceptsCommand')）。
+  // ② 接收者必须是源文本：裸标识符，或 codeOnly(...)/strip(...) 这类剥注释助手。
+  //    其它函数调用的结果（如 sortKeysFor(...) 返回数组）走的是**成员判定**、精确等值，
+  //    没有子串冒充面（误报实例：!sortKeysFor('clawhub').includes('trending')）。
+  const TEXT_FN = ['codeOnly(', 'strip('];
+  function receiverIsText(recv) {
+    const t = recv.trim();
+    if (!t) return false;
+    for (const fn of TEXT_FN) if (t.startsWith(fn)) return true;
+    return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(t);
+  }
+  function negations(code) {
+    const found = [];
+    let i = 0;
+    while (i < code.length) {
+      if (code[i] !== '!') { i += 1; continue; }
+      const inc = code.indexOf('.includes(', i);
+      if (inc < 0 || inc - i > 120) { i += 1; continue; }
+      const between = code.slice(i + 1, inc);
+      if (between.includes('.test(') || between.includes('||') || between.includes('&&')) { i = inc; continue; }
+      // 接收者就是 ! 与 .includes( 之间的整段（前面已排除含 .test/||/&& 的情形）。
+      // 别再剥尾部标识符 —— 裸 `i` 会被整个剥成空串而漏检（证伪样例抓到了这个）。
+      const recv = between.trim();
+      if (!receiverIsText(recv)) { i = inc; continue; }
+      const q = code[inc + 10];
+      if (q !== QUOTE_A && q !== QUOTE_B) { i = inc; continue; }
+      const close = code.indexOf(q, inc + 11);
+      if (close < 0) { i = inc; continue; }
+      found.push(code.slice(inc + 11, close));
+      i = close + 1;
+    }
+    return found;
+  }
+  const hits = [];
+  const files = fs7.readdirSync(dir).filter(function (x) { return x.endsWith('.mjs') && x !== 'test-anchor-lib.mjs' && x !== 'gate-verdict.mjs'; });
+  for (const f of files) {
+    const code = strip(fs7.readFileSync(path7.join(dir, f), 'utf8'));
+    for (const needle of negations(code)) {
+      if (plainIdent(needle)) hits.push(f + ' → !…includes(' + needle + ')');
+    }
+  }
+  check('无纯标识符的裸子串否定断言', hits.length === 0, hits.join(' | '));
+  // 自证：检测器必须真抓得到这类写法，否则守卫是空转的
+  const Q = String.fromCharCode(39);
+  // 反向：接收者是别的函数调用（数组成员判定）不得算违规
+  const arrSample = strip("check(" + Q + "z" + Q + ", !sortKeysFor(" + Q + "clawhub" + Q + ").includes(" + Q + "trending" + Q + "));");
+  check("数组成员判定不误报", negations(arrSample).filter(plainIdent).length === 0, negations(arrSample).join(","));
+  // 反向：! 否定的是别的子表达式时，不得配对到后面的 includes
+  const pairSample = strip("check(" + Q + "z" + Q + ", !/sameCommand|commandChanged/.test(mj) || mj.includes(" + Q + "rawSetAcceptsCommand" + Q + "));");
+  check("! 配对错误不误报", negations(pairSample).filter(plainIdent).length === 0, negations(pairSample).join(","));
+  // 正向：剥注释助手接收者仍必须被抓（防止规则收窄过头变成空转）
+  const textFnSample = strip("check(" + Q + "z" + Q + ", !codeOnly(g).includes(" + Q + "windowed" + Q + "));");
+  check("剥注释助手接收者仍被抓", negations(textFnSample).filter(plainIdent).join(",") === "windowed", negations(textFnSample).join(","));
+  // 正向：裸标识符接收者（最典型的违规形态）必须被抓
+  const bareSample = strip("const i = 1;" + String.fromCharCode(10) + "check(" + Q + "x" + Q + ", !i.includes(" + Q + "windowed" + Q + "));");
+  check("裸标识符接收者仍被抓", negations(bareSample).filter(plainIdent).join(",") === "windowed", negations(bareSample).join(","));
+  const sample = strip('const i = 1;' + '\n' + 'check(\'' + 'x' + '\', !i.includes(\'' + 'windowed' + '\'));');
+  const caught = negations(sample).filter(plainIdent);
+  check('检测器能抓到注入的违规写法', caught.join(',') === 'windowed', caught.join(','));
+  // 反向：含空格的 needle 不该被抓（否则守卫变成一刀切，会逼人写更坏的断言）
+  const okSample = strip('check(\'' + 'y' + '\', !r.includes(\'' + 'const shown = Math.min' + '\'));');
+  const falsePos = negations(okSample).filter(plainIdent);
+  check('含空格的 needle 不误报', falsePos.length === 0, falsePos.join(','));
+}
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

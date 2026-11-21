@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
 import { makeRpcGuard, DESTRUCTIVE_OPS } from '../src/rpc-guard.js';
+import { absent } from './anchor-lib.mjs';
 
 let passed = 0, failed = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + d : '')); } };
@@ -14,8 +15,16 @@ console.log('');
 console.log('Test 1: 死代码不得复活');
 {
   const g = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src/rpc-guard.js'), 'utf8');
-  check('no token machinery', !g.includes('randomBytes') && !g.includes('timingSafeEqual'));
-  check('no origin gate', !g.includes('isTrustedOrigin'));
+  // 纯标识符 needle 用 absent（子串匹配会被未来更长的合法标识符误红），
+  // 且只对代码生效（头注释记录「删除了 token 机器」不算复活）。
+  const code = g.split(/\r?\n/).map((l) => {
+    const s = l.trimStart();
+    if (s.startsWith('//') || s.startsWith('*') || s.startsWith('/*')) return '';
+    const c = l.indexOf('//');
+    return c >= 0 ? l.slice(0, c) : l;
+  }).join('\n');
+  check('no token machinery', absent(code, 'randomBytes') && absent(code, 'timingSafeEqual'), '');
+  check('no origin gate', absent(code, 'isTrustedOrigin'), '');
   check('lesson recorded in header', g.includes('误伤') || g.includes('绕过'));
 }
 

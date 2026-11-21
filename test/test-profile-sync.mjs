@@ -47,8 +47,11 @@ if (!exists(path.join(P, 'client.js'))) {
 } else {
   const c = norm(fs.readFileSync(path.join(P, 'client.js'), 'utf8'));
   check('uses pageItems (ellipsis window)', c.includes('pageItems'));
-  check('no legacy pageWin', !c.includes('pageWin'));
-  check('window span is 5', c.includes('span = 5'));
+  // 旧断言 !c.includes('pageWin') 会被新纯函数名 pageWindow 的子串触发（假阳性，
+  // 与 Test 11 的 skillsTotalPages 冒充 skillsTotal 同类）。改钉真正区分「当前版 vs
+  // 0.5.66 陈旧版」的标记：本轮删掉的死代码 const shown / windowed 必须不在。
+  check('no dead pager code from older builds', !c.includes('const shown = Math.min') && !c.includes('windowed = true'), '');
+  check('page window via pure fn with span 5', c.includes('pageWindow(page, n, 5)'));
 }
 
 // ── Test 3: 每个 git 跟踪的 .js 在 profile 与 D 中逐字节一致 ──
