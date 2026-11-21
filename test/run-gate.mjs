@@ -12,13 +12,34 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { gateVerdict } from './gate-verdict.mjs';
 
 const W = path.resolve(import.meta.dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(W, 'package.json'), 'utf8'));
 // 套件清单来自 test:chain（原始 && 链）。绝不能读 scripts.test —— 它现在指向本运行器，
 // 若从它解析会把自己当套件跑 → 无限递归（0.5.109 冒烟时实测炸出递归栈）。
 const chain = pkg.scripts['test:chain'] || '';
-const suites = [...chain.matchAll(/node test\/([\w.\-]+\.mjs)/g)].map((m) => m[1]).filter((f) => f !== 'run-gate.mjs');
+let suites = [...chain.matchAll(/node test\/([\w.\-]+\.mjs)/g)].map((m) => m[1]).filter((f) => f !== 'run-gate.mjs');
+// DSH_GATE_ONLY=a.mjs,b.mjs 只跑指定套件：给「契约本身可证伪」留的钩子
+// （test-gate-contract 用它 + 一个无 summary 的假套件，验证 gate 真红），
+// 不影响 CI 全量路径。
+if (process.env.DSH_GATE_ONLY) {
+  const only = process.env.DSH_GATE_ONLY.split(',').map((x) => x.trim()).filter(Boolean);
+  suites = suites.filter((f) => only.includes(f));
+}
+// DSH_GATE_EXTRA 追加清单外的套件（test-gate-contract 用它跑一次性假套件，
+// 证明「缺 summary 的套件会让 gate 真红」而不是口头约定）。名字必须是裸文件名
+// （无路径分隔符、无 ..），且永远排除 run-gate.mjs 本身 —— 否则就是无限递归。
+if (process.env.DSH_GATE_EXTRA) {
+  const extra = process.env.DSH_GATE_EXTRA.split(',').map((x) => x.trim()).filter(Boolean);
+  const unsafe = extra.filter((f) => !/^[\w.\-]+\.mjs$/.test(f) || f === 'run-gate.mjs');
+  if (unsafe.length) {
+    console.error('[GATE] DSH_GATE_EXTRA 含非法名字，拒绝执行: ' + unsafe.join(', '));
+    process.exit(2);
+  }
+  for (const f of extra) if (!suites.includes(f)) suites.push(f);
+}
+
 if (!suites.length) {
   console.error('[GATE] no suites parsed from scripts["test:chain"] — refusing to pass an empty gate.');
   console.error('::error::[GATE] empty suite list (test:chain missing or malformed) — publish blocked by design');
@@ -52,14 +73,8 @@ console.log(`[GATE] ${suites.length} suites, per-suite timeout ${Math.round(perT
 const results = [];
 for (const s of suites) {
   const r = await runOne(s);
-  const counts = (r.out.match(/\n(\d+) passed, (\d+) failed(?:, (\d+) skipped)?\s*$/) || []);
-  const summary = counts.length ? `${counts[1]} passed, ${counts[2]} failed${counts[3] ? ', ' + counts[3] + ' skipped' : ''}` : '(no summary line)';
-  // 判定优先级：被杀=TIMEOUT；非零退出=FAIL；退出0但无 summary 行=NO-SUMMARY（红）；
-  // 退出0且 summary 含 0 failed=PASS。NO-SUMMARY 必须算红：本仓库 24 个套件无一例外都打印
-  // 「N passed, M failed」并 process.exit(failed?1:0)，缺失说明套件中途崩了或没跑完——
-  // 正是「25 个版本零测试静默发布」那类失败模式，闸门绝不能替它放行。
-  const hasSummary = counts.length > 0;
-  const verdict = r.killed ? 'TIMEOUT' : r.code !== 0 ? 'FAIL' : !hasSummary ? 'NO-SUMMARY' : (summary.includes(' 0 failed') ? 'PASS' : 'FAIL');
+  // 判定唯一来源：gate-verdict.mjs 的纯函数（test-gate-contract 锁住其全部分支）。
+  const { verdict, summary } = gateVerdict(r);
   results.push({ file: s, verdict, summary, ms: r.ms });
   console.log(`[GATE] ${s.padEnd(26)} ${verdict.padEnd(9)} ${Math.round(r.ms / 1000)}s  ${summary}`);
   if (verdict !== 'PASS') {
@@ -82,3 +97,4 @@ if (bad.length) {
   process.exit(1);
 }
 console.log('[GATE] total ' + Math.round(results.reduce((a, x) => a + x.ms, 0) / 1000) + 's across ' + results.length + ' suites');
+

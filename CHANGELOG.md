@@ -14,10 +14,11 @@
   - **P4 过滤后计数重算**：本地分类过滤只作用于当前页，继续报过滤前的 total/pages 就是与实际不符的计数。现 total/pages 按可见集合重算，`filteredOut` 如实暴露，并说明是本地过滤。
 - **翻页边界与条件完整性**：跳页抽 `pageJumpTarget`（回车与失焦以前各写各的 clamp——回车拒绝越界、失焦却放行，同一数字两种结果；现共用一份，等于当前页也不重复请求）；排序切换不再显式传空查询词（搜过 pdf 再改排序，列表退回全量而搜索框里 pdf 还在）；技能分类 chip 不再是死控件（只 setCategory 高亮，列表不动——用户以为筛过了其实没有）。
 - **死代码清理**：pager 的 `shown` 只声明从不使用、`windowed` 参数在 pageWindow 抽出后无人读取，均已移除；分页窗口抽 `pageWindow` 纯函数（首页/末页/单页/未知总数/跨度不足六类边界在 CI 里直接验证数学）。
-- **测试基建**：新增 `test-search-fanout-latency.mjs`（106 项）与 `test-suite-inventory.mjs`（8 项：门内无重复、磁盘无静默游离、无幽灵登记）。6 个此前游离在门外的套件（features/new-features/nocache/paging/warmup/inventory）全部登记进 test:chain——**真实基线从 44 提升到 50 套件**。`test-nocache` 区分外部状态：上游不可达记 SKIP（trusttools 宕机不再伪装成代码回归）。查 `dup=true` 时发现我自己的统计 bug（`new Set(list).length` 是 undefined，不等式恒真——正确写法 `.size`），已写成 inventory 守卫防再犯。
+- **测试基建**：新增 `test-search-fanout-latency.mjs`（106 项）与 `test-suite-inventory.mjs`（8 项：门内无重复、磁盘无静默游离、无幽灵登记）。6 个此前游离在门外的套件（features/new-features/nocache/paging/warmup/inventory）全部登记进 test:chain——**真实基线从 44 提升到 51 套件（含闸门契约套件）**。`test-nocache` 区分外部状态：上游不可达记 SKIP（trusttools 宕机不再伪装成代码回归）。查 `dup=true` 时发现我自己的统计 bug（`new Set(list).length` 是 undefined，不等式恒真——正确写法 `.size`），已写成 inventory 守卫防再犯。
 - **run-gate 契约补齐（CI 首跑 5 红的两类根因，都是我的错）**：
   - 我把 Test 12 写成「交付文件必须 CRLF」——`core.autocrlf` 在 Windows 是 true、在 Linux CI 是 false，同一 blob checkout 出来一边全 CRLF 一边全 LF，该断言在任何 Linux 上必红。改为平台中立的「不许混用行尾」，并补一条构造混合串的自测；「整体 CRLF→LF」这种事故形态在 CI 上与正常 checkout 无法区分，它由写入脚本的 EOL 自检 + throw 负责（本轮已落实）。
   - 登记那 6 个游离套件时我只验证了本地 exit 0，没验证输出符合闸门契约（最后一行必须是 `N passed, M failed`），4 个套件因此被判 NO-SUMMARY。修法是让套件符合契约而不是削弱闸门：features/new-features 在中文总结后补英文总结与规范 exit；nocache/paging 加 checks 计数（paging 的判定点数由运行计数得出，不硬编码——上一版我按代码里 `failures += 1` 出现 7 次写死 checks=7，而循环那一处实际执行 8 次，真实判定点是 13 个）。SKIP 的源不计入 passed（nocache 输出 `9 passed, 0 failed, 1 skipped` 即为证）。
+  - 闸门契约本身从口头约定变成可测不变量：判定抽成 test/gate-verdict.mjs 纯函数（run-gate 是唯一调用方），test/test-gate-contract.mjs（20 项）锁全部分支并用真 run-gate 证伪——无 summary 的假套件（经 DSH_GATE_EXTRA 注入）必须让门变红、越界名字与自我递归被拒、规范假套件仍绿。test-features 两个网络段包 try/catch（CI 上 npx 不可达记 SKIP 并保持规范 summary，本地已注入相同错误复现验证）；inventory 的辅助模块清单改由「被其它测试 import」自动判定（硬编码清单在新增 gate-verdict 时已腐烂过一次）。
 - **验证**：离线 50/50 绿（唯一 FAIL 是 profile-sync，profile 仍 0.5.131、发布安装后转绿）；12 项语义核验全 OK；9+5+3 条证伪全部被抓（含把 client.js 整体转 LF 验证 EOL 锁生效）；Test 12 锁「交付 js 行尾不许混用」（平台中立：CI 在 Linux checkout 就是纯 LF，旧断言「必须 CRLF」在任何 Linux 上必红，已纠正；「整体 CRLF→LF」由每个写入脚本的 EOL 自检 + throw 负责，两边职责不同）；交付文件 CRLF/loneLF=0。
 
 ## 0.5.131
