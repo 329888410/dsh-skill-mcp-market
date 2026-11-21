@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.132
+
+- **搜索/排序/分类等待时间收敛（本轮主项；全部行为锁进 CI）**
+  - **聚合搜索串行改并发（`fanOutSources`，src/sources.js）**：原 `for (await handler)` 串行让总耗时等于各源之和，一个不可达源（trusttools 实测 >20s）拖死整次搜索（实测聚合 >20s 超时拿不到结果）。并发后总耗时 ≈ 最慢单源；同构负载实测串行 48.1s → 并发 6.0s（省 87%）。每源 12s 预算：超预算源记 degraded（写明超时），不再拖住整次；results/degraded 都按源清单顺序折叠，同一条件两次搜索列表顺序不变。`handlers` 是测试注入点：注入时 `all` 展开为注入集合，测试态零真实网络（之前 fake handler 被 8 个真实源淹没，测的还是上游当时的心情）。
+  - **每页条数单一来源（`resolvePageSize`）**：cacheKey 用闭包 `size`、请求却用 `(options.size || size)` —— 键与请求不同源，改「每页条数」会拿旧尺寸的缓存冒充新尺寸。现两侧同用 `resolvePageSize`（clamp 1..60 与服务端同口径）。命名必须避开 `size`（同块作用域自引用 TDZ 白屏，实测踩过）。
+  - **缓存键抽纯函数（`skillCacheKey`/`mcpCacheKey`）**：skill 键原来没有 size 维度；`all`/`''`、`default`/`''` 归一，同一视图两种写法不再算成两个缓存项（那等于同一条件重复发请求）。Test 7 锁全部维度。
+  - **缓存命中恢复分页元数据**：sk 命中不再硬置第 1 页（翻页也走缓存，数据是第 3 页、分页器却显示第 1 页）；mcp 缓存补存 page/totalPages/total，切源再切回来时卡片和页数一起回来（此前卡片立刻出现、分页器停在另一个源的页数上）。
+  - **live 实测**：搜索 pdf 请求增量恰 1（一次真实搜索）；同条件再回车命中缓存先渲染旧结果。
+- **数量口径（计数与真实集合一致）**
+  - **分页摘要接真实数据（`pagerSummary`）**：live 实测「共约 第 1 / 1 页」—— 标签后面没有数字。根因：`skillsTotal` 只被 set 从未被读（useState 只写不读审计全仓唯一一处），label 是写死的字符串，标签与数据源断链。现在摘要 = `共约 N 个 · 第 x/y 页`；0 命中不渲染数量子句；cursor 型源不编造总页数；MCP 侧 label 留空（数量由专行负责，同一数字不显示两次）。
+  - **不可达源的 total 不得随页码虚高**：trusttools 每页超时（items=0、total=0）时 total 竟随页涨成 12/24 —— 反推兜底只在「本页有货、上游没报总数」时成立，items=0 时补数就是凭空造数。Test 13 证伪时精确重现了原始数据（0→12→24）。
+  - **P4 过滤后计数重算**：本地分类过滤只作用于当前页，继续报过滤前的 total/pages 就是与实际不符的计数。现 total/pages 按可见集合重算，`filteredOut` 如实暴露，并说明是本地过滤。
+- **翻页边界与条件完整性**：跳页抽 `pageJumpTarget`（回车与失焦以前各写各的 clamp——回车拒绝越界、失焦却放行，同一数字两种结果；现共用一份，等于当前页也不重复请求）；排序切换不再显式传空查询词（搜过 pdf 再改排序，列表退回全量而搜索框里 pdf 还在）；技能分类 chip 不再是死控件（只 setCategory 高亮，列表不动——用户以为筛过了其实没有）。
+- **死代码清理**：pager 的 `shown` 只声明从不使用、`windowed` 参数在 pageWindow 抽出后无人读取，均已移除；分页窗口抽 `pageWindow` 纯函数（首页/末页/单页/未知总数/跨度不足六类边界在 CI 里直接验证数学）。
+- **测试基建**：新增 `test-search-fanout-latency.mjs`（106 项）与 `test-suite-inventory.mjs`（8 项：门内无重复、磁盘无静默游离、无幽灵登记）。6 个此前游离在门外的套件（features/new-features/nocache/paging/warmup/inventory）全部登记进 test:chain——**真实基线从 44 提升到 50 套件**。`test-nocache` 区分外部状态：上游不可达记 SKIP（trusttools 宕机不再伪装成代码回归）。查 `dup=true` 时发现我自己的统计 bug（`new Set(list).length` 是 undefined，不等式恒真——正确写法 `.size`），已写成 inventory 守卫防再犯。
+- **验证**：离线 50/50 绿（唯一 FAIL 是 profile-sync，profile 仍 0.5.131、发布安装后转绿）；12 项语义核验全 OK；9+5+3 条证伪全部被抓（含把 client.js 整体转 LF 验证 EOL 锁生效）；EOL 自检纳入 CI（Test 12）；交付文件 CRLF/loneLF=0。
+
 ## 0.5.131
 
 - **修陈旧搜索词跨连接器泄漏（假陈述）**：`openMcpTools` 只重置了 `mcpToolOpen`，没有重置 `toolQuery` / `toolBatch`。于是在连接器 A 里搜过 `click`、关掉、再打开连接器 B 时，B 的工具清单会被这个跟 B 无关的词过滤掉，而标题写着「匹配 x/y」—— 用户读到的是「B 只有这些工具」，实际是上一条搜索的残留。现在两个状态都在 `setMcpTools({` **之前**清掉（先清状态再放数据，否则有一帧会用旧词过滤新数据）。

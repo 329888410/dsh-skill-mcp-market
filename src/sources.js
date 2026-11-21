@@ -502,8 +502,56 @@ const SOURCE_HANDLERS = {
   modelscope: searchModelScope,
 };
 
-export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "", category = "" }) {
-  const wanted = source === "all" ? ALL_SOURCES : [source];
+/**
+ * 并发拉取多个来源，并按 names 顺序折叠结果。
+ *
+ * 为什么要它：聚合搜索原来是 for (const name of wanted) { await handler(...) } —— 串行，
+ * 总耗时等于各源之和；一个不可达源会把它自己的 20s fetch 超时全额加到用户等待上
+ * （本机实测：8 源聚合 >20s，单源 skills.sh 7.1s / clawhub 2.1s / lobehub 4.8s）。
+ * 并发后总耗时接近最慢的那一个源。
+ *
+ * budgetMs 给每个源单独设上限：超预算的源记为 degraded 并写明超时，不再拖住整次搜索。
+ * results 与 degraded 都按 names 顺序输出 —— 并发完成先后不能影响展示顺序，
+ * 否则同一条件搜两次会得到不同的列表。
+ */
+export async function fanOutSources({ names, run, budgetMs = 12000 }) {
+  const list = Array.isArray(names) ? names : [];
+  const settle = (name) => {
+    const work = Promise.resolve().then(() => run(name)).then(
+      (result) => ({ result }),
+      (error) => ({ error: String(error && error.message ? error.message : error) }),
+    );
+    if (!(budgetMs > 0)) return work;
+    let timer = null;
+    const guard = new Promise((resolve) => { timer = setTimeout(() => resolve({ timeout: true }), budgetMs); });
+    return Promise.race([work, guard]).finally(() => clearTimeout(timer));
+  };
+  const settled = await Promise.all(list.map(settle));
+  const results = [];
+  const degraded = [];
+  for (let i = 0; i < list.length; i++) {
+    const name = list[i];
+    const box = settled[i];
+    if (box && box.timeout) {
+      const message = '来源响应超时（预算 ' + Math.round(budgetMs / 1000) + 's），已跳过';
+      degraded.push({ source: name, error: message });
+      results.push({ name, ok: false, result: null, error: message });
+      continue;
+    }
+    if (box && box.error) {
+      degraded.push({ source: name, error: box.error });
+      results.push({ name, ok: false, result: null, error: box.error });
+      continue;
+    }
+    results.push({ name, ok: true, result: box ? box.result : null });
+  }
+  return { results, degraded };
+}
+
+export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "", category = "", handlers = null, budgetMs = 12000 }) {
+  // 注入 handlers 时（测试态）"all" 展开为注入的源集合：否则 fake handler 会被 8 个真实
+  // 源淹没，测试照样打真实网络 —— 那测的就不是并发语义，而是上游当时的心情。
+  const wanted = source === "all" ? (handlers && Object.keys(handlers).length ? Object.keys(handlers) : ALL_SOURCES) : [source];
   // 该源没有安装量数据时，忽略按安装数排序（保持上游顺序），而不是打乱它
   // 该源没有对应数据时，降级为「不排序」而不是打乱上游顺序。
   let effectiveSort = "";
@@ -511,36 +559,41 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
   const items = [];
-  const degraded = [];
   const hints = [];
   let total = 0;
   let pagesSum = 0;
   let pagesUnknown = false;
   let hasMore = false;
-  for (const name of wanted) {
-    const handler = SOURCE_HANDLERS[name];
-    if (!handler) continue;
-    try {
-      const result = await handler({ query, page: p, pageSize: size, cache, sort: effectiveSort, category });
-      if (result && result.hint) hints.push(`${name}：${result.hint}`);
-      const srcItems = result && Array.isArray(result.items) ? result.items : [];
-      if (srcItems.length) items.push(...srcItems.map((it) => ({ ...it, installRef: installRefOf(it) })));
-      const srcTotal = Number(result && result.total) || 0;
-      total += srcTotal;
-      // 每个源自己的页数：优先用 handler 的 totalPages（目录感知，随预热增长），
-      // 否则用它的 total（或本页条数）反推。跨源求和得到总页数。
-      // 页数判定：handler 给了数字就用它；没给但有真实 total 就用 total 反推；
-      // 两者都没有（clawhub 无界流把 total/totalPages 都置 undefined）才算「未知」。
-      const declared = result && typeof result.totalPages === "number" ? Number(result.totalPages) : null;
-      const srcPages = declared !== null ? declared
-        : srcTotal > 0 ? Math.ceil(srcTotal / size)
-        : null;
-      if (srcPages === null) pagesUnknown = true;
-      else pagesSum += srcPages;
-      if (result && result.hasMore) hasMore = true;
-    } catch (error) {
-      degraded.push({ source: name, error: String(error?.message || error) });
-    }
+  const picked = wanted.filter((name) => Boolean((handlers && handlers[name]) || SOURCE_HANDLERS[name]));
+  // handlers 是测试注入点：fake handler 才能在没有网络、没有上游波动的情况下断言
+  // 并发与顺序性质。生产路径 handlers 为 null，仍走 SOURCE_HANDLERS。
+  const fan = await fanOutSources({
+    names: picked,
+    budgetMs,
+    run: (name) => {
+      const handler = (handlers && handlers[name]) || SOURCE_HANDLERS[name];
+      return handler({ query, page: p, pageSize: size, cache, sort: effectiveSort, category });
+    },
+  });
+  const degraded = fan.degraded;
+  for (const entry of fan.results) {
+    if (!entry.ok) continue;
+    const name = entry.name;
+    const result = entry.result;
+    if (result && result.hint) hints.push(name + '：' + result.hint);
+    const srcItems = result && Array.isArray(result.items) ? result.items : [];
+    if (srcItems.length) items.push(...srcItems.map((it) => ({ ...it, installRef: installRefOf(it) })));
+    const srcTotal = Number(result && result.total) || 0;
+    total += srcTotal;
+    // 页数判定：handler 给了数字就用它；没给但有真实 total 就用 total 反推；
+    // 两者都没有（clawhub 无界流把 total/totalPages 都置 undefined）才算「未知」。
+    const declared = result && typeof result.totalPages === "number" ? Number(result.totalPages) : null;
+    const srcPages = declared !== null ? declared
+      : srcTotal > 0 ? Math.ceil(srcTotal / size)
+      : null;
+    if (srcPages === null) pagesUnknown = true;
+    else pagesSum += srcPages;
+    if (result && result.hasMore) hasMore = true;
   }
   // 本地排序兜底：多数源上游不支持 sort 参数，按安装数/名称在本地排
   if (sort === "installCount") {
@@ -566,23 +619,39 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
         : hints.length
           ? hints
           : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
-  if (!total || total < items.length) total = hasMore ? p * size + 1 : (p - 1) * size + items.length;
+  // 反推兜底只在「本页确实有货、上游却没报总数」时成立。items=0 时补 (p-1)*size
+  // 会凭空造数：trusttools 每页超时（items=0、total=0）时 total 竟随页码涨成 12/24 ——
+  // 一个条目都没有却报「共 24 个」，属于计数与真实集合不符的口径缺陷。
+  if (items.length > 0 && (!total || total < items.length)) total = hasMore ? p * size + 1 : (p - 1) * size + items.length;
   // 分类筛选：无 category 的源无法参与，如实告知而不是静默返回全量。
   const catNeedle = String(category || "").trim();
   const catSupported = items.some((item) => item.category);
   let visible = items;
   let categoryNote = "";
+  let filteredOut = 0;
   if (catNeedle && catNeedle !== "all") {
     if (!catSupported) {
       categoryNote = "所选来源不提供分类信息，已忽略分类筛选";
     } else {
       visible = items.filter((item) => !item.category || item.category === catNeedle);
+      filteredOut = items.length - visible.length;
+      if (filteredOut > 0) {
+        // 本地过滤只作用于当前页：上游的 total/pages 是按未过滤集合算的，
+        // 继续沿用就是与实际不符的计数。重算为可见集合，并说明这是本地兜底过滤。
+        total = visible.length + (p - 1) * size;
+        pagesSum = Math.max(1, Math.ceil(total / size));
+        pagesUnknown = false;
+        hasMore = false;
+        categoryNote = "分类为面板本地过滤（仅当前页），已过滤掉 " + filteredOut +
+          " 项；分类过滤只作用于当前页，上游不提供过滤后的总数";
+      }
     }
   }
   const pages = pagesUnknown && wanted.length === 1 ? undefined : Math.max(pagesSum, Math.ceil(total / size), 1);
   return {
     items: visible,
     categoryNote,
+    filteredOut,
     page: p,
     pageSize: size,
     pages,

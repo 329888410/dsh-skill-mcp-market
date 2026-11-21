@@ -9,11 +9,21 @@ function check(ok, label, detail = "") {
   console.log(`${ok ? "OK  " : "FAIL"} ${label}${detail ? ` — ${detail}` : ""}`);
 }
 
-console.log("--- 无 cache 参数：每个源都要能返回条目（agent 工具走的路径）");
+console.log('--- 无 cache 参数：每个源都要能返回条目（agent 工具走的路径）');
+let skipped = 0;
 for (const source of ALL_SOURCES) {
   try {
-    const p1 = await searchSkills({ query: "", source, page: 1, pageSize: 12 });
-    const p2 = await searchSkills({ query: "", source, page: 2, pageSize: 12 });
+    const p1 = await searchSkills({ query: '', source, page: 1, pageSize: 12 });
+    const p2 = await searchSkills({ query: '', source, page: 2, pageSize: 12 });
+    // 上游整体不可达（degraded 命中）与「无 cache 路径坏了」是两件事：前者是外部状态，
+    // 记 SKIP 而不是 FAIL —— 否则某个市场宕机就会把这条契约伪装成代码回归。
+    // 判据与 test-paging.mjs 同口径（degraded 里有这个源，或 hint 说不可达）。
+    const unreachable = (p1.degraded || []).some((d) => d.source === source) || /不可达|unreachable|timeout/i.test(p1.hint || '');
+    if (unreachable && p1.items.length === 0) {
+      skipped += 1;
+      console.log(`SKIP ${source} 上游不可达（外部状态，非回归）`);
+      continue;
+    }
     const ids1 = new Set(p1.items.map((item) => item.id));
     const overlap = p2.items.filter((item) => ids1.has(item.id)).length;
     check(
@@ -41,5 +51,6 @@ try {
   check(false, "warmMarketCache 抛错", String(error && error.message ? error.message : error));
 }
 
+console.log(`（不可达而跳过的源: ${skipped}）`);
 console.log(failures === 0 ? "\nNO-CACHE CHECKS PASSED" : `\nNO-CACHE CHECKS FAILED (${failures})`);
 process.exit(failures === 0 ? 0 : 1);

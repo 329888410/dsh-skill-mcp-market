@@ -22,6 +22,74 @@ window.__ModuleLoader__.load({
     const PHASE_LABEL = { active: '· 已连接', loading: '· 启动中', failed: '· 连接失败', unloaded: '· 未挂载', unknown: '' };
     // 工具浮窗一次铺满几十个工具时，每输入一个字符都要重建整棵子树
     // （playwright-mcp 单连接器就有 22+ 个）。默认只渲染一批，余量靠「继续显示」增量展开。
+    // ── 市场分页/缓存的纯函数区 ──────────────────────────────────────────
+    // 这些都刻意放在组件之外：不碰 React 状态，测试可以直接 new Function 执行它们，
+    // 而不是靠正则断言「代码长这样」。
+    // 分页器页码窗口：已知总页数时 1 …（page±span）… N；未知总页数（cursor 型源）
+    // 时退化为滑动窗口。
+    // 分页摘要：数量必须来自真实集合（total），不能是硬编码标签。
+    // live 实测到过「共约 第 1 / 1 页」—— 标签后面空着：skillsTotal 只被 set 从未被读，
+    // 而 label 是写死的字符串，标签与数据源断链。规则：total<=0 不渲染数量子句
+    // （0 命中显示「共约 0 个」是噪声），unknown（cursor 型源）绝不编造总页数。
+    const pagerSummary = (o) => {
+      const parts = [];
+      if (o.label && o.total > 0) parts.push(o.label + ' ' + o.total + ' 个');
+      if (o.unknown) parts.push('第 ' + o.page + ' 页（' + (o.hasMore ? '可继续加载' : '已是最后一页') + '）');
+      else parts.push('第 ' + o.page + ' / ' + o.n + ' 页');
+      return parts.join(' · ');
+    };
+    const pageWindow = (page, n, span) => {
+      const items = [];
+      const push = (v) => items.push(v);
+      if (n === 0) {
+        for (let i = Math.max(1, page - span); i <= page + span; i += 1) if (i >= 1) push(i);
+        return items;
+      }
+      const lo = Math.max(2, page - span);
+      const hi = Math.min(n - 1, page + span);
+      push(1);
+      if (lo > 2) push('…');
+      for (let i = lo; i <= hi; i += 1) push(i);
+      if (hi < n - 1) push('…');
+      if (n > 1) push(n);
+      return items;
+    };
+    // 跳页目标：输入框字符串 → 可跳转页码，0 表示不跳。回车与失焦共用它 —— 以前两条
+    // 路径各写各的 clamp，回车拒绝越界、失焦却放行，同一个数字两种结果。
+    // 等于当前页也返回 0：重复请求同一页既没意义又要等一次网络往返。
+    const pageJumpTarget = (raw, current, n, unknown) => {
+      const v = Math.trunc(Number(raw));
+      if (!Number.isFinite(v) || v < 1) return 0;
+      if (!unknown && n > 0 && v > n) return 0;
+      if (v === current) return 0;
+      return v;
+    };
+    // 本次请求的每页条数：调用方可能带新 size（改「每页条数」时立刻传 nextSize），
+    // 而外层 size 状态未必已更新。缓存键与请求参数必须用同一个数，否则键记旧尺寸、
+    // 请求发新尺寸 —— 命中那个缓存项等于拿旧尺寸的结果冒充新尺寸。
+    // 命名必须不是 size：const size = resolvePageSize(options, size) 会在同一块作用域
+    // 遮蔽外层 size，右侧自引用直接 TDZ 崩溃。上限 60 与服务端 clamp 同口径。
+    const resolvePageSize = (options, current) => {
+      const raw = options && options.size !== undefined ? Number(options.size) : Number.NaN;
+      if (!Number.isFinite(raw)) return current;
+      const v = Math.trunc(raw);
+      if (v < 1) return current;
+      return Math.min(60, v);
+    };
+    // 缓存键：两个搜索入口各自内联模板串时维度很容易写漏（sk 原来就没有 size）。
+    // 'all'/'' 与 'default'/'' 归一，让同一视图的两种写法不会算成两个缓存项 ——
+    // 那等于同一条件重复发请求。
+    const skillCacheKey = (o) => {
+      if (o && o.append) return '';
+      const cat = o.category === 'all' ? '' : (o.category || '');
+      return `sk|${o.source}|${o.query || ''}|${cat}|${o.page}|${o.size}|${o.sort || ''}`;
+    };
+    const mcpCacheKey = (o) => {
+      if (o && o.append) return '';
+      const cat = o.category === 'all' ? '' : (o.category || '');
+      const sort = o.sort === 'default' ? '' : (o.sort || '');
+      return `mc|${o.source}|${cat}|${sort}|${o.query || ''}|${o.page}|${o.size}`;
+    };
     const TOOL_BATCH = 60;
     // 已装技能排序：纯前端呈现序，与来源分组正交（分组归属仍由 rank 决定）。
     // default 必须原样返回——服务端顺序本身有含义，不能悄悄重排。
@@ -519,30 +587,13 @@ window.__ModuleLoader__.load({
         else searchMcps(query, { page: p });
       };
 
-      const pager = (page, totalPages, hasMore, label, jumpState, setJumpState, windowed = true) => {
+      const pager = (page, totalPages, hasMore, label, total, jumpState, setJumpState) => {
         const unknown = !totalPages; // 注册表按 cursor 走，没有可数的总页数
         const n = unknown ? 0 : Math.max(1, Math.trunc(totalPages) || 1);
-        const shown = Math.min(page, n || page);
         // 页码窗口：windowed=true 时固定显示当前页前后各 5 页；windowed=false 时显示全部页码
         // 页码窗口：已知总数时显示当前页±5（省略号折叠）；未知总数时只显示±2
-        const pageItems = (function () {
-          const items = [];
-          const push = (v) => items.push(v);
-          const span = 5; // 统一 ±5 窗口
-          if (n === 0) {
-            for (let i = Math.max(1, page - span); i <= page + span; i += 1) if (i >= 1) push(i);
-            return items;
-          }
-          // 已知总数：1 … window … N
-          const lo = Math.max(2, page - span);
-          const hi = Math.min(n - 1, page + span);
-          push(1);
-          if (lo > 2) push('…');
-          for (let i = lo; i <= hi; i += 1) push(i);
-          if (hi < n - 1) push('…');
-          if (n > 1) push(n);
-          return items;
-        })();
+        // 页码窗口交给纯函数 pageWindow（module scope），行为与原 IIFE 完全一致。
+        const pageItems = pageWindow(page, n, 5);
         const pageButtons = pageItems.map((v) =>
           v === '…'
             ? h('span', { key: 'ellipsis-' + v, style: { padding: '0 4px', opacity: 0.5 } }, '…')
@@ -567,9 +618,7 @@ window.__ModuleLoader__.load({
             }, '下一页 ›')),
           h('div', { style: S.row },
             h('span', { style: S.status },
-              unknown
-                ? `${label ? label + " · " : ""}第 ${page} 页（${hasMore ? '可继续加载' : '已是最后一页'}）`
-                : `${label ? label + " " : ""}第 ${page} / ${n} 页`),
+              pagerSummary({ label, total, page, n, unknown, hasMore })),
             h('span', { style: { fontSize: 12, opacity: 0.6, marginLeft: 8 } }, '跳至'),
             h('input', {
               style: { ...S.input, width: 56, height: 26, textAlign: 'center' },
@@ -580,19 +629,16 @@ window.__ModuleLoader__.load({
               placeholder: String(page),
               onChange: (e) => setJumpState(e.target.value),
               onKeyDown: (e) => {
-                if (e.key === 'Enter') {
-                  const p = Math.max(1, Math.trunc(Number(jumpState) || page));
-                  if (!unknown && p > n) return;
-                  setJumpState('');
-                  gotoPage(p);
-                }
+                if (e.key !== 'Enter') return;
+                // 回车与失焦共用同一个纯判定：越界 / 非数字 / 等于当前页都不发请求。
+                const p = pageJumpTarget(jumpState, page, n, unknown);
+                setJumpState('');
+                if (p) gotoPage(p);
               },
               onBlur: () => {
-                if (jumpState) {
-                  const p = Math.max(1, Math.trunc(Number(jumpState) || page));
-                  setJumpState('');
-                  gotoPage(p);
-                }
+                const p = pageJumpTarget(jumpState, page, n, unknown);
+                setJumpState('');
+                if (p) gotoPage(p);
               },
             })));
       };
@@ -620,18 +666,21 @@ window.__ModuleLoader__.load({
         const cat = (options && options.category) || liveRef.current.category || 'all';
         const q = String(text || '');
         const pageNo = (options && options.page) || 1;
+        const pageSize = resolvePageSize(options, size);
         const append = Boolean(options && options.append);
         // 只有「首页」进缓存；翻页是增量追加，缓存它没有意义还会撑爆内存
         // 旧写法把 stars/newest/updated/trending 全塌成 ''，服务端根本收不到排序意图 →「选了没反应」。
         // 现在原样下发选中的键；default 仍映射 installCount（保持既有默认视图语义）。
         const reqSort = options && options.sort !== undefined ? options.sort : sort;
         const effSort = reqSort === 'default' ? 'installCount' : reqSort;
-        const cacheKey = append ? '' : `sk|${src}|${q}|${cat}|${pageNo}|${effSort}`;
+        const cacheKey = skillCacheKey({ source: src, query: q, category: cat, page: pageNo, size: pageSize, sort: effSort, append });
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
         // 命中缓存：立即渲染旧结果，不白屏；后台再刷新
         if (cached) {
           setSkills(cached.items || []);
-          setSkillsPage(1);
+          // 缓存的是「这一页」的结果：页码必须恢复成本次请求的那一页，而不是硬置 1 ——
+          // 否则数据是第 3 页、分页器却显示「第 1 页」。
+          setSkillsPage(pageNo);
           setSkillsTotalPages(cached.pages || 0);
           setSkillsTotal(cached.total || (cached.items || []).length);
           setSkillsHasMore(Boolean(cached.hasMore));
@@ -646,7 +695,7 @@ window.__ModuleLoader__.load({
             source: src,
             category: cat === 'all' ? '' : cat,
             page: pageNo,
-            pageSize: (options && options.size) || size,
+            pageSize,
             sort: effSort,
           });
           const rows = d.items || [];
@@ -704,12 +753,17 @@ window.__ModuleLoader__.load({
         const nextCategory = opts.category !== undefined ? opts.category : mcpCategory;
         const nextSort = opts.sort !== undefined ? opts.sort : mcpSort;
         const nextPage = opts.page || 1;
-        const nextSize = opts.size !== undefined ? opts.size : size;
+        const nextSize = resolvePageSize(opts, size);
         // 首屏查询（非 append）命中缓存时立即渲染旧结果，后台再刷新，避免切源白屏
-        const cacheKey = opts.append ? '' : `mc|${nextSource}|${nextCategory === 'all' ? '' : nextCategory}|${nextSort === 'default' ? '' : nextSort}|${String(text || '')}|${nextPage}|${nextSize}`;
+        const cacheKey = mcpCacheKey({ source: nextSource, query: text, category: nextCategory, sort: nextSort, page: nextPage, size: nextSize, append: opts.append });
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
         if (cached) {
           setMcps(cached.items || []);
+          // 恢复与这一份缓存绑定的分页元数据：切源再切回来时卡片和页码/总页数必须
+          // 一起回来，否则卡片立刻出现、分页器还停在另一个源的页数上。
+          setMcpPage(cached.page || nextPage);
+          setMcpTotalPages(cached.totalPages || 0);
+          setMcpTotal(cached.total || (cached.items || []).length);
           setNotice('（缓存，正在刷新…）');
         } else {
           setBusy('mcp.search');
@@ -725,7 +779,7 @@ window.__ModuleLoader__.load({
             size: nextSize,
           });
           const rows = d.items || [];
-          if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [] };
+          if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [], page: d.page || nextPage, totalPages: d.totalPages || 0, total: d.total || rows.length };
           // Append must not repeat a card: the registry pages by version rows, so a server
           // may legitimately return a slug that is already on screen.
           setMcps(opts.append
@@ -772,7 +826,7 @@ window.__ModuleLoader__.load({
         if (tab !== 'skills' || sort === prevSortRef.current) return;
         prevSortRef.current = sort;
         setSkills([]);
-        searchSkills('', { source, size, page: 1 });
+        searchSkills(query, { source, size, page: 1, sort });
       }, [sort, tab]);
 
       const openSkillDetail = async (slug) => {
@@ -1982,7 +2036,7 @@ window.__ModuleLoader__.load({
                     h('button', {
                       key: cat,
                       style: S.chip(category === cat),
-                      onClick: () => { setCategory(cat); window.scrollTo({ top: 0, behavior: 'smooth' }); },
+                      onClick: () => { setCategory(cat); searchSkills(query, { source, size, category: cat, page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },
                     }, cat === 'all' ? '全部分类' : cat)))
               : null,
           )
@@ -2309,9 +2363,10 @@ window.__ModuleLoader__.load({
                       tab === 'skills' ? skillsPage : mcpPage,
                       tab === 'skills' ? skillsTotalPages : mcpTotalPages,
                       tab === 'skills' ? skillsHasMore : mcpHasMore,
-                      tab === 'skills' ? '共约' : (mcpSource === 'lobehub' ? '共约' : ''),
+                      tab === 'skills' ? '共约' : '',
+                      tab === 'skills' ? skillsTotal : mcpTotal,
                        tab === 'skills' ? pageJump : mcpPageJump,
-                       tab === 'skills' ? setPageJump : setMcpPageJump, tab === 'skills' ? false : true))))
+                       tab === 'skills' ? setPageJump : setMcpPageJump))))
               : null,
             tab === 'manage' ? h('div', { 'data-manage-tab': manageTab, style: { display: 'flex', flexDirection: 'column', gap: 12, flex: 1, width: '100%', alignItems: 'stretch' } },
               // 二级页签：技能侧（上传/列表/回收站）与 MCP 侧各自成页；
