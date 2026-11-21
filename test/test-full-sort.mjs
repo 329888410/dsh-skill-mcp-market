@@ -156,8 +156,14 @@ console.log('');
 console.log('Test 5: skillsmp 按安装数必须被诚实拒绝（保持上游序，不乱排）');
 {
   try {
-    const a = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache, sort: 'installCount' });
-    const b = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache, sort: '' });
+    // 基线必须双采样：单次比较把「上游两次抓取之间顺序漂移」也算成本仓库回归
+    // （本轮实测：同一条 check 单跑三次两次全绿、门里一次红，正是这种抖动）。
+    // 缓存会把漂移藏起来，所以三次请求各用独立 cache 目录。
+    const mkSmp = (tag) => makeCache(path.join(safeTempDir(), 'dsh-smp-' + tag + '-' + Date.now()));
+    const a = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: mkSmp('a'), sort: 'installCount' });
+    const b = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: mkSmp('b'), sort: '' });
+    const b2 = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: mkSmp('b2'), sort: '' });
+    const smpKey = (r) => r.items.map((i) => i.id).join('|');
     // 空转绿灯修复：两侧都空时 '' === '' 恒真，会把「Cloudflare 挡住导致 skillsmp 一条都没有」
     // 判成「降级正确」。必须区分：空且 degraded 非空 = 上游不可达（SKIP）；
     // 空但无 degraded = handler 回归（FAIL）。有数据时比较表达式逐字不变。
@@ -166,8 +172,13 @@ console.log('Test 5: skillsmp 按安装数必须被诚实拒绝（保持上游�
       // degraded 非空 = 上游不可达（SKIP）；degraded 为空 = handler 回归（FAIL）。
       if (a.degraded && a.degraded.length) skip('skillsmp 不可达（degraded 非空），降级比较无从判定');
       else check('skillsmp 返回空且无 degraded（handler 回归）', false, 'items=0 且 degraded=[]');
+    } else if (smpKey(b) !== smpKey(b2)) {
+      skip('skillsmp 上游序自身在漂（两次 sort 为空的结果不同），降级比较无从判定');
     } else {
-      check('installCount 被降级为不排序', a.items.map((i) => i.id).join('|') === b.items.map((i) => i.id).join('|'));
+      check('installCount 被降级为不排序', smpKey(a) === smpKey(b), 'a=' + smpKey(a).slice(0, 70) + ' | b=' + smpKey(b).slice(0, 70));
+      const sa = new Set(a.items.map((i) => i.id));
+      const sb = new Set(b.items.map((i) => i.id));
+      check('a 与基线条目集合一致（没因 sort 走不同分支）', sa.size === sb.size && [...sa].every((x) => sb.has(x)), 'a=' + sa.size + ' b=' + sb.size);
     }
   } catch (e) { skip('skillsmp（Cloudflare）'); }
 }

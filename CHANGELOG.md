@@ -1,5 +1,16 @@
 # Changelog
 
+- **空页不再被说成「目录已到底」**（同一轮门内实测的第二处不诚实）：trusttools 在门里出现过一次首页静默空响应（items=0、degraded=0、total=0），handler 的 `hasMore` 当时退化成 `items.length >= size` = false，聚合层于是对外宣称「已是最后一页」—— 一次抓取失败被说成整个目录只有这一屏，比谎报总数更误导（用户会以为源已穷尽、不再翻页）。现在 `false` 只有在响应带真实总数证据时才是结论，否则保持 `undefined`（未知），分页器继续显示「可继续加载」。
+- **上游状态 vs 本侧回归的判定收敛成一个 helper**：新增 `emptyWithoutEvidence`（degraded>0 / total>0 / hasMore===true 都算有证据，三者皆无才算上游静默空响应）。test-nocache 与 test-paging 之前各写一套相近判据 —— 两套判据互相打架正是假绿来源，现在两处调用同一函数；真值表 6 例进 test-paging-verdict（含反向破坏：写成恒 true 一律当上游问题，就会被 total>0 却空页那例抓到）。修复后 test-paging 13 passed（旧行为下同一场景判 FAIL —— 门里红、单跑三次绿的那种 flake 消失），test-nocache 13 passed / 1 skipped。
+
+## 0.5.136
+
+- **聚合层两处「骗绿」路径（clawhub 无界流触发的主路径，行为断言 + 四条反向证伪）**：
+  ① **handler 声明未知总数却被谎报成随页增长**：clawhub browse 是 cursor 无界流，handler 明确把 total/totalPages 置 undefined 表示「未知」（extra-sources.js:253-260 注释原话：谎报下界会让用户以为目录就这么大）；聚合层却把 undefined 当「没报总数」，兜底成 p*size+1 —— 实测 page=1 报 13、page=60 报 721，一个几千条的目录显示成「共约 13 个」。现在区分两种情形：「没报」（total=0）仍反推下界，Test 13 契约原样保留；「显式未知」（total=undefined）保持未知一路到底 —— 聚合层 reportedTotal=undefined，client 里四处把未知冒充成本页条数的 `|| rows.length` 一并清除，pagerSummary 对 total<=0 本就不渲染数量子句。**红→绿原文**：`FAIL 显式未知的 total 不随页码增长 13,25,37,721` → OK。
+  ② **单源结果被二次 localeCompare 重排**：extra-sources.js:223 的既有契约写着「单源排序责任在 handler，dispatcher 只对多源聚合排序」，但 sources.js:599-604 无条件执行，且判据用原始 sort 而不是 effectiveSort —— 实测上游 sort=name 是码位序（Zeta,alpha,beta…），被重排成 alpha,beta…,Zeta；supportsSort 为假时（557 行注释承诺「降级为不排序，保持上游顺序」）也照排不误。现在 `aggregateSort = wanted.length > 1 ? effectiveSort : ""`：多源聚合仍本地排（Test 5 注入三个 handler 验证降序），单源与降级路径保持上游序。**红→绿原文**：`FAIL 单源 name 排序保持上游（码位）顺序 got alpha,beta,iota,omega,Zeta` → OK。
+  证伪四条（把修复逐一反向破坏，必须变红）：①取消未知保持、②单源也二次重排且用原始 sort、③不记录显式未知标记、④客户端把未知冒充本页条数 —— 全部被抓，恢复后两文件字节一致。新增 test-clawhub-quality.mjs（15 项；Test 2 复述既有 Test 13 契约，避免两套语义相近判据互相打架；Test 6 锁 client 四处冒充），门 56 → 57 套件。
+- **test-full-sort Test 5 的单采样比较改双采样基线**：旧判据「两次独立上游请求逐条同序」本身依赖上游不漂 —— 本轮门里一次红（`26 passed, 1 failed`，失败标签 `installCount 被降级为不排序`）、单跑三次全绿，正是这种抖动。现在 `sort=''` 的基线采两次：两次不同则 SKIP（上游序自身在漂，降级正确性无从判定），一致才比较，并补「a 与基线条目集合一致」断言，防止 sort 悄悄走了另一条取数分支。判据是结构性质（双采样是否自洽），不是阈值。
+
 ## 0.5.135
 
 - **「质量」按钮不再是个永远点不动的假可控件（用户指出的 live 可见缺陷）**：宿主永不重启，运行中的服务进程是旧 `index.js`，里面永远没有 `skillhub.evaluation`（v0.5.131→v0.5.134 逐字节比对确认这是唯一新增 op，其余 31 个 client 调用的 op 都在）。于是列表里每个 skillhub 卡片都挂着一个点一次必失败一次的按钮。修法是**运行时判别**而不是看版本号：`isUnknownOperation` 认服务端 switch default 的 `unknown operation` 文案，`probeOpPresent` 用一次「明知参数不合法」的调用探测（新进程在参数校验阶段就返回，实测 <30ms 且不打上游；旧进程落到 default），结果存进 `opStatus`，入口只在 `opStatus['skillhub.evaluation'] === true` 时才渲染；探测本身失败 → 空清单，所有可选入口一律不画。`OPTIONAL_OPS` 是通用清单，后续任何依赖服务端 op 的入口共用同一机制，同类问题不会在别处再长出来。**证伪两轮**（Test 5 削弱判据后 op 被误判存在、Test 4 门控从 ===true 放宽成 !==false 都变红）。离线证据链已确证 profile 内 0.5.135 的 `index.js` 确有该 case，故一旦进程重载即自动生效。

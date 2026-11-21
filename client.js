@@ -31,6 +31,16 @@ window.__ModuleLoader__.load({
     // live 实测到过「共约 第 1 / 1 页」—— 标签后面空着：skillsTotal 只被 set 从未被读，
     // 而 label 是写死的字符串，标签与数据源断链。规则：total<=0 不渲染数量子句
     // （0 命中显示「共约 0 个」是噪声），unknown（cursor 型源）绝不编造总页数。
+    // 服务端报告的 total 只有「与页码无关」时才是可信的目录规模：旧版聚合层把未知
+    // 兜底成 p*size+1（实测 13/25/37…721），而宿主永不重启意味着那份代码还在跑。
+    // 客户端必须自己拦下来：与首页基准不一致的数字一律按未知处理 —— 宁可不显示
+    // 数量，也不显示一个按页码算出来的假数。判据是结构性质（随页是否变化）。
+    const trustedTotal = (reported, baseline, page) => {
+      const p = Number(page) || 1;
+      if (p <= 1) return reported;
+      if (baseline === undefined || baseline === null) return undefined;
+      return Number(reported) === Number(baseline) ? reported : undefined;
+    };
     const pagerSummary = (o) => {
       const parts = [];
       if (o.label && o.total > 0) parts.push(o.label + ' ' + o.total + ' 个');
@@ -628,6 +638,9 @@ const CARD_BATCH = 48;
       // 请求直接不发；请求结束（成功或失败）后在 finally 里清掉，否则该条件永久被跳过。
       const inflightRef = useRef(new Set());
       const mcpInflightRef = useRef(new Set());
+      // 每个视图（源+词+分类+排序+每页数）首页报告的 total 基准：后续页与它不一致
+      // 就说明那个数是按页码算出来的，客户端不显示数量子句（见 trustedTotal）。
+      const totalBaseRef = useRef({});
       const [nativeDirs, setNativeDirs] = useState([]);
       // 技能市场的分页：每个源都支持真正的翻页，页数/总数由后端这一页返回的元数据决定
       const [skillsPage, setSkillsPage] = useState(1);
@@ -758,7 +771,9 @@ const CARD_BATCH = 48;
           // 否则数据是第 3 页、分页器却显示「第 1 页」。
           setSkillsPage(pageNo);
           setSkillsTotalPages(cached.pages || 0);
-          setSkillsTotal(cached.total || (cached.items || []).length);
+          const skKeyCached = src + '|' + q + '|' + cat + '|' + effSort + '|' + pageSize;
+          setSkillsTotal(Number(trustedTotal(cached.total, totalBaseRef.current[skKeyCached], pageNo)) || 0);
+          if (pageNo <= 1) totalBaseRef.current[skKeyCached] = Number(cached.total) || 0;
           setSkillsHasMore(Boolean(cached.hasMore));
           if ((cached.items || []).length) setNotice('（缓存，正在刷新…）');
         } else if (!append) {
@@ -799,7 +814,9 @@ const CARD_BATCH = 48;
           }
           setSkillsPage(d.page || pageNo);
           setSkillsTotalPages(d.pages || 0); // 0 = 未知总页数，pager 走窗口式
-          setSkillsTotal(Number(d.total) || rows.length);
+          const skKeyFresh = src + '|' + q + '|' + cat + '|' + effSort + '|' + pageSize;
+          setSkillsTotal(Number(trustedTotal(d.total, totalBaseRef.current[skKeyFresh], pageNo)) || 0);
+          if (pageNo <= 1) totalBaseRef.current[skKeyFresh] = Number(d.total) || 0;
           setSkillsHasMore(Boolean(d.hasMore));
           const hints = (d.hints || []).filter(Boolean);
           if (!(d.items || []).length) {
@@ -847,7 +864,9 @@ const CARD_BATCH = 48;
           // 一起回来，否则卡片立刻出现、分页器还停在另一个源的页数上。
           setMcpPage(cached.page || nextPage);
           setMcpTotalPages(cached.totalPages || 0);
-          setMcpTotal(cached.total || (cached.items || []).length);
+          const mcKeyCached = nextSource + '|' + text + '|' + nextCategory + '|' + nextSort + '|' + nextSize;
+          setMcpTotal(Number(trustedTotal(cached.total, totalBaseRef.current[mcKeyCached], nextPage)) || 0);
+          if (nextPage <= 1) totalBaseRef.current[mcKeyCached] = Number(cached.total) || 0;
           setMcpHasMore(Boolean(cached.hasMore));
           setNotice('（缓存，正在刷新…）');
         } else {
@@ -883,7 +902,9 @@ const CARD_BATCH = 48;
           // canLoadMore is then the only honest signal.
           setMcpTotalPages(d.totalPages || 0);
           setMcpHasMore(mcpMore);
-          setMcpTotal(d.total || rows.length);
+          const mcKeyFresh = nextSource + '|' + text + '|' + nextCategory + '|' + nextSort + '|' + nextSize;
+          setMcpTotal(Number(trustedTotal(d.total, totalBaseRef.current[mcKeyFresh], nextPage)) || 0);
+          if (nextPage <= 1) totalBaseRef.current[mcKeyFresh] = Number(d.total) || 0;
           setMcpCategories(d.categories || []);
           // The host reports catalogue degradation separately from "no match", so both the
           // reason and the still-usable path (install by registry name) reach the user.

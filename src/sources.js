@@ -562,6 +562,8 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   const items = [];
   const hints = [];
   let total = 0;
+  // handler 显式声明「我不知道总数」的标记（见下面 srcItems 分支的注释）。
+  let totalUnknown = false;
   let pagesSum = 0;
   let pagesUnknown = false;
   let hasMore = false;
@@ -586,6 +588,11 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     if (srcItems.length) items.push(...srcItems.map((it) => ({ ...it, installRef: installRefOf(it) })));
     const srcTotal = Number(result && result.total) || 0;
     total += srcTotal;
+    // clawhub 这类 cursor 无界流的 handler 会把 total/totalPages 显式置 undefined 来表示
+    // 「未知」（extra-sources.js:253-260 明确写着不许谎报下界）。undefined 不是「没报总数」，
+    // 聚合层必须记住这个区别，否则下面的兜底会把未知伪装成随页码增长的计数
+    // （实测 page=1 total=13、page=60 total=721）。
+    if (result && result.total === undefined && srcItems.length) totalUnknown = true;
     // 页数判定：handler 给了数字就用它；没给但有真实 total 就用 total 反推；
     // 两者都没有（clawhub 无界流把 total/totalPages 都置 undefined）才算「未知」。
     const declared = result && typeof result.totalPages === "number" ? Number(result.totalPages) : null;
@@ -596,10 +603,18 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     else pagesSum += srcPages;
     if (result && result.hasMore) hasMore = true;
   }
-  // 本地排序兜底：多数源上游不支持 sort 参数，按安装数/名称在本地排
-  if (sort === "installCount") {
+  // 本地排序兜底只对**多源聚合**生效（既有契约 extra-sources.js:223：单源排序责任在
+  // handler，dispatcher 只负责把各源结果合并后再排一次）。两个缺陷都在这几行：
+  //   ① 判据用原始 sort 而不是 effectiveSort —— 557 行的注释说「该源没有对应数据时降级为
+  //      不排序，保持上游顺序」，可 supportsSort 为假时 effectiveSort 是空串，这里却照排
+  //      不误，等于把注释承诺的降级行为直接推翻；
+  //   ② 单源路径上游已经服务端全盘排好，dispatcher 再 localeCompare 一遍会改乱它
+  //      （实测上游 sort=name 是码位序 Zeta,alpha,…，被重排成 alpha,…,Zeta）。
+  // 判据是 wanted.length 与 effectiveSort 这两个既有语义，不是任何阈值。
+  const aggregateSort = wanted.length > 1 ? effectiveSort : "";
+  if (aggregateSort === "installCount") {
     items.sort((a, b) => (Number(b.installs) || 0) - (Number(a.installs) || 0));
-  } else if (sort === "name") {
+  } else if (aggregateSort === "name") {
     items.sort((a, b) => String(a.name || a.slug || "").localeCompare(String(b.name || b.slug || "")));
   }
   // skills.sh entries get their description from the skill page; browse.sh ships one.
@@ -623,7 +638,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   // 反推兜底只在「本页确实有货、上游却没报总数」时成立。items=0 时补 (p-1)*size
   // 会凭空造数：trusttools 每页超时（items=0、total=0）时 total 竟随页码涨成 12/24 ——
   // 一个条目都没有却报「共 24 个」，属于计数与真实集合不符的口径缺陷。
-  if (items.length > 0 && (!total || total < items.length)) total = hasMore ? p * size + 1 : (p - 1) * size + items.length;
+  if (items.length > 0 && !totalUnknown && (!total || total < items.length)) total = hasMore ? p * size + 1 : (p - 1) * size + items.length;
   // 分类筛选：无 category 的源无法参与，如实告知而不是静默返回全量。
   const catNeedle = String(category || "").trim();
   const catSupported = items.some((item) => item.category);
@@ -648,6 +663,10 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
       }
     }
   }
+  // 「未知」必须一路保持未知：numeric 累加量与对外报告值分开。
+  // 若把未知塌成 0，客户端 Number(d.total) || rows.length 会把 0 冒充成「本页条数」，
+  // 几千条的目录就显示成「共约 12 个」—— 与谎报下界同一类缺陷（本轮实测）。
+  const reportedTotal = totalUnknown && total === 0 ? undefined : total;
   const pages = pagesUnknown && wanted.length === 1 ? undefined : Math.max(pagesSum, Math.ceil(total / size), 1);
   return {
     items: visible,
@@ -657,7 +676,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     pageSize: size,
     pages,
     totalPages: pages,
-    total,
+    total: reportedTotal,
     hasMore,
     degraded,
     hints,

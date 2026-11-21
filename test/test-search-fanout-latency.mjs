@@ -153,7 +153,10 @@ console.log('Test 5: 既有契约不破');
   check('注释含同样字样时不误报（剥注释有效）',
     /for \(const name of wanted\) \{ await handler\(/.test(src) && !/for \(const name of wanted\)/.test(code),
     'src含=' + /for \(const name of wanted\) \{ await handler\(/.test(src) + ' code含=' + /for \(const name of wanted\)/.test(code));
-  check('本地排序兜底仍在', /if \(sort === .installCount.\) \{/.test(src) && /items\.sort\(\(a, b\) => \(Number\(b\.installs\)/.test(src));
+  // 聚合排序兜底仍在（判据升级为行为语义：只对多源生效 + 用 effectiveSort）。
+  // 旧文本锁只要求 'if (sort === "installCount")' 存在，于是 dispatcher 无条件重排
+  // 单源结果这种缺陷也能通过 —— 行为部分由本套件 Test 5（注入三个 handler）锁住。
+  check('聚合排序兜底限定在多源且用 effectiveSort', /const aggregateSort = wanted\.length > 1 \? effectiveSort : "";/.test(code) && /if \(aggregateSort === .installCount.\) \{/.test(code) && /items\.sort\(\(a, b\) => \(Number\(b\.installs\)/.test(code));
   check('enrich 兜底仍在', /await enrichSkillsShFast\(missing, cache, 10\)/.test(src));
   check('sourceErrors 空结果解释仍在', /sourceErrors/.test(src) && /不可达/.test(src));
   check('warmMarketCache 未被改动破坏', /export async function warmMarketCache/.test(src));
