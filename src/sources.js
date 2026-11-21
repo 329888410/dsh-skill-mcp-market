@@ -666,6 +666,11 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   // 「未知」必须一路保持未知：numeric 累加量与对外报告值分开。
   // 若把未知塌成 0，客户端 Number(d.total) || rows.length 会把 0 冒充成「本页条数」，
   // 几千条的目录就显示成「共约 12 个」—— 与谎报下界同一类缺陷（本轮实测）。
+  // 空页 + 没有总数证据时不得宣称「没有下一页」。本轮门内实测 trusttools 首页静默
+  // 空（items=0、degraded=0、total=0），handler 的 hasMore 退化成 items.length>=size=false，
+  // 聚合层便报「已是最后一页」—— 一次抓取失败被说成目录已到底，比谎报总数更糟。
+  // false 只有在响应带真实总数证据时才是结论；否则保持 undefined（未知）。
+  const reportedHasMore = items.length === 0 && total === 0 ? undefined : hasMore;
   const reportedTotal = totalUnknown && total === 0 ? undefined : total;
   const pages = pagesUnknown && wanted.length === 1 ? undefined : Math.max(pagesSum, Math.ceil(total / size), 1);
   return {
@@ -677,7 +682,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     pages,
     totalPages: pages,
     total: reportedTotal,
-    hasMore,
+    hasMore: reportedHasMore,
     degraded,
     hints,
     sourceErrors,

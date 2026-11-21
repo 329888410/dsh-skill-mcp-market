@@ -3,7 +3,7 @@
 //
 // test-nocache 直打真实上游，SKIP/重试分支没法靠上游恰好坏一次来验证 —— 那等于
 // 没有锁。判定抽成纯函数后每条边界都能钉死，尤其「放宽绝不放行真回归」。
-import { overlapVerdict, emptyPageAction } from './paging-verdict.mjs';
+import { overlapVerdict, emptyPageAction, emptyWithoutEvidence } from './paging-verdict.mjs';
 import fs from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -52,6 +52,21 @@ console.log('Test 5: 判据必须来自 helper（不是测试里另写一份）'
   const nc = fs.readFileSync(new URL('./test-nocache.mjs', import.meta.url), 'utf8');
   check('test-nocache 使用 overlapVerdict', nc.indexOf('overlapVerdict(') >= 0);
   check('test-nocache 使用 emptyPageAction', nc.indexOf('emptyPageAction(') >= 0);
+}
+
+console.log('');
+console.log('');
+console.log('Test 7: emptyWithoutEvidence —— 上游静默空响应不得伪装成本仓库回归');
+{
+  const ew = (o) => emptyWithoutEvidence(o);
+  check('degraded 有记录 → 有证据', ew({ degraded: 1, total: 0, hasMore: false }) === false);
+  check('total>0 却空页 → 有证据（必须能判红）', ew({ degraded: 0, total: 579074, hasMore: false }) === false);
+  check('hasMore=true 却空页 → 有证据', ew({ degraded: 0, total: 0, hasMore: true }) === false);
+  check('三者皆无 → 无证据（实测 trusttools 门内形态）', ew({ degraded: 0, total: 0, hasMore: false }) === true);
+  check('hasMore 未知也算无证据', ew({ degraded: 0, total: 0, hasMore: undefined }) === true);
+  // 反向破坏：写成恒 true（一律当上游问题）就会放过 total>0 却空页这种真回归
+  const weakened = () => true;
+  check('削弱成恒 true 会被 total>0 那例抓到（判据有效）', weakened({ total: 9 }) !== ew({ degraded: 0, total: 9, hasMore: false }));
 }
 
 console.log('');

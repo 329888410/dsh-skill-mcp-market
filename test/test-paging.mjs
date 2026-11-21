@@ -1,7 +1,7 @@
 // 逐个源验证「下一页」真的取到不同的条目（而不是重复第一页）。
 import { safeTempDir } from "../src/home.js";
 import { makeCache, searchSkills, ALL_SOURCES, skillsShCatalog } from "../src/sources.js";
-import { overlapVerdict, emptyPageAction } from "./paging-verdict.mjs";
+import { overlapVerdict, emptyPageAction, emptyWithoutEvidence } from "./paging-verdict.mjs";
 
 const cache = makeCache(safeTempDir());
 const pageSize = 12;
@@ -52,6 +52,17 @@ for (const source of ALL_SOURCES) {
     // 后者才是本仓库回归。2026-11-20 实测 ai.trusttools.cn 直接 fetch 失败（10.7s），
     // 记成 FAIL 会把上游宕机算到我们头上（同 0.5.110 修的误红）。
     const unreachable = Array.isArray(p1.degraded) && p1.degraded.some((d) => d.source === source);
+    // 某一页为空但响应毫无证据（degraded/total/hasMore 都给不出）= 上游静默空响应，
+    // 不是本侧分页契约被违反；有证据却空（total>0 或 hasMore=true）仍走原判据变红。
+    const noEvidence = emptyWithoutEvidence({
+      degraded: (p1.degraded || []).length + (p2.degraded || []).length,
+      total: p1.total,
+      hasMore: p1.hasMore,
+    });
+    if ((p1.items.length === 0 || b.length === 0) && noEvidence) {
+      console.log(`SKIP ${source.padEnd(14)} 有页为空且无总数证据（p1=${p1.items.length} p2=${b.length}）—— 上游静默空响应，无从判定本侧契约`);
+      continue;
+    }
     const empty = p1.items.length === 0 && b.length === 0 && unreachable;
     const ok = empty || (p1.items.length > 0 && ep.verdict === 'ok' && vd.verdict !== 'fail');
     checks += 1;

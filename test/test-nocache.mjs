@@ -2,7 +2,7 @@
 // source layer WITHOUT a cache object. That path used to crash with
 // "fallbackCache is not defined" after the 0.5.10 paging rewrite, so keep it covered.
 import { ALL_SOURCES, searchSkills, warmMarketCache } from "../src/sources.js";
-import { overlapVerdict, emptyPageAction } from './paging-verdict.mjs';
+import { overlapVerdict, emptyPageAction, emptyWithoutEvidence } from './paging-verdict.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -21,7 +21,9 @@ for (const source of ALL_SOURCES) {
     // 上游整体不可达（degraded 命中）与「无 cache 路径坏了」是两件事：前者是外部状态，
     // 记 SKIP 而不是 FAIL —— 否则某个市场宕机就会把这条契约伪装成代码回归。
     // 判据与 test-paging.mjs 同口径（degraded 里有这个源，或 hint 说不可达）。
-    const unreachable = (p1.degraded || []).some((d) => d.source === source) || /不可达|unreachable|timeout/i.test(p1.hint || '');
+    // 「外部状态 vs 本侧回归」统一用 helper 判（emptyWithoutEvidence），不在此另写一套：
+    // 两套相近判据互相打架是本轮明确要避开的（test-paging 用的就是同一个函数）。
+    const unreachable = (p1.degraded || []).some((d) => d.source === source) || emptyWithoutEvidence({ degraded: (p1.degraded || []).length, total: p1.total, hasMore: p1.hasMore });
     if (unreachable && p1.items.length === 0) {
       skipped += 1;
       console.log(`SKIP ${source} 上游不可达（外部状态，非回归）`);

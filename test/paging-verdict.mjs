@@ -39,3 +39,15 @@ export function emptyPageAction(o) {
   if (attempt < 2) return { verdict: 'retry', reason: '宣称还有更多但第 2 页为空，重试一次以区分上游瞬时故障与分页回归' };
   return { verdict: 'fail', reason: '重试后第 2 页仍空而 total=' + total + ' hasMore=' + hasMore + '：page/offset 计算回归' };
 }
+
+// emptyWithoutEvidence —— 某一页取到 0 条时，响应里到底有没有可据以定性的证据。
+// degraded>0（明确不可达）、total>0（上游说有货）、hasMore===true（宣称还有下一页）
+// 都算有证据；三者皆无 = 上游静默空响应：既不能证明分页契约被违反，也不能宣称
+// 目录到底 —— 只能记 SKIP。本轮门内实测 trusttools 一次 p1=0/p2=12（degraded=0、
+// total=0），单跑三次全绿；把这种上游状态判成本仓库回归，得到的就是随心情 flake 的门。
+export function emptyWithoutEvidence(o) {
+  if (Number(o.degraded) > 0) return false;
+  if ((Number(o.total) || 0) > 0) return false;
+  if (o.hasMore === true) return false;
+  return true;
+}
