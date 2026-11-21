@@ -122,8 +122,76 @@ console.log('Test 6: applyOps 幂等 + 结构锚保护 + placeBlock 方向（机
   const t2 = runOpsFile(opsPath);
   check('重跑只计 alreadyDone（一次性消费）', t2.alreadyDone === 1 && t2.applied === 0, JSON.stringify(t2));
   check('结果确实写入文件', fs.readFileSync(f2, 'utf8').includes('const D2 = 5;'), '');
+  // 逃逸口审计锁：默认仍 throw（上面已锁）；带逐条 flag 才放行，且 forced 必须
+  // 计数并持久化到 ops 条目 —— 本轮逃逸数必须是读得出的数字，不能靠感觉。
+  const fEsc = path.join(dir2, 'esc.txt');
+  fs.writeFileSync(fEsc, ['const X3 = 1;', 'const Y3 = 2;'].join(CR + NL) + CR + NL);
+  const rEsc = applyOps(fEsc, [{ needle: 'const X3 = 1;', span: 2, block: ['// erased'], allowStructuralLoss: true }]);
+  check('flag 逃逸放行且 forced=1（可审计计数）', rEsc.applied === 1 && rEsc.forced === 1, JSON.stringify(rEsc));
+  const rZero = applyOps(fEsc, [{ needle: '// erased', span: 1, block: ['// erased2'] }]);
+  check('普通 op forced=0', rZero.forced === 0, JSON.stringify(rZero));
+  const fEsc2 = path.join(dir2, 'esc2.txt');
+  fs.writeFileSync(fEsc2, ['const A2 = 1;', 'const B2 = 2;'].join(CR + NL) + CR + NL);
+  let threw4 = '';
+  try { applyOps(fEsc2, [{ needle: 'const A2 = 1;', span: 2, block: ['// gone'] }]); } catch (e) { threw4 = String(e.message); }
+  check('不显式带 flag 就不存在逃逸（默认仍 throw）', threw4.indexOf('结构锚') >= 0, threw4.slice(0, 110));
+  const fEsc3 = path.join(dir2, 'esc3.txt');
+  fs.writeFileSync(fEsc3, ['const P1 = 1;', 'const P2 = 2;'].join(CR + NL) + CR + NL);
+  fs.writeFileSync(path.join(dir2, 'blk3.txt'), '// wiped' + NL);
+  const opsEsc = path.join(dir2, 'opsesc.json');
+  fs.writeFileSync(opsEsc, JSON.stringify([{ file: fEsc3, needle: 'const P1 = 1;', span: 2, blockFile: 'blk3.txt', allowStructuralLoss: true }]));
+  const t3 = runOpsFile(opsEsc);
+  check('runOpsFile 汇总 forced=1', t3.forced === 1, JSON.stringify(t3));
+  check('ops 条目持久化 forced（逐条可审计）', JSON.parse(fs.readFileSync(opsEsc, 'utf8'))[0].forced === 1, '');
   fs.rmSync(dir2, { recursive: true, force: true });
 }
+
+console.log('');
+console.log('Test 7: 本轮结构锚逃逸数必须为 0（仓库内不得出现未申报的 allowStructuralLoss）');
+{
+  // 逃逸口是逐条显式的，所以「用没用」是能静态读出来的数字，不靠人回忆。
+  // 期望值固定 0：一旦哪天出现非 0，这条就红，交付说明必须写清是哪条 op、为什么。
+  const fs2 = await import('node:fs');
+  const path2 = await import('node:path');
+  const root = path2.resolve(import.meta.dirname, '..');
+  const found = [];
+  for (const dir of ['test', 'src']) {
+    for (const name of fs2.readdirSync(path2.join(root, dir))) {
+      if (!/\.(mjs|js)$/.test(name)) continue;
+      const text = fs2.readFileSync(path2.join(root, dir, name), 'utf8');
+      const hits = text.split(String.fromCharCode(10)).filter((l) => l.indexOf('allowStructuralLoss: true') >= 0).length;
+      if (hits) found.push(dir + '/' + name + ':' + hits);
+    }
+  }
+  // 机制本体与 Test 6 的证伪样本允许出现（那是刻意的逃逸演练），其余都算未申报
+  const allowed = new Set(['test/edit-lib.mjs', 'test/test-edit-lib.mjs']);
+  const offenders = found.filter((x) => !allowed.has(x.split(':')[0]));
+  check('仓库内无未申报的结构锚逃逸', offenders.length === 0, offenders.join(', '));
+}
+
+console.log('');
+console.log('Test 8: Test 7 的白名单与作用面本身被锁死');
+{
+  // 判据串一律用字符码拼出：断言里若出现被搜索字面量的本体，self 会命中两次
+  // （自指）—— 第一版就是这么假红的。
+  const self = fs.readFileSync(new URL('./test-edit-lib.mjs', import.meta.url), 'utf8');
+  const Q = String.fromCharCode(39);
+  const LB = String.fromCharCode(91);
+  const RB = String.fromCharCode(93);
+  const NLN = String.fromCharCode(10);
+  const ALLOW = 'const allowed = new Set(' + LB;
+  const LOOP = 'for (const dir of ' + LB + Q + 'test' + Q + ', ' + Q + 'src' + Q + RB;
+  check('白名单声明唯一', self.split(ALLOW).length - 1 === 1, self.split(ALLOW).length - 1);
+  const at = self.indexOf(ALLOW);
+  const firstLine = self.slice(at, self.indexOf(NLN, at));
+  check('白名单恰为两项（该行四个引号）', firstLine.split(Q).length - 1 === 4 && firstLine.indexOf('edit-lib.mjs') >= 0 && firstLine.indexOf('test-edit-lib.mjs') >= 0, JSON.stringify(firstLine.slice(0, 110)));
+  check('扫描面唯一且限定 test 与 src', self.split(LOOP).length - 1 === 1, self.split(LOOP).length - 1);
+}
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
+
+
+
+
 

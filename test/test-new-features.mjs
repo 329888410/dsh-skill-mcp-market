@@ -1,6 +1,6 @@
 // 新功能面回归：回收站（list/restore/empty）、.zip 导入（含上限）、双轨启停、来源分级、会话日志体检、frontmatter 标志写。
 // 全程在 mkdtemp 临时目录里跑，不触碰用户的技能目录、回收站与会话日志。
-import { tmpdir } from "node:os";
+import { safeTempDir } from "../src/home.js";
 import { mkdtemp, rm, readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync, readdirSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
@@ -29,7 +29,7 @@ function check(name, ok, detail = "") {
   }
 }
 
-const root = await mkdtemp(join(tmpdir(), "dsh-market-new-"));
+const root = await mkdtemp(join(safeTempDir(), "dsh-market-new-"));
 const skills = join(root, "skills");
 const trash = join(root, "trash");
 await mkdir(skills, { recursive: true });
@@ -218,7 +218,7 @@ function makeZip(entries) {
 // ---------------------------------------------------------------- 空 tool-call 自动修复（B）
 {
   const { mkdtemp } = await import("node:fs/promises");
-  const home = await mkdtemp(join(tmpdir(), "dsh-autorepair-"));
+  const home = await mkdtemp(join(safeTempDir(), "dsh-autorepair-"));
   const sessionsDir = join(home, "sessions", "ws1");
   await mkdir(join(sessionsDir, "bad"), { recursive: true });
   await mkdir(join(sessionsDir, "good"), { recursive: true });

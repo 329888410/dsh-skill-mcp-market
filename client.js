@@ -56,19 +56,31 @@ window.__ModuleLoader__.load({
     };
     // 跳页目标：输入框字符串 → 可跳转页码，0 表示不跳。回车与失焦共用它 —— 以前两条
     // 路径各写各的 clamp，回车拒绝越界、失焦却放行，同一个数字两种结果。
-    // 等于当前页也返回 0：重复请求同一页既没意义又要等一次网络往返。
-    const pageJumpTarget = (raw, current, n, unknown) => {
+    const pageJumpOutcome = (raw, current, n, unknown) => {
+      if (raw === '' || raw === null || raw === undefined) return { page: 0, reason: '' };
       const v = Math.trunc(Number(raw));
-      if (!Number.isFinite(v) || v < 1) return 0;
-      if (!unknown && n > 0 && v > n) return 0;
-      if (v === current) return 0;
-      return v;
+      if (!Number.isFinite(v) || v < 1) return { page: 0, reason: 'invalid' };
+      if (!unknown && n > 0 && v > n) return { page: 0, reason: 'outOfRange' };
+      if (v === current) return { page: 0, reason: 'samePage' };
+      return { page: v, reason: '' };
+    };
+    // pageJumpTarget 保留旧签名，改为从 outcome 派生（两条路径不可能再各写各的 clamp）。
+    const pageJumpTarget = (raw, current, n, unknown) => {
+      return pageJumpOutcome(raw, current, n, unknown).page;
     };
     // 本次请求的每页条数：调用方可能带新 size（改「每页条数」时立刻传 nextSize），
     // 而外层 size 状态未必已更新。缓存键与请求参数必须用同一个数，否则键记旧尺寸、
     // 请求发新尺寸 —— 命中那个缓存项等于拿旧尺寸的结果冒充新尺寸。
     // 命名必须不是 size：const size = resolvePageSize(options, size) 会在同一块作用域
     // 遮蔽外层 size，右侧自引用直接 TDZ 崩溃。上限 60 与服务端 clamp 同口径。
+    // 同一条件的在途请求去重：连按两次回车/搜索按钮不该各打一次上游（等待翻倍、
+    // 结果同形）。append（追加下一页）的 cacheKey 是空串，绝不能参与去重 —— 空串
+    // 一律放行，并且不写进集合。
+    const shouldSkipInflight = (inflight, key) => {
+      if (!key) return false;
+      if (!(inflight instanceof Set)) return false;
+      return inflight.has(key);
+    };
     const resolvePageSize = (options, current) => {
       const raw = options && options.size !== undefined ? Number(options.size) : Number.NaN;
       if (!Number.isFinite(raw)) return current;
@@ -79,6 +91,22 @@ window.__ModuleLoader__.load({
     // 缓存键：两个搜索入口各自内联模板串时维度很容易写漏（sk 原来就没有 size）。
     // 'all'/'' 与 'default'/'' 归一，让同一视图的两种写法不会算成两个缓存项 ——
     // 那等于同一条件重复发请求。
+    // 运行时判别「正在跑的服务进程有没有这个 op」。绝不能看版本号：宿主永不重启,
+    // 版本号只代表磁盘上装了什么，不代表进程加载了什么（实测运行态仍是 0.5.131 的
+    // index.js，即 profile 已是 0.5.134，skillhub.evaluation 依然 unknown operation）。
+    // 未知 op 走 switch default 抛 `unknown operation "<op>"`；其它错误（参数校验、
+    // 网络、上游 5xx）都说明 op 存在、只是这次调用没成。
+    const isUnknownOperation = (message) => /unknown operation/i.test(String(message || ''));
+    // 探针用一次「明知参数不合法」的调用：新进程在参数校验阶段就返回（实测零上游、
+    // <30ms），旧进程落到 default 抛 unknown operation。两种都不会真打上游。
+    const probeOpPresent = async (callFn, op) => {
+      try {
+        await callFn(op);
+        return true;
+      } catch (e) {
+        return isUnknownOperation((e && e.message) || e) === false;
+      }
+    };
     const skillCacheKey = (o) => {
       if (o && o.append) return '';
       const cat = o.category === 'all' ? '' : (o.category || '');
@@ -421,6 +449,9 @@ const CARD_BATCH = 48;
       const [mounted, setMounted] = useState(null);
       const [settings, setSettings] = useState(null);
       const [sortCaps, setSortCaps] = useState(null);
+      // 可选 op 的运行时可用性：null=还没探过；探过之后每个 op 一个布尔。
+      // 入口只有在确认服务端有这个 op 时才渲染 —— 探测前与探测失败都不得画出按钮。
+      const [opStatus, setOpStatus] = useState(null);
       const [skillDraft, setSkillDraft] = useState('');
       const [mcpDraft, setMcpDraft] = useState('');
       // { slug, missing: string[] } — the connector needs values before it can start
@@ -448,6 +479,8 @@ const CARD_BATCH = 48;
       const [category, setCategory] = useState('all');
       const [pageJump, setPageJump] = useState('');
       const [mcpPageJump, setMcpPageJump] = useState('');
+      // 跳页被拒绝时的可见理由（两 tab 共用一个：同一时刻只有一个分页器可见）
+      const [jumpNotice, setJumpNotice] = useState('');
       // 过滤词按子页签拆开：旧实现一个词同时过滤技能与 MCP，切页签互相污染
       const [manageSkillFilter, setManageSkillFilter] = useState('');
       const [manageMcpFilter, setManageMcpFilter] = useState('');
@@ -591,6 +624,10 @@ const CARD_BATCH = 48;
       // MCP 侧同一个缺陷（切源时先发的慢请求覆盖后发），但用独立计数器：技能请求
       // 只应被更新的技能请求超车，不该被切到 MCP tab 的那次请求抹掉。
       const mcpSeqRef = useRef(0);
+      // 在途请求集合（技能/MCP 各自一份，与各自序号计数器同侧）：同 key 的第二次
+      // 请求直接不发；请求结束（成功或失败）后在 finally 里清掉，否则该条件永久被跳过。
+      const inflightRef = useRef(new Set());
+      const mcpInflightRef = useRef(new Set());
       const [nativeDirs, setNativeDirs] = useState([]);
       // 技能市场的分页：每个源都支持真正的翻页，页数/总数由后端这一页返回的元数据决定
       const [skillsPage, setSkillsPage] = useState(1);
@@ -612,6 +649,16 @@ const CARD_BATCH = 48;
       const pager = (page, totalPages, hasMore, label, total, jumpState, setJumpState) => {
         const unknown = !totalPages; // 注册表按 cursor 走，没有可数的总页数
         const n = unknown ? 0 : Math.max(1, Math.trunc(totalPages) || 1);
+        // 回车与失焦共用这一个入口：拒绝必须留下可见理由，成功跳转则清掉旧提示。
+        const applyJump = (setJumpState) => {
+          const o = pageJumpOutcome(jumpState, page, n, unknown);
+          setJumpState('');
+          if (o.page) { setJumpNotice(''); gotoPage(o.page); return; }
+          if (o.reason === 'invalid') setJumpNotice('请输入有效页码');
+          else if (o.reason === 'outOfRange') setJumpNotice('超出范围：共 ' + n + ' 页');
+          else if (o.reason === 'samePage') setJumpNotice('已在第 ' + page + ' 页');
+          else setJumpNotice('');
+        };
         // 页码窗口：windowed=true 时固定显示当前页前后各 5 页；windowed=false 时显示全部页码
         // 页码窗口：已知总数时显示当前页±5（省略号折叠）；未知总数时只显示±2
         // 页码窗口交给纯函数 pageWindow（module scope），行为与原 IIFE 完全一致。
@@ -652,17 +699,11 @@ const CARD_BATCH = 48;
               onChange: (e) => setJumpState(e.target.value),
               onKeyDown: (e) => {
                 if (e.key !== 'Enter') return;
-                // 回车与失焦共用同一个纯判定：越界 / 非数字 / 等于当前页都不发请求。
-                const p = pageJumpTarget(jumpState, page, n, unknown);
-                setJumpState('');
-                if (p) gotoPage(p);
+                applyJump(setJumpState);
               },
-              onBlur: () => {
-                const p = pageJumpTarget(jumpState, page, n, unknown);
-                setJumpState('');
-                if (p) gotoPage(p);
-              },
-            })));
+              onBlur: () => { applyJump(setJumpState); },
+            }),
+            jumpNotice ? h('span', { style: { fontSize: 12, color: 'var(--dsh-danger, #b42318)', marginLeft: 8 } }, jumpNotice) : null));
       };
 
       const loadInstalled = useCallback(async () => {
@@ -682,6 +723,13 @@ const CARD_BATCH = 48;
         setNativeDirs(d.settings.dshNativeSkillDirs || []);
       }, []);
 
+      // 可选 op 清单：入口按「这个 op 可能不存在」写的都进这里，boot 各探一次。
+      const OPTIONAL_OPS = ['skillhub.evaluation'];
+      const probeOps = useCallback(async () => {
+        const next = {};
+        for (const op of OPTIONAL_OPS) next[op] = await probeOpPresent((name) => call(name, { slug: '' }), op);
+        setOpStatus(next);
+      }, []);
       const searchSkills = useCallback(async (text, options) => {
         // 回落到当前选中的源——否则回车/点「搜索」会退化成「全部来源」聚合
         const src = (options && options.source) || liveRef.current.source;
@@ -695,9 +743,14 @@ const CARD_BATCH = 48;
         // 现在原样下发选中的键；default 仍映射 installCount（保持既有默认视图语义）。
         const reqSort = options && options.sort !== undefined ? options.sort : sort;
         const effSort = reqSort === 'default' ? 'installCount' : reqSort;
-        const cacheKey = skillCacheKey({ source: src, query: q, category: cat, page: pageNo, size: pageSize, sort: effSort, append });
+        const cacheKey = skillCacheKey({ source: src, query: q, category: cat, page: pageNo, size: pageSize, sort: effSort, append: Boolean(options && options.append) });
+        // 同条件已在途 → 这次直接不发（连按两次回车不该各打一次上游）。
+        // 必须在取序号之前判定：若先 ++seq，这次被跳过的请求会把真正在途的那次
+        // 标成「已过期」，它的结果反而被丢弃 —— 去重就变成了丢结果。
+        if (shouldSkipInflight(inflightRef.current, cacheKey)) return;
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
         const seq = ++reqSeqRef.current; // 本次请求的序号（超车判定基准）
+        if (cacheKey) inflightRef.current.add(cacheKey);
         // 命中缓存：立即渲染旧结果，不白屏；后台再刷新
         if (cached) {
           setSkills(cached.items || []);
@@ -770,6 +823,7 @@ const CARD_BATCH = 48;
           if (seq !== reqSeqRef.current) return; // 过期请求的报错不该盖掉新结果
           setError(String(e.message || e));
         } finally {
+          if (cacheKey) inflightRef.current.delete(cacheKey); // 结束即让位，否则该条件永久被跳过
           if (seq === reqSeqRef.current) setBusy(''); // 只由最后一次请求收口 spinner
         }
       }, [sort, liveRef, source, size]);
@@ -782,9 +836,11 @@ const CARD_BATCH = 48;
         const nextPage = opts.page || 1;
         const nextSize = resolvePageSize(opts, size);
         // 首屏查询（非 append）命中缓存时立即渲染旧结果，后台再刷新，避免切源白屏
-        const cacheKey = mcpCacheKey({ source: nextSource, query: text, category: nextCategory, sort: nextSort, page: nextPage, size: nextSize, append: opts.append });
+        const cacheKey = mcpCacheKey({ source: nextSource, query: text, category: nextCategory, sort: nextSort, page: nextPage, size: nextSize, append: Boolean(opts.append) });
+        if (shouldSkipInflight(mcpInflightRef.current, cacheKey)) return;
         const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
         const mseq = ++mcpSeqRef.current;
+        if (cacheKey) mcpInflightRef.current.add(cacheKey);
         if (cached) {
           setMcps(cached.items || []);
           // 恢复与这一份缓存绑定的分页元数据：切源再切回来时卡片和页码/总页数必须
@@ -792,6 +848,7 @@ const CARD_BATCH = 48;
           setMcpPage(cached.page || nextPage);
           setMcpTotalPages(cached.totalPages || 0);
           setMcpTotal(cached.total || (cached.items || []).length);
+          setMcpHasMore(Boolean(cached.hasMore));
           setNotice('（缓存，正在刷新…）');
         } else {
           setBusy('mcp.search');
@@ -809,7 +866,10 @@ const CARD_BATCH = 48;
           const rows = d.items || [];
           // 同技能侧：被更晚发出的 MCP 请求超车就整段丢弃（连缓存也不写）。
           if (mseq !== mcpSeqRef.current) return;
-          if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [], page: d.page || nextPage, totalPages: d.totalPages || 0, total: d.total || rows.length };
+          // 与下面 setMcpHasMore 共用同一个判定：缓存里必须存住这个信号，否则切源
+          // 再切回时命中缓存只恢复了卡片与页数，hasMore 还停在上一个源的值上。
+          const mcpMore = d.canLoadMore !== undefined ? Boolean(d.canLoadMore) : (d.page || nextPage) < (d.totalPages || 1);
+          if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [], page: d.page || nextPage, totalPages: d.totalPages || 0, total: d.total || rows.length, hasMore: mcpMore };
           // Append must not repeat a card: the registry pages by version rows, so a server
           // may legitimately return a slug that is already on screen.
           setMcps(opts.append
@@ -822,9 +882,7 @@ const CARD_BATCH = 48;
           // totalPages 0 means the source cannot count pages (the registry is cursor-based);
           // canLoadMore is then the only honest signal.
           setMcpTotalPages(d.totalPages || 0);
-          setMcpHasMore(d.canLoadMore !== undefined
-            ? Boolean(d.canLoadMore)
-            : (d.page || nextPage) < (d.totalPages || 1));
+          setMcpHasMore(mcpMore);
           setMcpTotal(d.total || rows.length);
           setMcpCategories(d.categories || []);
           // The host reports catalogue degradation separately from "no match", so both the
@@ -836,6 +894,7 @@ const CARD_BATCH = 48;
           if (mseq !== mcpSeqRef.current) return;
           setError(String(e.message || e));
         } finally {
+          if (cacheKey) mcpInflightRef.current.delete(cacheKey);
           if (mseq === mcpSeqRef.current) setBusy('');
         }
       }, []);
@@ -846,10 +905,13 @@ const CARD_BATCH = 48;
         // 旧实现：任何 tab 都 loadInstalled + else 分支必打一次 MCP 市场搜索（3-40s 的无谓查询）。
         // 收紧为按需：installed 数据只在管理页需要；searchMcps 只在 MCP 市场页需要。
         loadSettings().catch((e) => setError(String(e.message || e)));
+        // 探测本身失败（RPC 不通等）→ 空清单：所有可选入口一律不渲染，
+        // 而不是留着「点了必失败」的假可控件。
+        probeOps().catch(() => setOpStatus({}));
         if (tab === 'manage') loadInstalled().catch((e) => setError(String(e.message || e)));
         if (tab === 'skills') searchSkills('', { source, size });
         else if (tab === 'mcp') searchMcps('', { size });
-      }, [tab, loadSettings, loadInstalled, searchSkills, searchMcps]);
+      }, [tab, loadSettings, loadInstalled, searchSkills, searchMcps, probeOps]);
 
       // 排序变了 → 重新拉取当前 tab 的数据（不同排序返回不同顺序/结果）
       const prevSortRef = useRef(sort);
@@ -1617,15 +1679,14 @@ const CARD_BATCH = 48;
             h('span', null, item.sourceLabel || item.source),
             item.owner ? h('span', null, `· ${item.owner}`) : null,
             item.category ? h('span', null, `· ${item.category}`) : null,
-            item.installs ? h('span', null, `· ${item.installs.toLocaleString()} 次安装`) : null,
+            item.installs ? h('span', null, `· ${Number(item.installs).toLocaleString()} 次安装`) : null,
             // 排序依据必须可见：只给「按安装数」而卡片没有安装数时，用户无法核验。
             // 与安装数同一规则 —— 有值才显示，0/缺失不显示，绝不显示错数。
             item.downloads ? h('span', null, `· ${Number(item.downloads).toLocaleString()} 次下载`) : null,
             item.stars ? h('span', null, `· ★ ${Number(item.stars).toLocaleString()}`) : null,
-            item.describedBy === 'page-meta' ? null : null,
             item.installable === false ? h('span', null, '· 仅可浏览') : null),
           h('div', { style: S.row },
-            item.source === 'skillhub' ? h('button', {
+            item.source === 'skillhub' && opStatus && opStatus['skillhub.evaluation'] === true ? h('button', {
               style: { ...S.btn(), padding: '0 6px' },
               title: '查看 SkillHub 官方质量评测（打开详情时才查询，列表不预取）',
               disabled: busy === 'quality:' + String(item.namespace || item.slug),

@@ -110,6 +110,69 @@ export function patchFile(file, edits, opts) {
 //   ④ needle 或块多命中 → throw；区间重叠 → throw。任何一条不满足就整体不动文件。
 const STRUCTURAL = /^(?:export\s+)?(?:async\s+)?(?:function\s+[\w$]|const\s+[\w$]|let\s+[\w$]|var\s+[\w$]|class\s+[\w$])/;
 
+// scopeDeclDupes(lines) —— 找出「同一作用域内重复声明的 const/let」名字。
+//
+// 为什么必须作用域感知（而不是全局计数）：仓库里各 Test 块各自写 `const out = []`
+// 是完全合法的（不同块 = 不同作用域），全局计数会把这种正常代码误判成事故，
+// 于是守卫会在第一次误伤后被人为拆掉 —— 那比没有守卫更糟。
+// 实现：逐行扫描时维护「当前花括号栈」（跳过字符串/模板/注释，与 blockEnd 同一套
+// 字符级判定），作用域签名 = 栈内各开括号所在行号。两次同名 const 的签名完全相同，
+// 才是真重复（这在合法 JS 里必然 SyntaxError —— 正是本轮两次事故的表现）。
+function scopeStack(lines) {
+  const stack = [];
+  const keys = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = String(lines[i]);
+    keys.push(null);
+    let q = 0;
+    for (let x = 0; x < line.length; x++) {
+      const ch = line.charCodeAt(x);
+      if (q) { if (ch === 92) x++; else if (ch === q) q = 0; continue; }
+      if (ch === 39 || ch === 34 || ch === 96) { q = ch; continue; }
+      if (ch === 47 && line.charCodeAt(x + 1) === 47) break;
+      if (ch === 47 && line.charCodeAt(x + 1) === 42) { const e = line.indexOf('*/', x + 2); if (e < 0) { x = line.length; continue; } x = e + 1; continue; }
+      if (ch === 123) stack.push(i);
+      else if (ch === 125) stack.pop();
+    }
+    keys[i] = stack.join(',');
+  }
+  return keys;
+}
+
+function declDupScopes(lines) {
+  const keys = scopeStack(lines);
+  const seen = new Map();
+  const bad = [];
+  for (let i = 0; i < lines.length; i++) {
+    const t = String(lines[i]).trim();
+    let rest = '';
+    if (t.indexOf('const ') === 0) rest = t.slice(6);
+    else if (t.indexOf('let ') === 0) rest = t.slice(4);
+    else continue;
+    const eq = rest.indexOf('=');
+    if (eq <= 0) continue;
+    const nm = rest.slice(0, eq).trim();
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(nm)) continue;
+    const sig = keys[i] === null ? '' : keys[i];
+    const key = nm + '@' + sig;
+    if (seen.has(key)) bad.push(nm + '（行 ' + (seen.get(key) + 1) + ' 与 ' + (i + 1) + '）');
+    else seen.set(key, i);
+  }
+  return bad;
+}
+
+// assertNoDupDecl —— 落盘前校验：替换后出现同作用域重名 const/let 就 throw（不写文件）。
+// 真实事故两起：一次把注释+声明块插了两遍（Identifier already declared），一次新段自带
+// `const overlap` 而旧声明行还留着 —— 两次 needle 校验全过，因为锚只看那一行，不看替换后
+// 整个文件还能不能加载。
+export function assertNoDupDecl(file, beforeLines, afterLines) {
+  const bad = declDupScopes(afterLines);
+  if (!bad.length) return;
+  // 编辑前就存在的重复（文件本来就加载不了）不重复报，只报本次新增的
+  const was = new Set(declDupScopes(beforeLines));
+  const fresh = bad.filter((x) => !was.has(x));
+  if (fresh.length) throw new Error('编辑引入同作用域重复 const/let 声明（' + file + '）: ' + fresh.join(', ') + ' —— 旧声明该并入替换区间，而不是留在文件里');
+}
 export function applyOps(file, ops, opts) {
   const o = opts || {};
   const raw = fs.readFileSync(file, 'utf8');
@@ -119,6 +182,7 @@ export function applyOps(file, ops, opts) {
   const plan = [];
   const spans = [];
   let skipped = 0;
+  let forced = 0;
   for (const op of ops) {
     let block = Array.isArray(op.block) ? op.block.map(String) : String(op.block === undefined ? '' : op.block).split(NL);
     while (block.length && block[block.length - 1] === '') block.pop();
@@ -147,13 +211,18 @@ export function applyOps(file, ops, opts) {
       const t = l.trim();
       return t !== '' && STRUCTURAL.test(t) && !block.some((b) => b.trim() === t);
     });
-    if (lost.length) { problems.push('applyOps: span 吃掉结构锚且块未回归: ' + lost.map((l) => JSON.stringify(l.trim().slice(0, 44))).join(' ')); continue; }
+    // 结构锚保护默认生效；调用方可以**逐条显式声明** allowStructuralLoss（并在计数里
+    // 留下 forced 记录）—— 这不是削弱，因为默认仍然 throw，逃逸必须点名到具体 op。
+    if (lost.length && op.allowStructuralLoss !== true && o.allowStructuralLoss !== true) { problems.push('applyOps: span 吃掉结构锚且块未回归: ' + lost.map((l) => JSON.stringify(l.trim().slice(0, 44))).join(' ')); continue; }
+    if (lost.length) forced++;
     spans.push({ from: from, to: to });
     plan.push({ from: from, to: to, block: block });
   }
   if (problems.length) throw new Error('applyOps 拒绝执行（文件未改动）: ' + problems.join(' | '));
+  const BEFORE = A.slice(); // 编辑前基线（用于重复声明比对）
   plan.sort((x, y) => y.from - x.from);
   for (const p of plan) A.splice(p.from, p.to - p.from + 1, ...p.block);
+  assertNoDupDecl(file, BEFORE, A); // 重复 const/let 声明即 throw（不落盘）
   if (plan.length && !o.dryRun) {
     const text = A.join(eol === 'crlf' ? CR + NL : NL);
     const tmpPath = path.resolve(file) + '.opstmp';
@@ -166,7 +235,7 @@ export function applyOps(file, ops, opts) {
     }
     fs.renameSync(tmpPath, path.resolve(file));
   }
-  return { applied: plan.length, skipped: skipped, lines: A.length };
+  return { applied: plan.length, skipped: skipped, forced: forced, lines: A.length };
 }
 
 // runOpsFile —— 一次性消费 ops 清单：应用成功的条目回写 done:true。ops 文件从此不是
@@ -176,14 +245,18 @@ export function runOpsFile(opsPath) {
   const absOps = path.resolve(opsPath);
   const dir = path.dirname(absOps);
   const entries = JSON.parse(fs.readFileSync(absOps, 'utf8'));
-  const tally = { applied: 0, skipped: 0, alreadyDone: 0 };
+  const tally = { applied: 0, skipped: 0, forced: 0, alreadyDone: 0 };
   for (const e of entries) {
     if (e.done === true) { tally.alreadyDone++; continue; }
     let block = fs.readFileSync(path.resolve(dir, e.blockFile), 'utf8').replace(/\r\n/g, NL).split(NL);
     while (block.length && block[block.length - 1] === '') block.pop();
-    applyOps(e.file, [{ needle: e.needle, span: e.span, block: block }]);
+    const r = applyOps(e.file, [{ needle: e.needle, span: e.span, block: block, allowStructuralLoss: e.allowStructuralLoss === true }]);
     tally.applied++;
+    tally.forced += r.forced;
     e.done = true;
+    // 逃逸次数逐条落进 ops 文件：非 0 的每一次都能追溯到具体 op。
+    // 交付说明必须逐条列出（哪条、为什么必须逃逸），否则口子会慢性失效。
+    e.forced = r.forced;
     fs.writeFileSync(absOps, JSON.stringify(entries, null, 1));
   }
   return tally;
@@ -247,3 +320,5 @@ export function placeBlock(file, opts) {
   fs.renameSync(tmp, abs);
   return { lines: next.length - lines.length, at: at + 1 };
 }
+
+

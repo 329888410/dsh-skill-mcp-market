@@ -1,0 +1,41 @@
+// paging-verdict.mjs — 分页判据（纯函数，零网络，只给测试用）。
+//
+// 背景（本轮实测）：test-nocache 直打真实上游，出现两类外部状态——
+//   skillhub 默认榜（不带 sortBy）自身在重排：同一请求首条在 icon-design 与
+//   govwriter-pro 之间漂移，跨页重叠一次 2、一次 7；显式排序路径实测 overlap=0
+//   且跨页单调（p1min=24636 ≥ p2max=23940；1785771 ≥ 1753414）。
+//   trusttools 出现过一次 p1=12 / p2=0，复测三次都是 12/12（上游瞬时故障）。
+// 外部状态不该伪装成代码回归，但放宽必须有边界与自证，所以判定抽成纯函数：
+//   整页重复 = page 参数被忽略 → 永远 fail（这是我们的回归）；
+//   空第 2 页而 total/hasMore 说还有 → 先重试一次，重试后仍空 → fail；
+//   skillhub 部分重叠且显式排序路径干净 → skip（并写明实测依据）。
+// 判据写在这里而不是内联在套件里：内联一份就等于测「测试自己的假设」，
+// 上游恰好不坏时那条 SKIP 分支根本没人验证过。
+
+export function overlapVerdict(o) {
+  const pageCount = Number(o.pageCount) || 0;
+  const overlap = Number(o.overlap) || 0;
+  if (overlap === 0) return { verdict: 'ok', reason: '' };
+  if (pageCount > 0 && overlap >= pageCount) return { verdict: 'fail', reason: '第 2 页与第 1 页整页相同：page 参数被忽略' };
+  if (o.source === 'skillhub') {
+    // sortedOverlap 必须由调用方真测出来；缺失（undefined）不能当 0 放行。
+    if (o.sortedOverlap === undefined || o.sortedOverlap === null) return { verdict: 'fail', reason: '未提供显式排序路径的重叠实测值' };
+    if (Number(o.sortedOverlap) === 0) return { verdict: 'skip', reason: '上游默认榜自身在重排；显式排序路径 overlap=0，本仓库分页参数无回归' };
+    return { verdict: 'fail', reason: '显式排序路径也跨页重复 sortedOverlap=' + o.sortedOverlap };
+  }
+  return { verdict: 'fail', reason: '跨页重叠 overlap=' + overlap };
+}
+
+export function emptyPageAction(o) {
+  const p1 = Number(o.p1) || 0;
+  const p2 = Number(o.p2) || 0;
+  const total = Number(o.total) || 0;
+  const hasMore = o.hasMore === true;
+  const attempt = Number(o.attempt) || 1;
+  if (p2 > 0) return { verdict: 'ok', reason: '' };
+  if (p1 === 0) return { verdict: 'fail', reason: '第 1 页就没有条目：无 cache 路径不可用' };
+  // 上游诚实说没有第 2 页（total 已排完且 hasMore=false）→ 正常，不重试也不报错
+  if (!hasMore && total <= p1) return { verdict: 'ok', reason: '' };
+  if (attempt < 2) return { verdict: 'retry', reason: '宣称还有更多但第 2 页为空，重试一次以区分上游瞬时故障与分页回归' };
+  return { verdict: 'fail', reason: '重试后第 2 页仍空而 total=' + total + ' hasMore=' + hasMore + '：page/offset 计算回归' };
+}

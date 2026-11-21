@@ -222,5 +222,60 @@ console.log('Test 7: 常驻守卫 —— 否定断言不得存在子串冒充面
   const falsePos = negations(okSample).filter(plainIdent);
   check('含空格的 needle 不误报', falsePos.length === 0, falsePos.join(','));
 }
+
+
+console.log('');
+console.log('Test 9: 守卫不得自指（扫自身源码的判据，字面量不得同时出现在自己体内）');
+{
+  // 真实事故（本轮 Test 8 第一版）：想锁「白名单只有两项」，判据写成对 self 的
+  // split/indexOf 计数，而字面量本体也写在断言里 → self 必然命中 2 次，守卫把
+  // 自己判红（假红）；随手改成 >=2 就又变成永真假绿。
+  // 范围必须精准（第一版我扫了整个文件的所有 indexOf 字面量，结果把 patchFile 的
+  // 夹具字符串 inserted 1 / const A = 1; 也算进来 —— 那是测试数据，不是扫自身的判据，
+  // 属于误伤）。正确范围：只统计「以 self 读取变量为接收者」的那些字面量。
+  const fs9 = await import('node:fs');
+  const path9 = await import('node:path');
+  const dir9 = path9.resolve(import.meta.dirname);
+  const names9 = fs9.readdirSync(dir9).filter((x) => x.slice(0, 5) === 'test-' && x.slice(-4) === '.mjs');
+  const Q = String.fromCharCode(39);
+  const offenders = [];
+  let selfReaders = 0;
+  for (const n of names9) {
+    const t = fs9.readFileSync(path9.join(dir9, n), 'utf8');
+    // 找 const VAR = fs.readFileSync(new URL('./本文件.mjs', ...)) —— 变量名从该行取
+    const readAt = t.indexOf('new URL(' + Q + './' + n + Q + ',');
+    if (readAt < 0) continue;
+    selfReaders += 1;
+    const lineStart = t.lastIndexOf(String.fromCharCode(10), readAt) + 1;
+    const decl = t.slice(lineStart, readAt);
+    const vm = /const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/.exec(decl);
+    if (!vm) continue;
+    const V = vm[1];
+    // 只看该变量的接收者用法：V.indexOf('LIT') / V.split('LIT')
+    for (const op of ['.indexOf(', '.split(']) {
+      let cur = 0;
+      for (;;) {
+        const p = t.indexOf(V + op, cur);
+        if (p < 0) break;
+        cur = p + 1;
+        const q1 = t.indexOf(Q, p);
+        if (q1 < 0 || q1 - p > 24) continue;
+        const q2 = t.indexOf(Q, q1 + 1);
+        if (q2 < 0 || q2 - q1 > 90) continue;
+        const lit = t.slice(q1 + 1, q2);
+        if (lit.length < 8 || lit.indexOf(Q) >= 0) continue;
+        const c = t.split(lit).length - 1;
+        if (c >= 2) offenders.push(n + ' 用 ' + V + ' 扫自身，判据 ' + JSON.stringify(lit.slice(0, 30)) + ' 在本文件出现 ' + c + ' 次');
+      }
+    }
+  }
+  console.log('   自读型套件数=' + selfReaders);
+  check('扫自身源码的判据不自指（字面量必须字符码拼装）', offenders.length === 0, offenders.slice(0, 3).join(' | '));
+  // 证伪：本守卫自身也不得自指 —— 上面用于定位的字面量都是拼接出来的，
+  // 因此「扫描面」这条断言不会因自己而红。这里断言拼接确实生效（无完整字面量落盘）。
+  const me = fs9.readFileSync(path9.join(dir9, 'test-anchor-lib.mjs'), 'utf8');
+  check('守卫自身用拼接定位自读语句', me.indexOf('new URL(') >= 0 && me.split(Q + './' + 'test-anchor-lib.mjs' + Q).length - 1 === 0, '');
+}
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

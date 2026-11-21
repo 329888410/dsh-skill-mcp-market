@@ -28,6 +28,20 @@ try {
 let passed = 0, failed = 0;
 const check = (n, cond, d) => { if (cond) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + String(d).slice(0, 170) + ']' : '')); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Test 14/14b 用行为驱动 stub 跑 client.js 的真实函数体，必须注入它引用的全部自由
+// 变量。新符号一律从 client.js 取**真实实现**（绝不在测试里另写一份 —— 另写一份
+// 就变成测的是测试自己的假设，client.js 改了也不会红）。
+let shouldSkipInflight = null;
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'client.js'), 'utf8').replace(/\r\n/g, String.fromCharCode(10));
+  const srcLines = src.split(String.fromCharCode(10));
+  const st = srcLines.findIndex((l) => l.trimStart().startsWith('const shouldSkipInflight ='));
+  if (st < 0) throw new Error('client.js 未找到 shouldSkipInflight（Test 14/14b 无法注入）');
+  const en = blockEnd(src, st, 'shouldSkipInflight');
+  shouldSkipInflight = new Function(srcLines.slice(st, en + 1).join(String.fromCharCode(10)) + String.fromCharCode(10) + 'return shouldSkipInflight;')();
+}
 
 console.log('Test 1: fanOutSources 并发（fake handler，无网络）');
 if (typeof fanOutSources !== 'function') {
@@ -255,8 +269,10 @@ console.log('Test 8: 三个条件/边界缺陷（取证确认，非猜测）');
   check('分类切换回到第 1 页（旧分类的第 N 页在新分类下无意义）', Boolean(chipLine) && /page: 1/.test(chipLine));
 
   // D5 跳页边界：Enter 拒绝越界、失焦却放行 → 同一个数字两种提交方式两种结果。
+  const po = c.indexOf('const pageJumpOutcome = (raw, current, n, unknown) =>');
   const pj = c.indexOf('const pageJumpTarget = (raw, current, n, unknown) =>');
   check('pageJumpTarget 已抽为纯函数', pj > 0, pj);
+  check('pageJumpOutcome 是判定的唯一来源', po > 0, po);
   if (pj > 0) {
     let depth = 0, q = 0, end = -1;
     for (let i = pj; i < c.length; i++) {
@@ -266,7 +282,9 @@ console.log('Test 8: 三个条件/边界缺陷（取证确认，非猜测）');
       if (ch === 123) depth++;
       else if (ch === 125) { depth--; if (depth === 0) { end = i; break; } }
     }
-    const fn = new Function(c.slice(pj, end + 1) + String.fromCharCode(10) + ' return pageJumpTarget;')();
+    // target 现在从 outcome 派生，只 slice target 会 ReferenceError（套件自己的
+    // 假设要跟着重构走）：从两者中更靠前的定义处一起 slice 才能求值。
+    const fn = new Function(c.slice(Math.min(po, pj), end + 1) + String.fromCharCode(10) + ' return pageJumpTarget;')();
     check('范围内正常返回', fn('7', 1, 25, false) === 7, fn('7', 1, 25, false));
     check('越界返回 0（不跳转）', fn('99', 1, 25, false) === 0, fn('99', 1, 25, false));
     check('0/负数返回 0', fn('0', 1, 25, false) === 0 && fn('-3', 1, 25, false) === 0);
@@ -274,7 +292,12 @@ console.log('Test 8: 三个条件/边界缺陷（取证确认，非猜测）');
     check('未知总页数不做上界限制', fn('99', 1, 0, true) === 99, fn('99', 1, 0, true));
     check('小数向下取整', fn('4.9', 1, 25, false) === 4, fn('4.9', 1, 25, false));
     const pagerSeg = strip(sliceBetween(c, 'const pager = (page, totalPages', 'const loadInstalled = useCallback', 'pager 区'));
-    check('Enter 与失焦共用同一判定', (pagerSeg.match(/pageJumpTarget\(/g) || []).length >= 2, (pagerSeg.match(/pageJumpTarget\(/g) || []).length);
+    // 重构后两条路径共用一个入口（applyJump），比「各自调同一纯函数」更强：
+    // 判定与提示只有一份，不可能再各写各的 clamp。
+    const ap = (pagerSeg.match(/applyJump\(setJumpState\)/g) || []).length;
+    check('Enter 与失焦共用 applyJump 入口', ap === 2, ap);
+    const oc = (pagerSeg.match(/pageJumpOutcome\(/g) || []).length;
+    check('pager 区内判定只出现一次', oc === 1, oc);
     check('旧的裸 clamp 已消失', !/Math\.trunc\(Number\(jumpState\)/.test(pagerSeg), '');
   }
 }
@@ -509,7 +532,7 @@ console.log('Test 14: 请求序号守卫 —— 先发请求的结果不得覆�
     const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
       '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage,' +
       '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setNotice, setError, setBusy,' +
-      '    skillCacheKey, resolvePageSize } = deps;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
+      '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight } = deps;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
     const fired = [];
     const delays = {};
     const env = {
@@ -519,6 +542,8 @@ console.log('Test 14: 请求序号守卫 —— 先发请求的结果不得覆�
       size: 24,
       sort: '',
       skillCacheKey: () => '',
+      inflightRef: { current: new Set() },
+      shouldSkipInflight,
       resolvePageSize: (o, s) => (o && o.size) || s,
       setSkills: (rows) => fired.push(rows),
       setSkillsPage: () => {}, setSkillsTotalPages: () => {}, setSkillsTotal: () => {},
@@ -690,7 +715,7 @@ console.log('Test 14b: MCP 路径同样必须有乱序守卫（不能只锁技�
     const endLine = blockEnd(c, lineIdx, 'searchMcps');
     const body = lines.slice(lineIdx + 1, endLine).join(String.fromCharCode(10));
     const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
-      '  const { mcpSource, mcpCategory, mcpSort, size, mcpCacheKey, resolvePageSize, resultCacheRef, mcpSeqRef,' +
+      '  const { mcpSource, mcpCategory, mcpSort, size, mcpCacheKey, resolvePageSize, resultCacheRef, mcpSeqRef, mcpInflightRef, shouldSkipInflight,' +
       '    call, setMcps, setMcpPage, setMcpTotalPages, setMcpTotal, setMcpHasMore, setMcpCategories,' +
       '    setNotice, setError, setBusy } = deps;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
     const fired = [];
@@ -698,6 +723,8 @@ console.log('Test 14b: MCP 路径同样必须有乱序守卫（不能只锁技�
     const env = {
       mcpSource: 'registry', mcpCategory: 'all', mcpSort: 'default', size: 24,
       mcpCacheKey: () => '',
+      mcpInflightRef: { current: new Set() },
+      shouldSkipInflight,
       resolvePageSize: (o, s) => (o && o.size) || s,
       resultCacheRef: { current: {} },
       mcpSeqRef: { current: 0 },
@@ -872,7 +899,9 @@ console.log('Test 19: SkillHub evaluation 接入详情弹层（打开才请求�
   const callCount = cli.split("call('skillhub.evaluation'").length - 1;
   check('面板只在打开时请求一次', callCount === 1, callCount);
   check('列表渲染零额外请求（未被 map 里调用）', !cli.includes('.map(() => call('), '');
-  check('质量按钮仅对 skillhub 条目出现', cli.includes("item.source === 'skillhub'") && cli.includes('质量'), '');
+  // 该断言此前用子串 includes('item.source === 'skillhub'') 判质量按钮——升级门控后
+  // 那子串仍命中，等于锁不到门控。改为断言门控真形：只对 skillhub、且 opStatus===true。
+  check('质量入口仅对 skillhub 且 opStatus 确认存在时出现', cli.includes("item.source === 'skillhub' && opStatus && opStatus['skillhub.evaluation'] === true") && cli.includes('质量'), '');
   check('渲染分支存在 quality 形态', cli.includes("'quality'") || cli.includes('detailQuality'), '');
   check('不可达时显式降级告知', cli.includes('暂不可达'), '');
   check('降级文案不伪造分数', cli.includes('暂不可达'), '');

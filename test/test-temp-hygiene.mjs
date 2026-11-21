@@ -27,7 +27,18 @@ console.log('Test 1: 除 test-safe-temp.mjs 外，测试文件不得调用 tmpdi
   for (const f of files) {
     if (f === 'test-safe-temp.mjs') continue; // 它测的就是 tmpdir 本身
     const t = fs.readFileSync(path.join(testDir, f), 'utf8');
-    if (/\.tmpdir\s*\(/.test(t)) offenders.push(f);
+    // 漏检面（本轮实测，非推断）：旧守卫只有一个正则，只认 os.tmpdir() 写法；而
+    // test-paging / test-features / test-new-features 历史上用的是 import { tmpdir }
+    // 加裸 tmpdir()。三种注入形态实测有两种 MISS（这批套件虽已迁到 safeTempDir()，
+    // 但守卫抓不到回归 = 没有守卫）。判定改为两条子串规则，避免正则转义与注释误伤：
+    //   非注释行出现 tmpdir( → 覆盖 os.tmpdir() 与裸 tmpdir() 两种调用；
+    //   非注释行出现 tmpdir } → 覆盖 import { tmpdir }（哪怕本版还没调用它）。
+    const scanLines = t.split(/\r?\n/);
+    for (const line of scanLines) {
+      const s = line.trim();
+      if (s.indexOf('//') === 0 || s.indexOf('*') === 0 || s.indexOf('/*') === 0) continue;
+      if (s.indexOf('tmpdir(') >= 0 || s.indexOf('tmpdir }') >= 0) { offenders.push(f); break; }
+    }
   }
   check('无裸 tmpdir() 调用', offenders.length === 0, offenders.join(', '));
 }

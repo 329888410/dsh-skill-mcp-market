@@ -1,8 +1,9 @@
 // 逐个源验证「下一页」真的取到不同的条目（而不是重复第一页）。
-import { tmpdir } from "node:os";
+import { safeTempDir } from "../src/home.js";
 import { makeCache, searchSkills, ALL_SOURCES, skillsShCatalog } from "../src/sources.js";
+import { overlapVerdict, emptyPageAction } from "./paging-verdict.mjs";
 
-const cache = makeCache(tmpdir());
+const cache = makeCache(safeTempDir());
 const pageSize = 12;
 let failures = 0;
 let checks = 0;
@@ -20,21 +21,39 @@ for (const source of ALL_SOURCES) {
   const started = Date.now();
   try {
     const p1 = await searchSkills({ query: "", source, page: 1, pageSize, cache });
-    const p2 = await searchSkills({ query: "", source, page: 2, pageSize, cache });
+    let p2 = await searchSkills({ query: "", source, page: 2, pageSize, cache });
+    // 空第 2 页有两种可能：上游瞬时故障（实测 trusttools 一次 p1=12/p2=0，复测三次
+    // 都是 12/12）或 page/offset 真算错。判据交给 emptyPageAction：允许重试一次，
+    // 重试后仍空必须 FAIL —— 否则分页回归会被「上游偶尔坏」永久掩盖。
+    let epAttempt = 1;
+    if (emptyPageAction({ p1: p1.items.length, p2: p2.items.length, total: p1.total, hasMore: p1.hasMore, attempt: epAttempt }).verdict === 'retry') {
+      await new Promise((rr) => setTimeout(rr, 1500));
+      p2 = await searchSkills({ query: "", source, page: 2, pageSize, cache });
+      epAttempt = 2;
+    }
+    const ep = emptyPageAction({ p1: p1.items.length, p2: p2.items.length, total: p1.total, hasMore: p1.hasMore, attempt: epAttempt });
     const a = ids(p1.items);
     const b = ids(p2.items);
     const overlap = b.filter((id) => a.includes(id));
-    // 上游索引会在两次请求之间漂移：2026-11-20 实测 skillhub 的 p1 末条与 p2 首条是同一条
-    // （上游在该窗口新增/换位了 1 条，两次请求都被 5 分钟缓存锁住，因此可复现）。
-    // 边界单条重叠不违反「p2 从 p1 之后继续」的契约；把上游状态当回归判 FAIL 与 0.5.110
-    // 修的误红同类。只放过「恰好 1 条且落在边界」，窗口算错（整页重复）仍然 FAIL。
-    const boundaryDrift = overlap.length === 1 && (overlap[0] === a[a.length - 1] || overlap[0] === b[0]);
+    // 判据与 test-nocache 共用同一个 helper（overlapVerdict），不再写「恰好 1 条且
+    // 落在边界」这种魔法阈值：本轮实测 skillhub 默认榜重叠一次 2、一次 7，阈值 1
+    // 会把上游重排判成本仓库回归（gate14 里 test-paging 变红的正是这条）。
+    // 整页重复仍然 fail —— 那才是 page 参数被忽略，是我们的回归，绝不放宽。
+    let sortedOverlap;
+    if (source === 'skillhub' && overlap.length > 0) {
+      const s1 = await searchSkills({ query: '', source, page: 1, pageSize, cache, sort: 'installCount' });
+      const s2 = await searchSkills({ query: '', source, page: 2, pageSize, cache, sort: 'installCount' });
+      const idsS = new Set(ids(s1.items));
+      sortedOverlap = ids(s2.items).filter((id) => idsS.has(id)).length;
+    }
+    const vd = overlapVerdict({ source, overlap: overlap.length, pageCount: a.length, sortedOverlap });
+    const boundaryDrift = vd.verdict === 'skip';
     // 上游整体不可达（degraded 命中）与「分页窗口算错」是两件事：前者是外部状态，
     // 后者才是本仓库回归。2026-11-20 实测 ai.trusttools.cn 直接 fetch 失败（10.7s），
     // 记成 FAIL 会把上游宕机算到我们头上（同 0.5.110 修的误红）。
     const unreachable = Array.isArray(p1.degraded) && p1.degraded.some((d) => d.source === source);
     const empty = p1.items.length === 0 && b.length === 0 && unreachable;
-    const ok = empty || (p1.items.length > 0 && b.length > 0 && (overlap.length === 0 || boundaryDrift));
+    const ok = empty || (p1.items.length > 0 && ep.verdict === 'ok' && vd.verdict !== 'fail');
     checks += 1;
     if (!ok) failures += 1;
     console.log(

@@ -1,6 +1,6 @@
 // 功能面回归：MCP 两市场的搜索/翻页/定义解析 + MCP 配置映射 + 技能安装/卸载/编辑 + 安装前安全扫描。
 // 只跑真实上游，不做任何写操作到用户目录（安装走临时目录）。
-import { tmpdir } from "node:os";
+import { safeTempDir } from "../src/home.js";
 import { mkdtemp, rm, readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -11,7 +11,7 @@ import { normalizeServerName, resolvePlaceholders, missingEnv, toClientConfig } 
 import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "../src/skills.js";
 import { scanSkillBundle } from "../src/verify.js";
 
-const cache = makeCache(tmpdir());
+const cache = makeCache(safeTempDir());
 let pass = 0;
 const failures = [];
 let skipped = 0;   // 外部上游/CLI 不可达：记 SKIP，不是本仓库回归
@@ -117,7 +117,7 @@ function check(name, ok, detail = "") {
 
 // ---------------------------------------------------------------- 技能安装 / 已安装 / 编辑 / 卸载
 {
-  const root = await mkdtemp(join(tmpdir(), "dsh-feat-"));
+  const root = await mkdtemp(join(safeTempDir(), "dsh-feat-"));
   const skillDirs = [join(root, "skills")];
   await mkdir(skillDirs[0], { recursive: true });
   try {
@@ -148,7 +148,7 @@ function check(name, ok, detail = "") {
 
 // ---------------------------------------------------------------- 技能安装：拒绝危险输入
 {
-  const root = await mkdtemp(join(tmpdir(), "dsh-feat2-"));
+  const root = await mkdtemp(join(safeTempDir(), "dsh-feat2-"));
   const skillDirs = [join(root, "skills")];
   await mkdir(skillDirs[0], { recursive: true });
   try {
