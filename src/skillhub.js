@@ -19,10 +19,13 @@ async function getJson(url, timeoutMs = 20000) {
 function toItem(raw) {
   const namespace = raw.namespace || {};
   const canonical = namespace.canonicalName || raw.slug || "";
-  const downloads = Number(raw.downloads ?? raw.installs ?? 0) || 0;
-  // 面板排序与卡片「· N 次安装」统一读 item.installs；skillhub 上游字段叫 downloads，
-  // 不映射则「按安装数」排序对它恒为 0、卡片也不显示安装量。
-  const installs = downloads;
+  const downloads = Number(raw.downloads ?? 0) || 0;
+  // installs 与 downloads 是两个不同的上游字段，各取各的。实测 self-improving-agent
+  // installs=86140 / downloads=1736606 —— 旧代码写 installs = downloads，于是卡片上的
+  // 「· N 次安装」显示的是下载数（差 20 倍），「按安装数」也在按下载数排。
+  // 上游 installs 缺失或为 0 时保持 0：面板 item.installs ? … : null 会不显示这一项，
+  // 宁可不显示也不显示错数（60 条样本里仅 18 条有真实 installs，回落会造成大面积错值）。
+  const installs = Number(raw.installs ?? 0) || 0;
   const stars = Number(raw.stars ?? 0) || 0;
   return {
     id: `skillhub:${canonical || raw.slug}`,
@@ -50,16 +53,24 @@ function toItem(raw) {
 export async function searchSkills({ query = "", page = 1, pageSize = 20, category = "", cache, sort = "" } = {}) {
   const p = Math.max(1, page);
   const size = Math.min(50, Math.max(1, pageSize));
-  // 上游支持服务端全盘排序：sortBy=downloads（实测首条 dev-god≈12.1M，跨页全局单调）、stars、updated。
-  // sortBy=name 上游返回空数组（bug），故 name 只能本地排。旧实现取 50 条窗口本地排 installCount，
-  // 那是对 231,131 条全量的近似——禁止。
-  const serverSort = sort === "installCount" ? "downloads" : sort === "stars" ? "stars" : sort === "updated" ? "updated" : "";
+  // 排序一律交给服务端全盘排（实测 sortBy=installs 跨页单调：30 条 86140…8444）。
+  // 三个曾经写错的键：
+  //   installCount → installs（旧代码映射到 downloads，于是「按安装数」拿到的是下载榜：
+  //     实测两榜首条不同，installs→self-improving-agent、downloads→dev-god）；
+  //   updated → updated_at（文档字段名带 _at；sortBy=updated 会被上游当成未知名）；
+  //   name → 上游实测返回 code:400 空列表，只能本地排（不发 sortBy=name）。
+  const serverSort = sort === "installCount" ? "installs" : sort === "stars" ? "stars" : sort === "updated" ? "updated_at" : "";
   const params = new URLSearchParams();
-  if (query) params.set("q", query);
+  // 关键词参数名必须是 keyword：实测 q=pdf 返回 total=233498（≈全量 233,498，等于没搜），
+  // keyword=pdf 返回 5614。旧代码传 q，所以 SkillHub 的搜索一直无效，只因仍返回条目而看着像成功。
+  if (query) params.set("keyword", query);
   if (category) params.set("category", category);
   params.set("page", String(p));
   params.set("pageSize", String(size));
-  if (serverSort) params.set("sortBy", serverSort);
+  if (serverSort) {
+    params.set("sortBy", serverSort);
+    params.set("order", "desc"); // 上游默认虽为 desc，显式写出以免依赖默认值
+  }
   // 同一查询 5 分钟内复用，避免重复打上游。
   const searchKey = `skillhub:search:${query.toLowerCase()}:${category}:${p}:${size}:${sort || ""}`;
   let data = cache ? await cache.get(searchKey, 5 * 60 * 1000) : undefined;
@@ -83,11 +94,8 @@ export async function searchSkills({ query = "", page = 1, pageSize = 20, catego
     hasMore: items.length >= pageSize,
   };
 }
-
-export async function categories() {
-  const data = await getJson(`${BASE}/categories`);
-  const rows = Array.isArray(data) ? data : Array.isArray(data.categories) ? data.categories : [];
-  return rows
-    .map((row) => (typeof row === "string" ? { key: row, name: row } : { key: row.key || row.name, name: row.name || row.key }))
-    .filter((row) => row.key);
-}
+// 曾有的 categories() 已删除：它请求 /api/skills/categories（实测 405 Method Not Allowed），
+// 且全仓无任何调用方 —— 面板的分类 chip 来自当前页条目的 category 字段（client.js:1563）。
+// 真正的端点是 /api/v1/categories（13 个一级分类），但它的响应是 {count,items}、**没有 code 字段**，
+// 不能走上面的 getJson（它要求 code===0）。将来若要把上游分类接进面板，必须另开一条不校验
+// code 的取数路径；在那之前不做半吊子接入，也不用别的字段凑分类。

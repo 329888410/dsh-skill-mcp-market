@@ -13,8 +13,10 @@
 //   browse.sh    一次返回全量 479 条，installCount/updated/name 本地全量排 = 真实全盘
 //   lobehub      CLI --sort 原生 createdAt|stars|installCount|name|relevance|ratingAverage|
 //                commentCount|updatedAt（实测 installCount 跨页全局单调）
-//   skillhub     sortBy=downloads|stars|updated 服务端全盘（实测单调）；sortBy=name 返回空（上游bug）
-//                → name 本地排
+//   skillhub     sortBy=installs|stars|updated_at 服务端全盘（实测 installs 跨页单调：
+//                30 条 86140…8444）；installCount 必须映射到 installs 而非 downloads
+//                （两榜首条不同：installs→self-improving-agent、downloads→dev-god）。
+//                sortBy=name 上游直接 code:400 → name 本地排。
 //   modelscope   无任何服务端 sort（实测 9 种参数名全部被忽略）；全量拉取（上游深度上限≈45k）
 //                后本地排 DownloadCount/SourceStar/GmtCreate/GmtModify/Name
 

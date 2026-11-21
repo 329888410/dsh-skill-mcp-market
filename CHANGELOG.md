@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.133
+
+- **SKILLHub 来源的四项口径修正（全部由真实上游取证确证，行为测试锁进 CI）**
+  - **安装数不再被下载数覆盖**：`toItem` 旧写法 `installs = downloads`，而上游 installs 与 downloads 是两个字段（实测 self-improving-agent installs=86,140 / downloads=1,736,606）。于是卡片「· N 次安装」显示的是下载数（差 20 倍）。现各取各的；上游 installs 缺失或为 0 时**保持 0 不回落到 downloads**（60 条样本里 50 条 installs 为 0，面板对 0 不显示该段 —— 宁可不显示也不显示错数）。
+  - **「按安装数」真的按安装数排**：旧映射 `installCount → sortBy=downloads`，用户点安装数拿到的是下载榜（实测两榜首条不同：installs→self-improving-agent，downloads→dev-god）。现映射到 `sortBy=installs` 并显式带 `order=desc`。`updated` 同步改为上游文档字段名 `updated_at`。`name` 保持本地排（实测 `sortBy=name` 上游返回 code:400）。
+  - **关键词搜索此前一直无效**：传的是 `q`，上游只认 `keyword`。实测 `q=pdf` 返回 total=233,498（≈全量 233,498，等于没搜），`keyword=pdf` 返回 5,614，且返回条目里 10 条有 8 条名称/描述真含 pdf。因为它仍返回「一堆条目」，界面上看着像搜索成功 —— 这类静默失效比报错更难发现。
+  - **删除 `categories()` 死导出**：它请求 `/api/skills/categories`（实测 405 Method Not Allowed），且全仓无任何调用方（面板分类 chip 来自当前页条目的 `category`，client.js:1563；`test-dead-exports` 47/47 通过亦证无引用方）。真实端点是 `/api/v1/categories`（13 个一级分类），但其响应是 `{count,items}`、**没有 `code` 字段**，不能走现有 `getJson`（要求 `code===0`）。因此不做半吊子接入、也不用别的字段凑分类 —— 代码里留注释说明将来接入需要另开不校验 code 的取数路径。
+  - `test-full-sort` 里一条把 bug 症状当期望的旧断言已纠正：它要求「skillhub 按安装数首条 > 1,000,000」，那个 12,105,711 是 dev-god 的**下载数**（即旧映射错误的产物）。我先换成「全盘首条 ≫ 未排序窗口 max」的相对判据，实测它自己也会漂（未排序按 updated_at 排，高安装数条目刚被更新就进窗口：top=86,140 对 窗口max=57,561），已撤掉 —— 「排的是全量而非窗口」由 globalSortCheck 的结构性质证明（组内单调 + 跨页 p1min≥p2max），只保留一条 installs 字段非空的确定性 sanity。连续两次运行 exit 0。
+- **新增 `test-skillhub-source.mjs`（20 项）**：用 fetch 桩断言 URL 参数与字段取值，零真实网络，锁住上面四条（含「installs=0 不得回落 downloads」「q 不再出现」「sortBy=downloads 不再出现」这类反向锁）。
+- **测试基建（`d390b05`）**：否定断言的子串冒充面系统性收口 —— anchor-lib 新增 `absent()`（只认非标识符字符包围的独立出现），六个套件的纯标识符否定断言全部改用；`test-anchor-lib` Test 7 是常驻守卫（扫描所有套件的裸 `!x.includes('plainId')`），其排除规则（数组成员判定、`!` 挂在别的子表达式上）各配一条自证样例，防止守卫空转；证伪双向通过（注入 `windowedIn` 不误红、重新引入裸 includes 立刻变红）。`test-suite-inventory` Test 4 检查工作树无未跟踪点文件 + `.gitignore` 加宽兜底（这条守卫上线当场就抓到了我自己留下的两个探针文件）。
+- **基线**：套件数 51 → **52**（新增 skillhub 来源套件）；`[GATE] 52 suites`，CI 为权威。
+
 ## 0.5.132
 
 - **搜索/排序/分类等待时间收敛（本轮主项；全部行为锁进 CI）**

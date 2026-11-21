@@ -4,7 +4,10 @@
 // 实测事实（侦察结论，勿凭记忆改动）：
 //   trusttools GET /api/skills?sort_by=install_count&direction=desc → 服务端对 579,074 条全盘排序，
 //     首条 ui-ux-pro-max≈446,924，跨页全局单调。POST /search 的 sort 参数全部被忽略。
-//   skillhub   GET ?sortBy=downloads → 服务端全盘排序，首条 dev-god≈12,105,711，跨页全局单调。
+//   skillhub   GET ?sortBy=installs&order=desc → 服务端全盘排序，首条 self-improving-agent
+//     installs=86,140（实测两次请求一致），跨页全局单调。注意上游 installs 与 downloads 是
+//     两个不同字段：早期侦察误把 installCount 接到 downloads（首条 dev-god≈12.1M 就是下载榜），
+//     0.5.133 修正为 installs；因此本套件的绝对下限也改成自校准判据，不再硬编码那个下载数。
 //   lobehub    CLI --sort installCount --order desc → 服务端全盘排序，p1 min ≥ p2 max。
 //   clawhub    browse GET ?sort=downloads（不是 search！）→ 服务端全盘排序，首条 ≈493,957，
 //     跨 cursor 全局单调；sort=installs 不单调（stats.installs 数据质量差），必须用 downloads。
@@ -93,8 +96,15 @@ console.log('Test 3: 绝对值下限——证明排的是全量而不是窗口')
     if (!r.items.length && r.degraded && r.degraded.length) { skip('skillhub absolute（上游不可达，见 degraded）'); }
     else {
       const top = Math.max(...vals(r.items));
-      check('skillhub 首条 > 1,000,000（全盘 dev-god≈12M）', top > 1000000, 'got ' + top);
-    }
+      // 只断言「installs 字段确实有全盘量级的数据」。曾经这里还想跟「未排序窗口的
+      // max」比大小，实测那次判据自己会漂：未排序是按 updated_at 排的，一个高安装数
+      // 条目刚被更新就会进到窗口里（top=86,140 对 窗口max=57,561，3 倍余量不成立）。
+      // 「排的是全量而非窗口」这件事由上面的 globalSortCheck 用结构性质证明
+      // （p1 组内单调 + 跨页 p1min ≥ p2max），那才是与上游数值漂移无关的确定性判据。
+
+      // 上限级 sanity：installs 全局首条应在数万量级；若上游把该字段清空，这里会变红
+      // （实测 60 条样本里 50 条 installs 为 0，但全盘排序的榜首仍是 86,140）。
+      check('skillhub installs 字段仍有数据', top > 20000, 'top=' + top);    }
   } catch (e) { skip('skillhub absolute'); }
   try {
     const r = await searchSkills({ query: '', source: 'clawhub', page: 1, pageSize: sz, cache, sort: 'installCount' });
