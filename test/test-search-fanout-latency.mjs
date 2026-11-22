@@ -885,8 +885,8 @@ console.log('Test 19: SkillHub evaluation 接入详情弹层（打开才请求�
   const orig = globalThis.fetch;
   const urls = [];
   try {
-    globalThis.fetch = async (u) => { urls.push(String(u)); return { ok: true, status: 200, json: async () => EV }; };
-    const r = await mod.evaluation('self-improving-agent');
+    globalThis.fetch = async (u) => { urls.push(String(u)); return { ok: true, status: 200, text: async () => JSON.stringify(EV), json: async () => EV }; };
+    const r = await mod.evaluation('@user_a/self-improving-agent');
     check('URL 指向该 slug 的 evaluation', urls[0].includes('/api/v1/skills/self-improving-agent/evaluation'), urls[0]);
     check('无 code 字段也能解析出小结', r && r.summary === '整体质量良好', JSON.stringify(r && r.summary));
     check('维度如实带出且有分数', Array.isArray(r.dimensions) && r.dimensions.length === 2 && r.dimensions.some((d) => typeof d.score === 'number'), JSON.stringify(r.dimensions));
@@ -901,13 +901,52 @@ console.log('Test 19: SkillHub evaluation 接入详情弹层（打开才请求�
   try {
     globalThis.fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
     let threw = '';
-    try { await mod.evaluation('x'); } catch (e) { threw = String(e && e.message || e); }
+    try { await mod.evaluation('@user_a/x'); } catch (e) { threw = String(e && e.message || e); }
     check('上游不可达时抛错而非静默返回空', /503|不可达|失败/.test(threw), threw.slice(0, 70));
   } finally {
     globalThis.fetch = orig2;
   }
 
-  console.log('  19c 面板：入口只在 skillhub，且打开详情前零额外请求');
+  console.log('  19d 评测归属：同一 slug 不同作者必须各自解析，缺作者信息必须显式降级');
+  {
+    // 实测（live 面板 + 直连上游）：上游 evaluation 只认「路径=纯 slug」，作者靠
+    // ?namespace=@owner 区分。global-biblio-base 这一个 slug 在 250 条样本里属于两个
+    // 作者：@user_814dbe54 → skillId=180618，@user_164f4c1f → skillId=70996；而不带
+    // namespace 的纯 slug 请求上游返回 70996 —— 等于把 B 的评测挂到 A 的卡片上。
+    // 这不是取数失败，是张冠李戴：用户看到的是别人的质量分数，比报错更糟。
+    const orig3 = globalThis.fetch;
+    const seen = [];
+    try {
+      globalThis.fetch = async (u) => { seen.push(String(u)); return { ok: true, status: 200, text: async () => JSON.stringify(EV), json: async () => EV }; };
+      await mod.evaluation('@user_814dbe54/global-biblio-base');
+      await mod.evaluation('@user_164f4c1f/global-biblio-base');
+      check('路径用纯 slug（上游只认这个形态）', seen.every((u) => u.includes('/api/v1/skills/global-biblio-base/evaluation')), seen[0]);
+      check('作者用 namespace 参数带上', seen.every((u) => /namespace=/.test(u)), seen[0]);
+      check('同 slug 两作者各自解析（URL 互不相同）', seen.length === 2 && seen[0] !== seen[1], seen.join(' | '));
+      check('namespace 值就是该条目的作者', /namespace=(%40|@)user_814dbe54/.test(seen[0]) && /namespace=(%40|@)user_164f4c1f/.test(seen[1]), seen[0] + ' | ' + seen[1]);
+      seen.length = 0;
+      let refused = '';
+      try { await mod.evaluation('global-biblio-base'); } catch (e) { refused = String(e && e.message || e); }
+      check('缺作者信息显式拒绝（不拿纯 slug 赌归属）', /作者|归属/.test(refused), refused.slice(0, 80));
+      check('拒绝时一个请求都不发', seen.length === 0, JSON.stringify(seen));
+    } catch (e) {
+      check('19d 桩不抛意外', false, String(e && e.message || e).slice(0, 90));
+    } finally {
+      globalThis.fetch = orig3;
+    }
+    // 响应形态：上游 www 域与缺 /api 前缀的路径都回 200 + SPA 的 HTML（实测 body 以
+    // <!DOCTYPE html> 开头）。旧写法在 response.json() 里炸成 Unexpected token <，面板
+    // 只能显示一句笼统的失败，用户分不清「端点错了」还是「上游挂了」。
+    const orig4 = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => '<!DOCTYPE html><html><head></head><body>SkillHub</body></html>', json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); } });
+      let shape = '';
+      try { await mod.evaluation('@user_814dbe54/global-biblio-base'); } catch (e) { shape = String(e && e.message || e); }
+      check('HTML 响应报「响应形态不符」而非笼统失败', /形态|非 JSON/.test(shape), shape.slice(0, 80));
+    } finally {
+      globalThis.fetch = orig4;
+    }
+  }
   check('RPC case 已注册', ix.includes('case "skillhub.evaluation"'), '');
   // 「打开时请求一次」用 split 计数，不用正则（避免字符类里的引号）
   const callCount = cli.split("call('skillhub.evaluation'").length - 1;

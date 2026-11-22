@@ -3,6 +3,13 @@
 - **空页不再被说成「目录已到底」**（同一轮门内实测的第二处不诚实）：trusttools 在门里出现过一次首页静默空响应（items=0、degraded=0、total=0），handler 的 `hasMore` 当时退化成 `items.length >= size` = false，聚合层于是对外宣称「已是最后一页」—— 一次抓取失败被说成整个目录只有这一屏，比谎报总数更误导（用户会以为源已穷尽、不再翻页）。现在 `false` 只有在响应带真实总数证据时才是结论，否则保持 `undefined`（未知），分页器继续显示「可继续加载」。
 - **上游状态 vs 本侧回归的判定收敛成一个 helper**：新增 `emptyWithoutEvidence`（degraded>0 / total>0 / hasMore===true 都算有证据，三者皆无才算上游静默空响应）。test-nocache 与 test-paging 之前各写一套相近判据 —— 两套判据互相打架正是假绿来源，现在两处调用同一函数；真值表 6 例进 test-paging-verdict（含反向破坏：写成恒 true 一律当上游问题，就会被 total>0 却空页那例抓到）。修复后 test-paging 13 passed（旧行为下同一场景判 FAIL —— 门里红、单跑三次绿的那种 flake 消失），test-nocache 13 passed / 1 skipped。
 
+## 0.5.142
+
+- **修掉张冠李戴的数据正确性缺陷**（比取数失败更严重）：`skillhub.evaluation` 旧实现把面板传来的整段标识 `@user_xxx/slug` 一起 `encodeURIComponent` 塞进路径，上游只认「路径=纯 slug」，于是稳定 405，面板显示成一句笼统的降级文案。改成纯 slug 也不行 —— 实测 250 条样本里 6 个 slug 被多作者共用：`global-biblio-base` 不带作者时上游解析到 `skillId=70996`（属 `@user_164f4c1f`），而 `@user_814dbe54` 的同名条目是 `skillId=180618`，**用纯 slug 就是把别人的质量评分显示在这张卡上**。正解是路径放纯 slug、作者放 `?namespace=@owner`（实测两种编码形态等价、两作者各自解析），拆不出作者时显式拒绝而不是退回纯 slug 赌归属。上游对不存在的作者组合回 404 `skill not found`，说明它自己按归属校验，不会静默给错数据。证伪两向：去掉 namespace 参数 → 三条归属断言全红（首版注入因多写一个右括号红在 SyntaxError，那是假证据，已用语法平衡的变异重做并显式检查语法有效）；缺作者也照发 → 红。
+- **HTML 响应不再冒充上游故障**：v1 端点族里 `www` 域与缺 `/api` 前缀的路径实测回 200 + SPA 的 HTML，旧写法在 `response.json()` 里炸成 `Unexpected token <`，面板只能说「暂不可达」，用户分不清端点错了还是上游挂了。`getJsonV1` 改为先取文本再解析，失败报「SkillHub v1 响应形态不符（非 JSON，疑似落在 SPA 页面上）」并带上响应开头。
+- **live 判别点加硬前置**（用户点名要求做成机制而非说明）：第一次跑「SkillHub 搜 pdf 的 total」时探针其实打在主页面搜索框（面板没打开），摘要当然没变 —— 差点把已生效的 keyword 修复判成未生效。`test/live-audit.mjs` 新增 `assertProbeLanded`（面板已开、控件归属为 `owner==='panel'`、目标按钮数与预期一致，任一不满足返回 `landed:false` + 原因）与 `verdictOf`（未测成只能写 `NOT-TESTED`，禁止写成 PASS/FAIL）。三向证伪：取消面板前置红、取消控件归属红（正是本轮失误形态）、按钮数为 0 的专门分支**注入后仍全绿** —— 不等式已覆盖 0，那条是装饰，已合并进唯一判据并对合并后的判据重新证伪（删掉它两条断言都红）。真值表进 test-ux-honesty（62 项）。
+- 顺带清掉 `test-ux-honesty.mjs` 里我前几轮插块留下的重复总结行（输出打了两遍 `54 passed`，正是「计数与真实集合不符」那类缺陷的同类，只是发生在测试自己的输出上）。
+
 ## 0.5.141
 
 - **详情入口从「有 URL」升级为「打得开」**（用户指出：不是我们的代码 ≠ 不用我们负责）：live 实测点 clawhub 卡片的「详情」，停靠 tab 打开 `https://clawhub.ai/<owner>/<slug>`，页面主体只有 Chromium 的灰色禁止图标，console 稳定报 `Framing 'https://clawhub.ai/' violates ... frame-ancestors 'none'`；宿主工具条上的「关闭沙箱限制」实测无效（拦截来自页面级 CSP，不是宿主沙箱）——所以这不是能绕的开。逐源直打真实页面读响应头：clawhub / skills.sh / github(skillsmp) 回 `X-Frame-Options: DENY` 且 CSP `frame-ancestors 'none'`，skillhub 回 `SAMEORIGIN`、modelscope 回 `'self'`，这五个源都拒绝被非同源的宿主框架承载；lobehub、browse.sh 实测未设限，trusttools 未测（因此不进名单）。新增 `embedBlockedFor`（名单只收实测拒绝的源，没实测过的源不置灰——凭猜测限制用户与谎报内容同罪），技能卡与 MCP 卡两处入口同口径：被拦时按钮置灰、title 改为「该站点拒绝被内嵌，内置浏览器里只会是空白拦截页」，不再承诺一个拿不到的结果。四向证伪（取消名单 / 名单漏 skillhub / MCP 卡不接判定 / title 退回旧承诺）全部变红。

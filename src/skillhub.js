@@ -27,7 +27,16 @@ async function getJsonV1(url, timeoutMs = 20000) {
   try {
     const response = await fetch(url, { headers: UA, signal: controller.signal });
     if (!response.ok) throw new Error('SkillHub v1 HTTP ' + response.status);
-    return await response.json();
+    // v1 端点族里混着会回 200 + SPA HTML 的形态（实测 www 域与缺 /api 前缀的路径都
+    // 这样）。旧写法在 response.json() 里炸成 Unexpected token <，面板只能显示一句
+    // 笼统的失败，用户分不清「端点错了」还是「上游挂了」。这里先验形态：
+    // 200 + 非 JSON 必须显式报「响应形态不符」。
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error('SkillHub v1 响应形态不符（非 JSON，疑似落在 SPA 页面上）: ' + text.slice(0, 60));
+    }
   } finally {
     clearTimeout(timer);
   }
@@ -48,9 +57,18 @@ const DIMENSION_LABELS = {
  * 上游不可达时直接抛错，由面板显式降级告知（返回空对象会被当成「有数据」）。
  */
 export async function evaluation(slug) {
-  const id = String(slug || '').trim();
-  if (!id) throw new Error('缺少 skill 标识');
-  const data = await getJsonV1('https://api.skillhub.cn/api/v1/skills/' + encodeURIComponent(id) + '/evaluation');
+  const raw = String(slug || '').trim();
+  if (!raw) throw new Error('缺少 skill 标识');
+  // 评测归属（本轮实测钉死）：上游只认「路径=纯 slug」，作者必须靠 ?namespace= 区分。
+  // 250 条样本里 6 个 slug 被多作者共用（global-biblio-base 同属 @user_814dbe54 与
+  // @user_164f4c1f）：不带作者的纯 slug 请求上游解析到的是其中一位（实测 skillId=70996
+  // 属 @user_164f4c1f），于是把别人的评测挂在这张卡上 —— 比取数失败更糟。拆不出作者
+  // 就显式拒绝，绝不退化成用纯 slug 赌归属。
+  const slash = raw.lastIndexOf('/');
+  if (slash <= 0) throw new Error('评测需要作者归属（namespace 形态 author/slug），否则同一 slug 的多作者评测无法区分');
+  const owner = raw.slice(0, slash);
+  const id = raw.slice(slash + 1);
+  const data = await getJsonV1('https://api.skillhub.cn/api/v1/skills/' + encodeURIComponent(id) + '/evaluation?namespace=' + encodeURIComponent(owner));
   const dims = data && data.dimensions && typeof data.dimensions === 'object' ? data.dimensions : {};
   const rows = [];
   for (const key of Object.keys(dims)) {

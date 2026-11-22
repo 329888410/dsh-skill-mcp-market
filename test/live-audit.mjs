@@ -1,15 +1,11 @@
-// live-audit.mjs — 「无本插件 console 报错」的判定口径。
+// live-audit.mjs — 「无本插件 console 报错」的判定口径 + 判别点的落点硬前置。
 //
 // 口径按【触发方】判定，不按报错文本里有没有我们的文件名。原因（2026-11-22 live 实测）：
 // 点 clawhub 卡片的「详情」会稳定产生
 //   Framing 'https://clawhub.ai/' violates the following Content Security Policy
 //   directive: "frame-ancestors 'none'". The request has been blocked.
-// 这条文本里没有 client.js、也没有 op 名，按「文本里有没有插件文件名」判定会永远漏掉它，
+// 这条文本里没有 client.js、没有 op 名，按「文本里有没有插件文件名」判定会永远漏掉它，
 // 于是「点了拿不到内容」这类缺陷会长期落在判据缝隙里。
-//
-// 但只看「点击之后出现过」会过度归因：实测同一相位窗口里还混着宿主 GUI 自己轮询的
-// GET /api/changes.summary → 404（点击前的窗口里也在刷）。所以定性看**签名的首次出现**：
-// 首次就落在点击之后的才算本插件触发；点击前就在刷的属宿主周期噪声，豁免并计数。
 //
 // 分类：
 //   PLUGIN           报错文本命中插件面（client.js 路径、RPC op 名、面板文案）；
@@ -64,4 +60,36 @@ export function audit(entries) {
     distinct: rows.length,
     repeats: classified - rows.length,
   };
+}
+
+// assertProbeLanded —— 判别点的硬前置：探针必须真的落在目标面板的控件上。
+//
+// 为什么需要它（本轮真实失误）：第一次跑「SkillHub 搜 pdf 的 total」时，面板根本没
+// 打开，文本被打进了主页面的会话搜索框（ref=106，宽 200），摘要当然没变 —— 如果照
+// 「行为未变」下结论，就会把已经生效的 keyword 修复判成未生效。反过来，一个未落地的
+// 探针也会把已经坏掉的东西看成没坏。两种误判都会污染 live 结论，所以落点断言必须是
+// 前置条件而不是事后说明：不满足就返回 landed:false + 原因，调用方只能记 NOT-TESTED。
+export function assertProbeLanded(probe) {
+  const p = probe || {};
+  if (p.panelOpen !== true) return { landed: false, reason: "面板未打开：探针打在宿主主页面上，不构成任何结论" };
+  const c = p.control;
+  if (!c || typeof c !== "object") return { landed: false, reason: "探针控件缺失：无法确认输入框归属" };
+  if (c.owner !== "panel") return { landed: false, reason: "控件归属不符（owner=" + String(c.owner) + "）：不是该面板的输入框" };
+  const want = p.expectedButtons || {};
+  const got = p.buttons || {};
+  for (const name of Object.keys(want)) {
+    const n = Number(got[name]);
+    if (!Number.isFinite(n)) return { landed: false, reason: "按钮「" + name + "」未被采集到：无法确认面板状态" };
+    // 数为 0 与数不符走同一条判据（曾有一条专门的 0 分支，注入证伪显示删掉它仍
+    // 全绿 —— 不等式已经覆盖 0，那条是装饰，已合并进下面这一条）。
+    if (n !== Number(want[name])) return { landed: false, reason: "按钮「" + name + "」数=" + n + " 与预期 " + want[name] + " 不符（含 0=目标列表未渲染）：不构成「行为未变」的证据" };
+  }
+  return { landed: true, reason: "" };
+}
+
+// verdictOf —— 把落点结论与观测结论合成一个词，且未测成绝不写成 PASS/FAIL。
+export function verdictOf(landed, observed) {
+  if (!landed || landed.landed !== true) return "NOT-TESTED";
+  if (observed === undefined || observed === null) return "OK";
+  return observed ? "PASS" : "FAIL";
 }

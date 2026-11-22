@@ -178,6 +178,39 @@ console.log('Test 7: 「无本插件报错」按【触发方】判定（口径�
 }
 
 console.log('');
-console.log(passed + ' passed, ' + failed + ' failed');
+
+console.log('');
+console.log('Test 8: 判别点执行前必须确认探针落在目标面板控件上（未测成不等于行为未变）');
+{
+  // 本轮真实教训：第一次跑「SkillHub 搜 pdf 的 total」时，我把文本打进主页面搜索框
+  // （面板根本没打开），摘要自然没变 —— 差点写成「keyword 未进 live」。识别为「未测成」
+  // 才对。这类误判会把正向结论（pdf total 5,623、installs 86,140 与 downloads 1,741,337
+  // 分离、翻页总数不随页码变化）反过来污染掉，所以做成硬前置。
+  let mod = null, err = '';
+  try { mod = await import('./live-audit.mjs'); } catch (e) { err = String(e && e.message || e); }
+  const land = mod && mod.assertProbeLanded;
+  check('live-audit 导出 assertProbeLanded', typeof land === 'function', err.slice(0, 80));
+  if (typeof land === 'function') {
+    const GOOD = {
+      panelOpen: true,
+      control: { ref: 142, owner: 'panel', width: 916 },
+      expectedButtons: { '详情': 24 },
+      buttons: { '详情': 24 },
+    };
+    check('落点正确 → landed', land(GOOD).landed === true, JSON.stringify(land(GOOD)));
+    const noPanel = land({ ...GOOD, panelOpen: false });
+    check('面板没打开 → 未测成（禁止下结论）', noPanel.landed === false && /面板/.test(noPanel.reason), JSON.stringify(noPanel));
+    const wrongBox = land({ ...GOOD, control: { ref: 106, owner: 'session-search', width: 200 } });
+    check('输入框不属该面板 → 未测成（本轮真实失误形态）', wrongBox.landed === false && /归属/.test(wrongBox.reason), JSON.stringify(wrongBox));
+    const missing = land({ ...GOOD, buttons: { '详情': 0 } });
+    check('目标按钮数为 0 → 未测成（不是「行为未变」）', missing.landed === false && /按钮/.test(missing.reason), JSON.stringify(missing));
+    const mismatch = land({ ...GOOD, buttons: { '详情': 12 } });
+    check('按钮数与预期不符 → 未测成', mismatch.landed === false && /按钮/.test(mismatch.reason), JSON.stringify(mismatch));
+    check('缺 control 字段 → 未测成而不是抛错', land({ panelOpen: true, expectedButtons: {}, buttons: {} }).landed === false);
+    check('verdictOf：未测成不得写成 PASS/FAIL', mod.verdictOf({ landed: false, reason: '面板未打开' }) === 'NOT-TESTED' && mod.verdictOf({ landed: true }) === 'OK');
+  }
+}
+
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
