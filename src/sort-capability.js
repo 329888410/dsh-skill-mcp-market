@@ -75,6 +75,16 @@ export function sortKeysFor(source, options = {}) {
 }
 
 /**
+ * 词表通道对某源给出的排序键：与 sortKeysFor 读同一份 CAPABILITIES，但返回**同一个数组引用**
+ * （不是 slice 副本）——词表接线要拿它做同源比对，副本会让「两次调用同一引用」判据失去意义。
+ * 未知源返回 null：空数组的语义是「有该源但任何排序都不支持」（registry），不能混用。
+ */
+export function vocabularySortKeys(source) {
+  const list = CAPABILITIES[String(source || "")];
+  return Array.isArray(list) ? list : null;
+}
+
+/**
  * MCP 两个市场的排序能力，与技能源分开建模（线路事实不同）：
  *   registry  — index.js 的 registry 分支根本不读 options.sort（searchMcpRegistryPage 无 sort 参数），
  *               卡片也没有 installs/rating 字段 → 服务端不排、本地也无字段可排 → 诚实为空。

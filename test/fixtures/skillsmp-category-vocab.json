@@ -1,0 +1,337 @@
+{
+  "capturedAt": "2026-11-22 23:01:10",
+  "source": "https://skillsmp.com/zh/categories",
+  "note": "slug/name/totalAll 由页面抓取与解析独立产出（smp-py/probe_cat_vocab.py，2026-11-22 23:01:10）。可浏览性逐个 GET /api/skills?page=1&limit=1&category=<slug> 实测：62 个 200；documents 探针超时(-1) 故标 browsableUnknown。页面另有 12 个板块标题锚（浏览工具 等，无条数），legacy 对它们全部回 HTTP 400，必须不进词表。",
+  "sectionHeadersRejected400": [
+    "tools",
+    "business",
+    "development",
+    "testing-security",
+    "devops",
+    "data-ai",
+    "documentation",
+    "content-media",
+    "research",
+    "lifestyle",
+    "databases",
+    "blockchain"
+  ],
+  "categories": [
+    {
+      "slug": "debugging",
+      "name": "调试工具",
+      "totalAll": 532411
+    },
+    {
+      "slug": "system-admin",
+      "name": "系统管理",
+      "totalAll": 210265
+    },
+    {
+      "slug": "productivity-tools",
+      "name": "生产力工具",
+      "totalAll": 118759
+    },
+    {
+      "slug": "automation-tools",
+      "name": "自动化工具",
+      "totalAll": 40425
+    },
+    {
+      "slug": "ide-plugins",
+      "name": "IDE 插件",
+      "totalAll": 38829
+    },
+    {
+      "slug": "cli-tools",
+      "name": "命令行工具",
+      "totalAll": 21484
+    },
+    {
+      "slug": "domain-utilities",
+      "name": "域名与 DNS 工具",
+      "totalAll": 17113
+    },
+    {
+      "slug": "sales-marketing",
+      "name": "销售与营销",
+      "totalAll": 407969
+    },
+    {
+      "slug": "project-management",
+      "name": "项目管理",
+      "totalAll": 140410
+    },
+    {
+      "slug": "finance-investment",
+      "name": "金融与投资",
+      "totalAll": 105749
+    },
+    {
+      "slug": "real-estate-legal",
+      "name": "房地产与法律",
+      "totalAll": 82039
+    },
+    {
+      "slug": "ecommerce",
+      "name": "电子商务",
+      "totalAll": 18344
+    },
+    {
+      "slug": "payment",
+      "name": "支付",
+      "totalAll": 13373
+    },
+    {
+      "slug": "health-fitness",
+      "name": "健康健身",
+      "totalAll": 11979
+    },
+    {
+      "slug": "business-apps",
+      "name": "商业应用",
+      "totalAll": 4790
+    },
+    {
+      "slug": "architecture-patterns",
+      "name": "架构模式",
+      "totalAll": 144220
+    },
+    {
+      "slug": "backend",
+      "name": "后端开发",
+      "totalAll": 84716
+    },
+    {
+      "slug": "frontend",
+      "name": "前端开发",
+      "totalAll": 74633
+    },
+    {
+      "slug": "gaming",
+      "name": "游戏开发",
+      "totalAll": 56641
+    },
+    {
+      "slug": "mobile",
+      "name": "移动开发",
+      "totalAll": 48066
+    },
+    {
+      "slug": "package-distribution",
+      "name": "包管理与发布",
+      "totalAll": 31592
+    },
+    {
+      "slug": "scripting",
+      "name": "脚本编程",
+      "totalAll": 30413
+    },
+    {
+      "slug": "framework-internals",
+      "name": "框架内核开发",
+      "totalAll": 28021
+    },
+    {
+      "slug": "cms-platforms",
+      "name": "CMS 与平台开发",
+      "totalAll": 24368
+    },
+    {
+      "slug": "full-stack",
+      "name": "全栈开发",
+      "totalAll": 20271
+    },
+    {
+      "slug": "ecommerce-development",
+      "name": "电商开发",
+      "totalAll": 12980
+    },
+    {
+      "slug": "code-quality",
+      "name": "代码质量",
+      "totalAll": 203368
+    },
+    {
+      "slug": "testing",
+      "name": "测试",
+      "totalAll": 138956
+    },
+    {
+      "slug": "security",
+      "name": "安全",
+      "totalAll": 113038
+    },
+    {
+      "slug": "git-workflows",
+      "name": "Git 工作流",
+      "totalAll": 182885
+    },
+    {
+      "slug": "cicd",
+      "name": "CI/CD",
+      "totalAll": 75144
+    },
+    {
+      "slug": "cloud",
+      "name": "云平台",
+      "totalAll": 26997
+    },
+    {
+      "slug": "containers",
+      "name": "容器",
+      "totalAll": 23751
+    },
+    {
+      "slug": "monitoring",
+      "name": "监控",
+      "totalAll": 15493
+    },
+    {
+      "slug": "llm-ai",
+      "name": "LLM 与 AI",
+      "totalAll": 148088
+    },
+    {
+      "slug": "machine-learning",
+      "name": "机器学习",
+      "totalAll": 79475
+    },
+    {
+      "slug": "data-engineering",
+      "name": "数据工程",
+      "totalAll": 55706
+    },
+    {
+      "slug": "data-analysis",
+      "name": "数据分析",
+      "totalAll": 25571
+    },
+    {
+      "slug": "knowledge-base",
+      "name": "知识库",
+      "totalAll": 108079
+    },
+    {
+      "slug": "technical-docs",
+      "name": "技术文档",
+      "totalAll": 92104
+    },
+    {
+      "slug": "education",
+      "name": "教育",
+      "totalAll": 89148
+    },
+    {
+      "slug": "content-creation",
+      "name": "内容创作",
+      "totalAll": 49647
+    },
+    {
+      "slug": "design",
+      "name": "设计",
+      "totalAll": 30890
+    },
+    {
+      "slug": "media",
+      "name": "媒体处理",
+      "totalAll": 29665
+    },
+    {
+      "slug": "academic",
+      "name": "学术研究",
+      "totalAll": 50565
+    },
+    {
+      "slug": "lab-tools",
+      "name": "实验室工具",
+      "totalAll": 40046
+    },
+    {
+      "slug": "bioinformatics",
+      "name": "生物信息学",
+      "totalAll": 32135
+    },
+    {
+      "slug": "computational-chemistry",
+      "name": "计算化学",
+      "totalAll": 27731
+    },
+    {
+      "slug": "astronomy-physics",
+      "name": "天文物理",
+      "totalAll": 12456
+    },
+    {
+      "slug": "scientific-computing",
+      "name": "科学计算",
+      "totalAll": 10569
+    },
+    {
+      "slug": "literature-writing",
+      "name": "文学与写作",
+      "totalAll": 13532
+    },
+    {
+      "slug": "arts-crafts",
+      "name": "艺术与手工",
+      "totalAll": 12266
+    },
+    {
+      "slug": "philosophy-ethics",
+      "name": "哲学与伦理",
+      "totalAll": 12246
+    },
+    {
+      "slug": "divination-mysticism",
+      "name": "占卜与玄学",
+      "totalAll": 9415
+    },
+    {
+      "slug": "wellness-health",
+      "name": "健康养生",
+      "totalAll": 9004
+    },
+    {
+      "slug": "culinary-arts",
+      "name": "烹饪艺术",
+      "totalAll": 3414
+    },
+    {
+      "slug": "database-tools",
+      "name": "数据库工具",
+      "totalAll": 23927
+    },
+    {
+      "slug": "sql-databases",
+      "name": "SQL 数据库",
+      "totalAll": 16679
+    },
+    {
+      "slug": "nosql-databases",
+      "name": "NoSQL 数据库",
+      "totalAll": 2164
+    },
+    {
+      "slug": "smart-contracts",
+      "name": "智能合约",
+      "totalAll": 15470
+    },
+    {
+      "slug": "web3-tools",
+      "name": "Web3 工具",
+      "totalAll": 10816
+    },
+    {
+      "slug": "defi",
+      "name": "DeFi",
+      "totalAll": 1701
+    },
+    {
+      "slug": "documents",
+      "name": "文档处理",
+      "totalAll": 155772,
+      "browsableUnknown": true
+    }
+  ]
+}

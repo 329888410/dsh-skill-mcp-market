@@ -534,7 +534,7 @@ console.log('Test 14: 请求序号守卫 —— 先发请求的结果不得覆�
     // 函数体直接跑起来（注入 free variables），测的是行为而不是正则形状
     const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
       '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage,' +
-      '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setNotice, setError, setBusy,' +
+      '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setError, setBusy,' +
       '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight } = deps;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
     const fired = [];
     const delays = {};
@@ -550,7 +550,7 @@ console.log('Test 14: 请求序号守卫 —— 先发请求的结果不得覆�
       resolvePageSize: (o, s) => (o && o.size) || s,
       setSkills: (rows) => fired.push(rows),
       setSkillsPage: () => {}, setSkillsTotalPages: () => {}, setSkillsTotal: () => {},
-      setSkillsHasMore: () => {}, setNotice: () => {}, setError: () => {}, setBusy: () => {},
+      setSkillsHasMore: () => {}, setServerFacet: () => {}, setNotice: () => {}, setError: () => {}, setBusy: () => {},
       call: async (op, p) => {
         const tag = p.source + '#p' + p.page;
         await new Promise((r) => setTimeout(r, delays[tag] || 0));

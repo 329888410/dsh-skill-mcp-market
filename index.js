@@ -27,6 +27,8 @@ import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryD
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
 import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
 import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js";
+// 技能市场分类词表（skillsmp /zh/categories 实测抓取）只随 settings.get 走：读缓存 + 后台补取，
+// 面板首屏的 RPC 不等外网抓取。
 import { evaluation as skillhubEvaluation } from "./src/skillhub.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
@@ -1158,7 +1160,18 @@ function needsConfirmFor(patch, current) {
       throw new Error(`操作 ${op} 不允许经由面板 HTTP 通道执行`);
     }
     switch (op) {
-      case "settings.get":
+      case "settings.get": {
+        // 分类词表：只读缓存（readSkillsMpCategoryVocabulary），冷缓存或过期拿 null 时
+        // void 触发一次后台抓取，下一次切 tab 就能带上。这里不做任何网络等待。
+        let categoryVocabulary = null;
+        try {
+          categoryVocabulary = await readSkillsMpCategoryVocabulary({ cache: marketCache });
+        } catch {
+          categoryVocabulary = null;
+        }
+        if (!categoryVocabulary) {
+          void skillsmpCategoryVocabulary({ cache: marketCache }).catch(() => {});
+        }
         return {
           settings: {
             skillDirs: settings.skillDirs,
@@ -1187,11 +1200,14 @@ function needsConfirmFor(patch, current) {
               lobehub: { browse: sortKeysForMcp("lobehub"), search: sortKeysForMcp("lobehub", { hasQuery: true }) },
             },
           },
+          // 面板画分类 chip 用的固定词表；缺省时面板退回按当前页派生（入口不关）
+          categoryVocabulary: categoryVocabulary || undefined,
           shipped: {
             mcpClient: resolveShipped(SHIPPED.mcpClient, settings.shippedRoot) || "NOT FOUND",
             skillFilesystem: resolveShipped(SHIPPED.skillFilesystem, settings.shippedRoot) || "NOT FOUND",
           },
         };
+      }
       case "settings.set":
         return applyPaths(body);
       case "skills.search": {
@@ -1209,8 +1225,12 @@ function needsConfirmFor(patch, current) {
         // 每个源都实现了真正的翻页（服务端 page，或缓存全量目录后本地切片），
         // 所以「加载更多」是否可用完全由这一页返回的 hasMore 决定。
         const canLoadMore = Boolean(result.hasMore);
+        // serverFacet：这一页的分类筛选由上游完成（聚合层 AND 归约，见 searchSkills），
+        // 面板据此跳过二次本地过滤，否则 facet 页会被再筛一遍、总数也对不上。
+        const serverFacet = Boolean(result.serverFacet);
         return {
-          ...result,
+          serverFacet,
+            ...result,
           canLoadMore,
           pages: result.totalPages || undefined,
           items: result.items.map((item) => ({ ...item, installed: taken.has(item.slug) })),

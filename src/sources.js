@@ -666,6 +666,10 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   let pagesSum = 0;
   let pagesUnknown = false;
   let hasMore = false;
+  // facet 计票：只有**取到数据的源**参与，全部明说 serverFacet===true 才算这一页已被服务端筛过。
+  // 失败源没有贡献条目，所以不进分母；handler 不提这个字段（六个旧源都是）一律按 false 计。
+  let facetAnswered = 0;
+  let facetConfirmed = 0;
   const picked = wanted.filter((name) => Boolean((handlers && handlers[name]) || SOURCE_HANDLERS[name]));
   // handlers 是测试注入点：fake handler 才能在没有网络、没有上游波动的情况下断言
   // 并发与顺序性质。生产路径 handlers 为 null，仍走 SOURCE_HANDLERS。
@@ -691,6 +695,8 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     const name = entry.name;
     const result = entry.result;
     if (result && result.hint) hints.push(name + '：' + result.hint);
+    facetAnswered++;
+    if (result && result.serverFacet === true) facetConfirmed++;
     const srcItems = result && Array.isArray(result.items) ? result.items : [];
     if (srcItems.length) items.push(...srcItems.map((it) => ({ ...it, installRef: installRefOf(it) })));
     const srcTotal = Number(result && result.total) || 0;
@@ -748,11 +754,15 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   if (items.length > 0 && !totalUnknown && (!total || total < items.length)) total = hasMore ? p * size + 1 : (p - 1) * size + items.length;
   // 分类筛选：无 category 的源无法参与，如实告知而不是静默返回全量。
   const catNeedle = String(category || "").trim();
+  // 服务端 facet：这一页本身就是上游按分类筛出来的集合，本地再过滤一遍只有两种坏结果——
+  // 重复筛（无害但白算）或把上游回填不一致的条目误删（有害）。所以只在没拿到 facet 确认时
+  // 才走下面那段「仅当前页」的本地兜底过滤。
+  const serverFacet = catNeedle !== "" && catNeedle !== "all" && facetAnswered > 0 && facetConfirmed === facetAnswered;
   const catSupported = items.some((item) => item.category);
   let visible = items;
   let categoryNote = "";
   let filteredOut = 0;
-  if (catNeedle && catNeedle !== "all") {
+  if (catNeedle && catNeedle !== "all" && !serverFacet) {
     if (!catSupported) {
       categoryNote = "所选来源不提供分类信息，已忽略分类筛选";
     } else {
@@ -791,6 +801,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   return {
     items: visible,
     categoryNote,
+    serverFacet,
     filteredOut,
     page: p,
     pageSize: size,

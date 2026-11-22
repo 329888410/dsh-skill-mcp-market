@@ -134,6 +134,50 @@ window.__ModuleLoader__.load({
 // 分批条件永不成立、纯属装饰（测试只锁了「首批≤阈值」这类性质，锁不住
 // 「阈值本身是否合理」，所以补一条首批≥最大每页的不变量）。
 const CARD_BATCH = 48;
+
+// 分类 chip 一屏默认只放这么多：实测词表 63 个，全铺开会把卡片列表挤没。
+// 「更多分类」展开是会话内状态，翻页/换词不重置。
+const CAT_CHIP_FOLD = 12;
+// 分类词表 → chip 的三件纯函数，放在组件外同一座「可测岛」上：不碰 React 状态，
+// 测试用 new Function 直接执行函数体（与 capsFor/CARD_BATCH 同一口径）。
+// 词表来自服务端抓的 skillsmp 类目页（随 settings.get 下发），页内派生 chip 永远保留：
+// 词表抓不到是上游的事，把整个分类入口关掉不是兜底。
+function mergeCategoryVocab(derived, vocab) {
+  const rows = (vocab && Array.isArray(vocab.categories)) ? vocab.categories : [];
+  // 上游类目页返回的是它自己的页面顺序，不是条数降序；面板只展示前 CAT_CHIP_FOLD 个 chip，
+  // 照抄顺序会让窗口里留下 1.7 万条的入口、把 20 万条的挤到「更多分类」后面。这里按条数降序，
+  // 条数相同保持页内相对顺序（V8 的 Array.prototype.sort 是稳定的），顺序因此仍然可复现。
+  const ordered = rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => ((Number(b.r && b.r.totalAll) || 0) - (Number(a.r && a.r.totalAll) || 0)) || a.i - b.i)
+    .map((x) => x.r);
+  const out = [];
+  const seen = new Set();
+  for (const r of ordered) {
+    const v = String((r && r.slug) || '').trim();
+    if (!v || seen.has(v)) continue;
+    seen.add(v);
+    out.push({ value: v, label: String((r && r.name) || v), totalAll: Number(r && r.totalAll) || 0, fixed: true });
+  }
+  for (const d of (Array.isArray(derived) ? derived : [])) {
+    const v = String(d || '').trim();
+    if (!v || seen.has(v)) continue;
+    seen.add(v);
+    out.push({ value: v, label: v, totalAll: 0, fixed: false });
+  }
+  return out;
+}
+function categoryChipLabel(value, vocab) {
+  const v = String(value || '');
+  const rows = (vocab && Array.isArray(vocab.categories)) ? vocab.categories : [];
+  const hit = rows.find((r) => String((r && r.slug) || '') === v);
+  return { value: v, label: hit ? String(hit.name || v) : v };
+}
+function categoryLabelLite(chip) {
+  const label = String((chip && chip.label) || (chip && chip.value) || '');
+  const n = Number(chip && chip.totalAll) || 0;
+  return n > 0 ? label + ' ' + n.toLocaleString() : label;
+}
     // 市场卡片分批：与工具浮窗同一口径（首批 CARD_BATCH 张，点「继续显示」再放一批）。
     // 每页最多 48 条，一次提交整页卡片意味着输入一个字符就重建几十个节点。
     const shownCards = (list, batch) => list.slice(0, Math.max(1, Math.trunc(batch) || 1) * CARD_BATCH);
@@ -472,6 +516,11 @@ const CARD_BATCH = 48;
       const [mounted, setMounted] = useState(null);
       const [settings, setSettings] = useState(null);
       const [sortCaps, setSortCaps] = useState(null);
+      // 服务端分类词表（index.js settings.get 顺带下发）；null = 还没取到，chip 退回页内派生。
+      const [categoryVocab, setCategoryVocab] = useState(null);
+      // 当页分类筛选是不是上游做的：为真时列表不再二次本地过滤（见 visibleSkills）。
+      const [serverFacet, setServerFacet] = useState(false);
+      const [categoryExpanded, setCategoryExpanded] = useState(false);
       // 可选 op 的运行时可用性：null=还没探过；探过之后每个 op 一个布尔。
       // 入口只有在确认服务端有这个 op 时才渲染 —— 探测前与探测失败都不得画出按钮。
       const [opStatus, setOpStatus] = useState(null);
@@ -744,6 +793,7 @@ const CARD_BATCH = 48;
         const d = await call('settings.get');
         setSettings(d);
         setSortCaps(d.sortCapabilities || null);
+        setCategoryVocab(d.categoryVocabulary || null);
         setSkillDraft((d.settings.skillDirs || []).join('\n'));
         setMcpDraft((d.settings.mcpDirs || []).join('\n'));
         setNativeDirs(d.settings.dshNativeSkillDirs || []);
@@ -788,6 +838,7 @@ const CARD_BATCH = 48;
           setSkillsTotal(Number(trustedTotal(cached.total, totalBaseRef.current[skKeyCached], pageNo)) || 0);
           if (pageNo <= 1) totalBaseRef.current[skKeyCached] = Number(cached.total) || 0;
           setSkillsHasMore(Boolean(cached.hasMore));
+          setServerFacet(Boolean(cached.serverFacet));
           if ((cached.items || []).length) setNotice('（缓存，正在刷新…）');
         } else if (!append) {
           setBusy('skills.search');
@@ -812,6 +863,7 @@ const CARD_BATCH = 48;
               pages: d.pages,
               total: d.total,
               hasMore: d.hasMore,
+              serverFacet: Boolean(d.serverFacet),
               hints: d.hints || [],
               degraded: d.degraded || [],
             };
@@ -831,6 +883,7 @@ const CARD_BATCH = 48;
           setSkillsTotal(Number(trustedTotal(d.total, totalBaseRef.current[skKeyFresh], pageNo)) || 0);
           if (pageNo <= 1) totalBaseRef.current[skKeyFresh] = Number(d.total) || 0;
           setSkillsHasMore(Boolean(d.hasMore));
+          setServerFacet(Boolean(d.serverFacet));
           const hints = (d.hints || []).filter(Boolean);
           if (!(d.items || []).length) {
             // An empty market is either "no match", "needs a keyword" or "upstream refused us".
@@ -1717,7 +1770,17 @@ const CARD_BATCH = 48;
         return (b.installs || 0) - (a.installs || 0);
       });
       const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 10);
-      const visibleSkills = orderedSkills.filter((item) => category === 'all' || item.category === category);
+      // 固定词表在前（上游条目数降序），当前页派生的串补在后：词表抓不到时入口不关，改版也不丢。
+      const vocabChips = mergeCategoryVocab(categories, categoryVocab);
+      const chipBySlug = {};
+      for (const chip of vocabChips) if (!chipBySlug[chip.value]) chipBySlug[chip.value] = chip;
+      const chipSlugs = ['all'].concat(vocabChips.map((c) => c.value));
+      const chipWindow = categoryExpanded || chipSlugs.length <= CAT_CHIP_FOLD + 1
+        ? chipSlugs
+        : chipSlugs.slice(0, CAT_CHIP_FOLD + 1);
+      // 上游已按分类筛过（serverFacet=true）时不再二次本地过滤：facet 页只有当前窗口的
+      // 卡片，再按本地标签筛一遍会把未标注分类的条目无谓筛掉，还与分页器总数对不上。
+      const visibleSkills = orderedSkills.filter((item) => serverFacet || category === 'all' || item.category === category);
       const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
@@ -2195,14 +2258,21 @@ const CARD_BATCH = 48;
                       },
                     }, cat === 'all' ? '全部分类' : categoryLabel(cat))))
               : null,
-            tab === 'skills' && categories.length > 0
+            tab === 'skills' && (categories.length > 0 || vocabChips.length > 0)
               ? h('div', { style: S.row },
-                  ['all', ...categories].map((cat) =>
+                  chipWindow.map((cat) =>
                     h('button', {
                       key: cat,
                       style: S.chip(category === cat),
                       onClick: () => { setCategory(cat); searchSkills(query, { source, size, category: cat, page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },
-                    }, cat === 'all' ? '全部分类' : cat)))
+                    }, cat === 'all' ? '全部分类' : (chipBySlug[cat] ? categoryLabelLite(chipBySlug[cat]) : cat)))
+                    .concat(chipWindow.length < chipSlugs.length
+                      ? [h('button', {
+                          key: '__cat_fold',
+                          style: S.chip(false),
+                          onClick: () => setCategoryExpanded(!categoryExpanded),
+                        }, categoryExpanded ? '收起分类' : '更多分类（共 ' + (chipSlugs.length - 1) + ' 个）')]
+                      : []))
               : null,
           )
         : null;

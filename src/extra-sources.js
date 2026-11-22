@@ -7,7 +7,7 @@
 //   modelscope— modelscope.cn/api/v1/dolphin/skills (PUT, PageNumber/PageSize + TotalCount)
 // Every source here answers a real `page`: either the upstream pages, or a whole catalogue
 // is fetched once and sliced locally. That is what makes「加载更多」actually extend the list.
-import { getJsonEscalating, postJsonEscalating } from "./http.js";
+import { getJsonEscalating, postJsonEscalating, pythonText } from "./http.js";
 import { execFile } from "node:child_process";
 const isWinCli = process.platform === "win32";
 function cliRun(pkg, args, { timeoutMs = 120000 } = {}) {
@@ -670,9 +670,11 @@ export async function lobehubAgentSkill(identifier) {
 //     此时总数照旧不报。所以判据是先看窗口再看精确，total 取 totalAll，页数只能取窗口页深。
 //   · facet 与 search 不能同时用：search=pdf total=7，加 category=ide-plugins 仍报 7，但首 6 条与不带 facet
 //     的结果重叠 0/6 —— 上游忽略 facet 且静默换成另一个集合。带关键词时一律不发 facet。
-//   · /zh/categories 页面给 75 个 slug，legacy 白名单只接受其中 63 个，另 11 个回 HTTP 400
-//     body {"success":false,"error":{"code":"INVALID_CATEGORY",...}}（tools、business、data-ai、databases
-//     都在被拒之列）。词表只能解析 HTML，没有公开的编目端点可查，所以运行时必须对 400 兜底。
+//   · /zh/categories 页面 75 个分类锚：63 个带条数徽标（可浏览面，词表就是这 63 个），12 个只有板块
+//     标题（浏览工具/业务开发/…）没有徽标——它们发给 legacy 一律 HTTP 400
+//     body {"success":false,"error":{"code":"INVALID_CATEGORY",...}}（tools、business、data-ai、databases 在内）。
+//     63 个里 62 个逐个 GET 实测被接受（test/fixtures/skillsmp-category-vocab.json 记全部 slug+中文标签+条数），
+//     documents 那一轮探针超时（可浏览性未知，不是被拒）。没有公开的编目端点可查，所以运行时必须保留 400 兜底。
 // 其余判据（search= 键、limit 上界）同样以那组实测为准，注释只写复核过的事实。
 const SKILLSMP_TTL = 10 * 60 * 1000;
 // limit 上界不是推测值：上游自己把边界写在错误体里。交错重放 4 轮（48/49/40/50 交替，排除
@@ -684,6 +686,89 @@ const SKILLSMP_TTL = 10 * 60 * 1000;
 // 所以取证必须走 getJsonEscalating/python 传输。旧实现钳到 50 = 每页宽 48~50 的请求都会被拒。
 const SKILLSMP_MAX_LIMIT = 48;
 const SKILLSMP_UNBOUNDED_NOTE = "skillsmp 搜索窗口会随翻页移动，上游未报总数时不给数字";
+// 分类词表：面板的「按分类浏览」入口只能来自 /zh/categories 这份 HTML（编目端点 10 个候选实测全部
+// ENDPOINT_NOT_FOUND），所以这里解析页面锚点，抓取走 pythonText（同一 Cloudflare 指纹门槛）。
+// 词表 TTL 取 7 天：判据不是「上游多久改版」，而是「面板宁可退回页内派生 chip，也不长期贴一份旧词表」。
+const SKILLSMP_CATEGORIES_URL = "https://skillsmp.com/zh/categories";
+const SKILLSMP_VOCAB_KEY = "skillsmp_categories_v1";
+const SKILLSMP_VOCAB_TTL = 7 * 24 * 3600 * 1000;
+
+/**
+ * /zh/categories → [{slug,name,totalAll}]。只认「带条数徽标的分类卡锚」：板块标题锚形如
+ * <span>浏览工具</span> 且无 <bdi>，不是可浏览面（发上游必回 400）。锚体很长（实测 806~1139 字符），
+ * 所以窗口取 1400——取 600 时首轮只回来 12 条板块头，那是判据没跑起来而不是页面没有分类。
+ */
+export function parseSkillsMpCategories(html) {
+  const text = String(html || "");
+  const out = [];
+  const seen = new Set();
+  const re = /<a\s[\s\S]{0,1400}?href="(?:\/[^"\/]+)?\/categories\/([a-z0-9][a-z0-9-]*)"[\s\S]{0,1400}?<\/a>/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const slug = m[1];
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    const body = text.slice(m.index, text.indexOf("</a>", m.index) + 4);
+    const strip = (s) => String(s || "")
+      .replace(/<[^>]*>/g, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/&#x27;/g, "'")
+      .replace(/&quot;/g, "\"")
+      .replace(/&amp;/g, "&")
+      .replace(/&nbsp;/g, " ")
+      .trim();
+    const name = strip((body.match(/<span[^>]*>([\s\S]*?)<\/span>/) || [])[1]);
+    const countRaw = strip((body.match(/<bdi>([\s\S]*?)<\/bdi>/) || [])[1]);
+    const totalAll = Number(countRaw.replace(/[^0-9]/g, "")) || 0;
+    if (!name || /^浏览/.test(name) || totalAll <= 0) continue;
+    out.push({ slug, name, totalAll });
+  }
+  return out;
+}
+
+/** 抓词表并落缓存。抓不到/解析不出 → null（空词表与没有词表是两回事，见回归套件）。 */
+export async function skillsmpCategoryVocabulary({ cache, getText = pythonText, now = Date.now } = {}) {
+  if (!cache) return null;
+  const at = Number(typeof now === "function" ? now() : now) || Date.now();
+  try {
+    const hit = await cache.get(SKILLSMP_VOCAB_KEY, SKILLSMP_VOCAB_TTL);
+    // 新旧由 capturedAt 判，而不是 makeCache 的内部时钟：注入 now 才能确定性地测出「过期重取」。
+    if (hit && Array.isArray(hit.categories) && hit.categories.length
+      && at - Number(hit.capturedAt) < SKILLSMP_VOCAB_TTL) return hit;
+  } catch {
+    // 缓存读失败只意味着这次要重取
+  }
+  let html = "";
+  try {
+    const r = await getText(SKILLSMP_CATEGORIES_URL, {
+      headers: { referer: "https://skillsmp.com/" },
+      timeoutMs: 20000,
+    });
+    html = typeof r === "string" ? r : String((r && r.text) || "");
+  } catch {
+    return null;
+  }
+  const categories = parseSkillsMpCategories(html);
+  // 0 条 = 页面改版，不是「这站没有分类」：不许落成空快照（那会把面板已有的派生 chip 一起关掉）。
+  if (!categories.length) return null;
+  const value = { capturedAt: at, source: SKILLSMP_CATEGORIES_URL, categories };
+  await cache.put(SKILLSMP_VOCAB_KEY, value);
+  return value;
+}
+
+/** 只读缓存：settings.get 用它，绝不在此处等网络。没有/过期都回 null。 */
+export async function readSkillsMpCategoryVocabulary({ cache, now = Date.now } = {}) {
+  if (!cache) return null;
+  const at = Number(typeof now === "function" ? now() : now) || Date.now();
+  try {
+    const hit = await cache.get(SKILLSMP_VOCAB_KEY, SKILLSMP_VOCAB_TTL);
+    if (!hit || !Array.isArray(hit.categories) || !hit.categories.length) return null;
+    if (at - Number(hit.capturedAt) >= SKILLSMP_VOCAB_TTL) return null;
+    return hit;
+  } catch {
+    return null;
+  }
+}
 
 function skillsmpTarget(raw) {
   const route = raw.route || {};
@@ -731,7 +816,7 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
   try {
     data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, options);
   } catch (err) {
-    // 75 个站点 slug 里 legacy 只认 63 个（其余 HTTP 400 INVALID_CATEGORY）。词表只能从页面解析，
+    // 页面 63 个可浏览 slug 里 62 个实测被 legacy 接受，板块标题与 documents（探针超时、可浏览性未知）不保证。词表只能从页面解析，
     // 无法运行时预知，所以被拒时去掉 facet 重发一次：宁可给全库首页并说明，也不许整源进 degraded。
     if (!facet) throw err;
     params.delete("category");
@@ -811,7 +896,11 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
     hasMore = items.length === size;
     hint = facetRefused ? refusedNote : SKILLSMP_UNBOUNDED_NOTE;
   }
-  const payload = { source: "skillsmp", items, total, hasMore, totalPages };
+  // serverFacet 是给聚合层的声明：facet 确实作为服务端参数发了出去、且没有被 400 拒回，
+  // 这一页才是「上游已按分类筛过的集合」。聚合层只有收到 true 才敢关掉本地过滤——谎报等于
+  // 把首屏那一页说成整目录已筛过（带关键词时 facet 根本不发，所以必为 false）。
+  const serverFacet = facet !== "" && !facetRefused;
+  const payload = { source: "skillsmp", items, total, hasMore, totalPages, serverFacet, facetUsed };
   if (hint) payload.hint = hint;
   // An empty page is never cached: one upstream hiccup must not blank the market for ten
   // minutes, and the next request should retry immediately.
