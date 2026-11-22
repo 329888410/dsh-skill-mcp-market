@@ -1,0 +1,160 @@
+#!/usr/bin/env node
+// test-search-latency-recovery.mjs — 重复搜索为什么还等 12s：源冷却 + 在途合并。
+//
+// 实测基线（本机真实网络、面板同一条代码路径 src/sources.js:588 → fanOutSources:554，
+// C:\\Users\\Public\\dsh-scratch\\perf-base.log，job pwsh-c443464d05f74628，budgetMs=12000 未改）：
+//   A1 冷 12008ms degraded=[clawhub,trusttools]
+//   A2 同参数第二次 12005ms degraded=[clawhub,trusttools,browse.sh]
+//   A3 第三次 12007ms（热/冷 = 1.0x —— 缓存没救到等待）
+//   A4 page=2 12011ms ｜ A5 换词冷 12013ms ｜ A6 换词热 12010ms
+//   B 单源各自独立冷缓存：lobehub 1 / skillhub 1 / modelscope 1 / clawhub 2 / skillsmp 2 /
+//     browse.sh 11 / skills.sh 9010 / trusttools 12010（items=0，撞满预算）
+//   单源之和 21038ms vs 聚合 12008ms ⇒ 并发已生效（省 9030ms），聚合 wall = max(最慢源)，
+//   而最慢那个源是注定失败的 trusttools。
+// ⇒ 六次全部 12.0s ≈ budgetMs：sources.js:556-566 对超时没有记忆，每轮搜索都把坏源重新
+//   等满一遍预算；同时同一条件的并发请求各打各的（全仓无在途合并，AbortController 只在
+//   fetchJson 内部）。仓库里已有同类做法的先例：src/enrich.js:89-115 skillmd_miss 24h 负缓存。
+//
+// 本套件全部用注入 handler，零网络，CI 可重复；判据是行为，不是文案。
+import { makeCache, searchSkills } from '../src/sources.js';
+import { absent } from './anchor-lib.mjs';
+import { safeTempDir } from '../src/home.js';
+
+let passed = 0, failed = 0;
+const check = (n, cond, d) => { if (cond) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d !== undefined ? '  [' + String(d).slice(0, 170) + ']' : '')); } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const freshCache = () => makeCache(safeTempDir() + '/lat-' + Math.random().toString(36).slice(2));
+const dgOf = (r) => (r.degraded || []).map((d) => d.source + '|' + String(d.error || '')).join(' ');
+
+console.log('Test 1: 超时源进入短冷却，第二次同条件不再付预算');
+{
+  const calls = { dead: 0, ok1: 0 };
+  const handlers = {
+    dead: async () => { calls.dead++; await sleep(5000); return { items: [{ slug: 'd', name: 'd', source: 'dead' }], total: 1, totalPages: 1 }; },
+    ok1: async () => { calls.ok1++; return { items: [{ slug: 'o', name: 'o', source: 'ok1' }], total: 1, totalPages: 1 }; },
+  };
+  const cache = freshCache();
+  const ps = { query: 'q', source: 'all', page: 1, pageSize: 24, handlers, cache, budgetMs: 300 };
+  const t1 = Date.now(); const r1 = await searchSkills(ps); const ms1 = Date.now() - t1;
+  check('首次：坏源在预算内被切断', ms1 < 1500, ms1 + 'ms');
+  check('首次：坏源 degraded 写明超时', /超时|timeout/i.test(dgOf(r1)) && /dead/.test(dgOf(r1)), dgOf(r1));
+  const t2 = Date.now(); const r2 = await searchSkills(ps); const ms2 = Date.now() - t2;
+  check('第二次：不再重付预算（等待与首次差一个量级）', ms2 < ms1 / 3, '首次' + ms1 + 'ms 第二次' + ms2 + 'ms');
+  check('第二次：上游确实没有被重新问（calls.dead 仍为 1）', calls.dead === 1, 'calls.dead=' + calls.dead);
+  check('第二次：坏源仍如实进 degraded（冷却≠静默丢源）', (r2.degraded || []).some((d) => d.source === 'dead'), dgOf(r2));
+  check('第二次：文案如实写明本轮不再重试（冷却/稍后）', /不再重试|冷却|稍后/.test(dgOf(r2)), dgOf(r2));
+  check('第二次：健康源条目不受影响', r2.items.map((i) => i.slug).join(',') === 'o', JSON.stringify(r2.items));
+  check('第二次：槽位数不减（results 仍按 names 折叠）', r2.total <= 1 && Number(r2.total) === 1, r2.total);
+  check('健康源每次都真取（结果缓存责任在 handler，本层不越权缓存）', calls.ok1 === 2, 'calls.ok1=' + calls.ok1);
+}
+
+console.log('');
+console.log('Test 2: 只有「等满预算」才冷却；抛错/空结果绝不进冷却');
+{
+  const calls = { boom: 0, empty: 0 };
+  const handlers = {
+    boom: async () => { calls.boom++; throw new Error('上游 503'); },
+    empty: async () => { calls.empty++; return { items: [], total: 0, totalPages: 0, hint: '上游没有匹配' }; },
+  };
+  const cache = freshCache();
+  const ps = { query: 'q', source: 'all', page: 1, pageSize: 24, handlers, cache, budgetMs: 300 };
+  await searchSkills(ps);
+  const r2 = await searchSkills(ps);
+  check('抛错源每次都真重试（不进冷却）', calls.boom === 2, 'calls.boom=' + calls.boom);
+  check('抛错源错误原文保留（与 test-search-fanout-latency Test 2 同口径）', /503/.test(dgOf(r2)), dgOf(r2));
+  check('真实空结果不是失败：绝不进冷却', calls.empty === 2, 'calls.empty=' + calls.empty);
+  check('真实空结果不产生 degraded', !(r2.degraded || []).some((d) => d.source === 'empty'), dgOf(r2));
+}
+
+console.log('');
+console.log('Test 3: 冷却窗口到期后自动重试（TTL 是上限不是永久）');
+{
+  const calls = { dead: 0 };
+  const handlers = { dead: async () => { calls.dead++; await sleep(5000); return { items: [], total: 0 }; } };
+  const cache = freshCache();
+  const ps = { query: 'q', source: 'all', page: 1, pageSize: 24, handlers, cache, budgetMs: 300 };
+  const realNow = Date.now;
+  let offset = 0;
+  Date.now = () => realNow() + offset;
+  try {
+    await searchSkills(ps);
+    check('窗口内：跳过上游', calls.dead === 1, 'calls.dead=' + calls.dead);
+    await searchSkills(ps);
+    check('窗口内：两次调用仍只有一次打到上游', calls.dead === 1, 'calls.dead=' + calls.dead);
+    offset = 119000;
+    await searchSkills(ps);
+    check('未到期（119s）：仍跳过上游', calls.dead === 1, 'calls.dead=' + calls.dead);
+    offset = 121000;
+    await searchSkills(ps);
+    check('到期（121s）：必须重新尝试', calls.dead === 2, 'calls.dead=' + calls.dead);
+  } finally { Date.now = realNow; }
+}
+
+console.log('');
+console.log('Test 4: 同条件并发在途合并，不同条件绝不合并');
+{
+  const seen = [];
+  const mk = (name, delay) => async (opts) => {
+    seen.push(name + ':' + String(opts.query || '') + ':' + opts.page + ':' + (opts.sort || '') + ':' + (opts.category || ''));
+    await sleep(delay);
+    return { items: [{ slug: name, name, source: name }], total: 1, totalPages: 1 };
+  };
+  const handlers = { a: mk('a', 120), b: mk('b', 120) };
+  const cache = freshCache();
+  const base = { query: 'agent', source: 'all', page: 1, pageSize: 24, handlers, cache };
+  const [x, y] = await Promise.all([searchSkills(base), searchSkills(base)]);
+  check('同条件并发只打上游一次', seen.filter((s) => s.startsWith('a:')).length === 1, seen.join(','));
+  check('两个调用方都拿到完整结果（不是只有发起者）', x.items.length === 2 && y.items.length === 2, x.items.length + '/' + y.items.length);
+  check('共享结果不得互相污染（各自 items 数组独立）', x.items !== y.items, '同一引用');
+  await searchSkills({ ...base, page: 2 });
+  check('page 不同必须各打各的', seen.filter((s) => s.startsWith('a:')).length === 2, seen.join(','));
+  await searchSkills({ ...base, query: 'pdf' });
+  check('query 不同必须各打各的', seen.filter((s) => s.startsWith('a:')).length === 3, seen.join(','));
+  await searchSkills({ ...base, sort: 'stars' });
+  check('sort 不同必须各打各的', seen.filter((s) => s.startsWith('a:')).length === 4, seen.join(','));
+  await searchSkills({ ...base, category: 'dev' });
+  check('category 不同必须各打各的', seen.filter((s) => s.startsWith('a:')).length === 5, seen.join(','));
+  await searchSkills(base);
+  check('在途结束后同条件再来必须重新取（合并≠永久缓存）', seen.filter((s) => s.startsWith('a:')).length === 6, seen.join(','));
+}
+
+console.log('');
+console.log('Test 5: 源码锁 —— 冷却与合并必须写在真实实现里');
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src/sources.js'), 'utf8').replace(/\r\n/g, String.fromCharCode(10));
+  const call = src.slice(src.indexOf('await fanOutSources({'), src.indexOf('await fanOutSources({') + 420);
+  const hasCacheArg = call.split(String.fromCharCode(10)).some((l) => l.trim() === 'cache,' || l.trim() === 'cache');
+  check('调用 fanOutSources 时把 cache 交进去（冷却需要它）', hasCacheArg, JSON.stringify(call.slice(0, 140)));
+  check('冷却键前缀存在', src.indexOf('market_src_timeout') >= 0, '');
+  check('在途合并表在 settle 时清除（合并 ≠ 永久缓存）', /inflight[A-Za-z]*\.delete\(/.test(src), '');
+  check('既有超时文案保持不变（其它套件的判据依赖它）', src.indexOf('来源响应超时（预算 ') >= 0, '');
+}
+
+
+console.log('');
+console.log('Test 6: 死分支移除后，槽位契约与冷却短路仍然成立');
+{
+  // M5 反向破坏（去掉 names 同名 merged 复用）跑出 29 passed 0 failed —— 说明 picked 永不含重复名，
+  // 那 3 行是测不到的死分支。移除它之后必须锁两件事：槽位长度/顺序契约不变，冷却短路仍然生效。
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src/sources.js'), 'utf8').replace(/\r\n/g, String.fromCharCode(10));
+  // firstIdx 是纯标识符，必须走 absent()（test-anchor-lib 的裸子串否定断言守卫）：
+  // 裸 !src.includes('firstIdx') 会被未来任何含 firstIdx 前缀的更长标识符误红。
+  check('死分支确已移除（不再有 merged / firstIdx）', src.indexOf('const merged = new Map();') < 0 && absent(src, 'firstIdx'), '');
+  check('冷却短路仍在（cooldownNow 命中直接进 cooldown 槽）', /cooldownNow\[i\] \? Promise\.resolve\(\{ cooldown: true \}\)/.test(src), '');
+  const { fanOutSources } = await import('../src/sources.js');
+  let n = 0;
+  const dup = await fanOutSources({
+    names: ['dead', 'dead', 'ok'],
+    budgetMs: 300,
+    run: async (name) => { n++; if (name === 'dead') { await sleep(5000); return { source: 'dead' }; } return { source: 'ok', items: [1] }; },
+  });
+  check('names 含重复名时 results/degraded 槽位数不变', dup.results.length === 3 && dup.degraded.length === 2, JSON.stringify({ r: dup.results.length, d: dup.degraded.length }));
+  check('重复名两次都真取上游（不再有隐式复用；picked 实际不含重复）', n === 3, 'n=' + n);
+  check('同名的两条 degraded 文案都是超时（不是冷却）', dup.degraded.every((x) => /已跳过/.test(x.error) && !/冷却中/.test(x.error)), dgOf(dup));
+}
+console.log(passed + ' passed, ' + failed + ' failed');
+process.exit(failed ? 1 : 0);

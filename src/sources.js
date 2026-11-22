@@ -551,8 +551,17 @@ const SOURCE_HANDLERS = {
  * results 与 degraded 都按 names 顺序输出 —— 并发完成先后不能影响展示顺序，
  * 否则同一条件搜两次会得到不同的列表。
  */
-export async function fanOutSources({ names, run, budgetMs = 12000 }) {
+export async function fanOutSources({ names, run, budgetMs = 12000, cache = null, cooldownMs = 120000, cooldownKey = "" }) {
   const list = Array.isArray(names) ? names : [];
+  const cooldownPrefix = cooldownKey ? "market_src_timeout:" + cooldownKey + ":" : "market_src_timeout:";
+  const cooling = async (name) => {
+    if (!cache || !(cooldownMs > 0)) return false;
+    try { return Boolean(await cache.get(cooldownPrefix + name, cooldownMs)); } catch { return false; }
+  };
+  const markCooldown = async (name) => {
+    if (!cache || !(cooldownMs > 0)) return;
+    try { await cache.put(cooldownPrefix + name, true); } catch {}
+  };
   const settle = (name) => {
     const work = Promise.resolve().then(() => run(name)).then(
       (result) => ({ result }),
@@ -563,12 +572,27 @@ export async function fanOutSources({ names, run, budgetMs = 12000 }) {
     const guard = new Promise((resolve) => { timer = setTimeout(() => resolve({ timeout: true }), budgetMs); });
     return Promise.race([work, guard]).finally(() => clearTimeout(timer));
   };
-  const settled = await Promise.all(list.map(settle));
+  const cooldownNow = await Promise.all(list.map(cooling));
+  // 不做「names 里同名去重复用」：picked 来自 wanted（ALL_SOURCES 去重集 / handlers 的对象键），
+  // 永远不含重复名，那 3 行是测不到的死分支（M5 反向破坏 29 passed 0 failed 证实）。
+  // 真正需要的合并是跨调用同条件只打一次上游，见下面 fanOnce 的 inflight 表。
+  const settleWith = (name, i) => (cooldownNow[i] ? Promise.resolve({ cooldown: true }) : settle(name));
+  const settled = await Promise.all(list.map((name, i) => settleWith(name, i)));
+  // 只有真的等满预算才写冷却记忆；抛错与真实空结果绝不进冷却（recover 套件 Test 2）。
+  await Promise.all(settled.map(async (box, i) => {
+    if (box && box.timeout && !cooldownNow[i]) await markCooldown(list[i]);
+  }));
   const results = [];
   const degraded = [];
   for (let i = 0; i < list.length; i++) {
     const name = list[i];
     const box = settled[i];
+    if (box && box.cooldown) {
+      const message = '来源响应超时（预算 ' + Math.round(budgetMs / 1000) + 's），已跳过（冷却中，本轮不再重试）';
+      degraded.push({ source: name, error: message });
+      results.push({ name, ok: false, result: null, error: message });
+      continue;
+    }
     if (box && box.timeout) {
       const message = '来源响应超时（预算 ' + Math.round(budgetMs / 1000) + 's），已跳过';
       degraded.push({ source: name, error: message });
@@ -583,6 +607,45 @@ export async function fanOutSources({ names, run, budgetMs = 12000 }) {
     results.push({ name, ok: true, result: box ? box.result : null });
   }
   return { results, degraded };
+}
+
+// 在途合并：同条件（query/来源/页码/页大小/排序/分类/预算）的并发调用共享同一次上游
+// fan-out —— 面板切页或重复提交不再把同一批上游打两遍。合并只在「在途」窗口内成立，
+// settle 后立即清除，因此不是缓存：结束后的下一次调用会重新取数。各调用方拿到同一个
+// fan 对象后各自折叠，items 数组互不共享。
+const inflight = new Map();
+
+async function fanOnce({ query, source, cache, sort, category, handlers, budgetMs, effectiveSort, p, size, picked }) {
+  const key = [
+    handlers ? "test" : "live",
+    String(query == null ? "" : query),
+    String(source || "all"),
+    String(p),
+    String(size),
+    String(sort || ""),
+    String(category || ""),
+    String(budgetMs),
+  ].join("\u0001");
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const work = (async () => {
+    return await fanOutSources({
+      names: picked,
+      budgetMs,
+      cache,
+      cooldownKey: String(query == null ? "" : query).trim().toLowerCase(),
+      run: (name) => {
+        const handler = (handlers && handlers[name]) || SOURCE_HANDLERS[name];
+        return handler({ query, page: p, pageSize: size, cache, sort: effectiveSort, category });
+      },
+    });
+  })();
+  inflight.set(key, work);
+  try {
+    return await work;
+  } finally {
+    inflight.delete(key);
+  }
 }
 
 export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "", category = "", handlers = null, budgetMs = 12000 }) {
@@ -606,13 +669,9 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   const picked = wanted.filter((name) => Boolean((handlers && handlers[name]) || SOURCE_HANDLERS[name]));
   // handlers 是测试注入点：fake handler 才能在没有网络、没有上游波动的情况下断言
   // 并发与顺序性质。生产路径 handlers 为 null，仍走 SOURCE_HANDLERS。
-  const fan = await fanOutSources({
-    names: picked,
-    budgetMs,
-    run: (name) => {
-      const handler = (handlers && handlers[name]) || SOURCE_HANDLERS[name];
-      return handler({ query, page: p, pageSize: size, cache, sort: effectiveSort, category });
-    },
+  const fan = await fanOnce({
+    query, source, cache, sort, category, handlers, budgetMs,
+    effectiveSort, p, size, picked,
   });
   const degraded = fan.degraded;
   for (const entry of fan.results) {

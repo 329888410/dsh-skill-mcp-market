@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.147
+
+- 聚合搜索等待时间的第一刀（基线量化 → 只动数据层，不改 UI）：src/sources.js 的聚合路径（面板一次搜索走的同一条代码）在真实网络上六次测量全部 ≈12.0s（就是预算值本身）：冷 12008ms、同条件第二次 12005ms（热/冷=1.0x，缓存没救到等待）、换页 12011ms、换词冷 12013ms/热 12010ms。根因有二：①超时源不写任何负缓存，下一个请求从头再等满一遍预算——单源实测 trusttools 12010ms 撞满 12s 预算、skills.sh 9010ms；②同一条件的并发请求各打各的上游（全仓此前无在途合并，AbortController 只存在于各 fetch 内部）。
+- 超时冷却（负缓存）：fanOutSources 新增可选 cache/cooldownMs（默认 120s）/cooldownKey 参数；只有真的等满预算的源才写冷却键 `market_src_timeout:<query>:<source>`，冷却期内同源请求直接进「冷却槽」，degraded 文案如实写明「来源响应超时（预算 Ns），已跳过（冷却中，本轮不再重试）」。抛错与真实空结果绝不进冷却——抛错源每次都真重试（test-search-fanout-latency Test 2 契约保持）。先例：src/enrich.js:89-115 的 skillmd_miss 24h 负缓存。
+- 在途合并（同条件只打一次上游）：searchSkills 的聚合调用包进 fanOnce——同 query/source/page/size/sort/category 的并发调用共享同一次上游扇出，settled 后即从 inflight 表移除（合并 ≠ 永久缓存），不同条件的调用各打各的。
+- 冷却生效后同一把尺复测（真实网络、同脚本、预算未改）：同条件第二次 12005ms → **2848ms（0.24x）**，第三次 2946ms，换词热 12010ms → 6986ms；冷路径不变（首搜仍要等最慢源，那是预算的诚实成本）。复测轮里 skillhub/trusttools 在部分窗口超时进冷却，下一轮即不再拖住整体。
+- 行为测试锁死（test/test-search-latency-recovery.mjs，新增登记进 test:chain 第 60 项）：34 项判据全注入零网络——超时源第二次不再重付预算（等待差一个量级）、上游只被打一次、文案如实、抛错源每次真重试、TTL 到期重试（Date.now 冻结 119s/121s 两界）、同条件并发只打一次上游且两个调用方都拿到完整 items、page/query/sort/category 任一不同必须各打各、合并结束后再来重新取、槽位顺序与长度契约不变。RED 对 HEAD 实现原文 `14 passed, 15 failed`（第二次仍付 310ms/312ms、calls.dead=2、无冷却文案、并发各打各、三条源码锁不成立），GREEN `29 passed, 0 failed`。
+- 反向破坏证伪 5 向（每轮 node --check + 按字节还原，GREEN 基线 sha16=7e8a67ab04bf5d6a）：去掉冷却写入 → `23 passed, 6 failed`；去掉在途合并（inflight 永空）→ `23 passed, 6 failed`；冷却只写不读 → `23 passed, 6 failed`；抛错也进冷却 → `27 passed, 2 failed`；恢复已删除的「names 同名 merged 复用」死分支 → `31 passed, 3 failed`（Test 6 的移除锁 + n===3 行为判据抓到）。死分支本身已删：picked 来自 ALL_SOURCES 去重集 / handlers 对象键，永远不含重复名，原 3 行复用逻辑测不到（第一版反向破坏 29 passed 0 failed 证实），删后 fanOutSources 相关套件与槽位契约全绿。
+- 回归：test-search-fanout-latency 196/0、test-paging-deterministic 30/0、test-ux-honesty 62/0、test-dead-exports 47/0、test-suite-inventory 11/0、test-cleanup 14/0、test-total-pages、test-warmup 12/0、test-skillsmp-search 72/0、test-paging 13/0、test-paging-verdict 35/0、test-features 29/0、test-new-features 43/0、test-edit-lib 41/0、test-global-sort 9/0；门 59/60（唯一红 test-profile-sync 的「profile 落后于工作树」为发布前预期中间态）。
+
 ## 0.5.146
 
 - clawhub 条目身份修正：`item.id` 过去直接采用上游 `raw.id`，而 search 端点的 `raw.id` 有两种形态——57/100 行已经自带 `clawhub:` 前缀（拼出来是 `clawhub:clawhub:kd75kdbc9…`），43/100 行是跨源形态（`skills-sh:google/skills/…`，与安装路由逐字相同）。同一技能在 search 与 browse 两种形态下 id 不同构，翻页追加去重（client.js:822）与目录累加去重（extra-sources.js 三处）因此失效。新增导出 `clawhubIdOf(raw)`：身份一律取 clawhub 的 owner/slug 对（实测 219/219 行带 `ownerHandle`+`slug`，176 个 distinct 键、同键多形态 0），`install.reference` 保持上游安装路由原样不被改写（跨源行它是真路由，改了会误装）。
