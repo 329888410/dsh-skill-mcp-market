@@ -8,7 +8,8 @@
 //   lobehub CLI --sort: createdAt|stars|installCount|name|relevance|ratingAverage|commentCount|updatedAt
 //   modelscope: 无服务端 sort→全量拉(≤45k)后本地排 DownloadCount/Likes/GmtCreate/GmtModify/Name
 //   browse.sh: 一次全量479→本地排 installCount/updated/name
-//   skillsmp: API被Cloudflare挡→诚实不支持任何 sort
+//   skillsmp: legacy API 走 python 传输；sortBy=stars|recent 实测服务端全盘生效且跨页单调
+//             （p1 最小 updatedAt = p2 最大 = 1795140060），installCount 上游无此键 → 仍诚实拒绝
 import { searchSkills, makeCache, supportsSort } from '../src/sources.js';
 import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
@@ -33,7 +34,9 @@ console.log('Test 1: supportsSort 能力矩阵与实测一致');
   check('browse.sh updated', supportsSort('browse.sh', 'updated') === true);
   check('trusttools stars NOT (upstream ignores)', supportsSort('trusttools', 'stars') === false);
   check('trusttools newest NOT (EMPTY)', supportsSort('trusttools', 'newest') === false);
-  check('skillsmp nothing', supportsSort('skillsmp', 'stars') === false && supportsSort('skillsmp', 'installCount') === false);
+  check('skillsmp stars 服务端实测生效', supportsSort('skillsmp', 'stars') === true);
+  check('skillsmp updated 走 sortBy=recent（实测跨页单调）', supportsSort('skillsmp', 'updated') === true);
+  check('skillsmp installCount 上游无此 sort → 仍拒', supportsSort('skillsmp', 'installCount') === false);
 }
 
 const cache = makeCache(path.join(safeTempDir(), 'dsh-so-' + Date.now()));
@@ -110,7 +113,7 @@ console.log('Test 6: 面板不得再有内联能力副本；能力一律来自�
   check('服务端 settings.get 附带能力表', /sortCapabilities/.test(fs2.readFileSync(path.resolve(import.meta.dirname, '..', 'index.js'), 'utf8')));
   // 服务端矩阵仍是实测事实源：抽查 4 个易漂移项
   check('matrix: clawhub trending', /"clawhub": \[[^\]]*trending/.test(cap));
-  check('matrix: skillsmp name-only', /"skillsmp": \["name"\]/.test(cap));
+  check('matrix: skillsmp stars/updated/name', /"skillsmp": \["stars", "updated", "name"\]/.test(cap));
   check('matrix: trusttools no stars', /"trusttools": \[(?!.*stars)[^\]]*\]/.test(cap));
   check('matrix: registry MCP 为空', /"registry": \[\]/.test(cap));
 }

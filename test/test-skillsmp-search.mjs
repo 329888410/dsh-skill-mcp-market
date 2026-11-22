@@ -207,5 +207,109 @@ console.log('Test 10: cache.get 只经 cache 对象调用（不得残留 makeCac
 }
 
 console.log('');
+console.log('Test 11: 分类 facet 只在纯浏览态透传上游，并回填到卡片');
+{
+  const urls = [];
+  const mkFacet = () => mkData(2, { search: '', sortBy: 'stars' }, { page: 1, limit: 24, total: 480, totalPages: 10, hasNext: true, totalIsExact: true, isCapped: true, maxResults: 480, totalAll: 532411 });
+  const r = await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: null, fetchJson: async (u) => { urls.push(u); return mkFacet(); } });
+  const sp = paramsOf(urls[0]);
+  console.log('   实测 URL: ' + String(urls[0]));
+  check('纯浏览态把 category 发给上游', sp.get('category') === 'debugging', String(urls[0]));
+  check('facet 回填到卡片 category（行上无分类字段时）', r.items.length > 0 && r.items.every((it) => it.category === 'debugging'), JSON.stringify(r.items.map((it) => it.category)));
+  const urls2 = [];
+  await searchSkillsMp({ query: 'pdf', page: 1, pageSize: 24, category: 'debugging', cache: null, fetchJson: async (u) => { urls2.push(u); return mkData(2, { search: 'pdf', sortBy: 'stars' }, { page: 1, limit: 24, total: 7, hasNext: true, totalIsExact: false }); } });
+  check('带关键词时绝不发 facet（实测被忽略且静默换集合）', paramsOf(urls2[0]).get('category') === null, String(urls2[0]));
+  // 一次性缓存目录：safeTempDir() 是共享目录，磁盘缓存活过 10 分钟 TTL 会让本场景跨轮次互相污染。
+  const c2 = makeCache(safeTempDir() + '/skillsmp-facet-' + Date.now());
+  const n3 = [];
+  const fj3 = async (u) => { n3.push(u); return mkFacet(); };
+  await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: c2, fetchJson: fj3 });
+  await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'cli-tools', cache: c2, fetchJson: fj3 });
+  await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: c2, fetchJson: fj3 });
+  check('缓存键含 facet（不同分类不得串同一页）', n3.length === 2, JSON.stringify(n3));
+  check('同一分类重复浏览才走缓存', n3[0] !== n3[1] && /category=debugging/.test(n3[0]), JSON.stringify(n3));
+  let threw = '';
+  let rr = null;
+  const n4 = [];
+  try {
+    rr = await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'tools', cache: null, fetchJson: async (u) => {
+      n4.push(u);
+      if (new URL(u).searchParams.get('category')) throw new Error('python 取数失败：Traceback ... urllib.error.HTTPError: HTTP Error 400: Bad Request');
+      return mkData(2, { search: '', sortBy: 'stars' }, { page: 1, limit: 24, total: 1200, totalPages: 50, hasNext: true, totalIsExact: false, isCapped: true, maxResults: 1200 });
+    } });
+  } catch (e) { threw = String((e && e.message) || e); }
+  check('facet 被上游 400 拒绝时整源不崩', threw === '' && rr !== null, threw);
+  check('被拒后去 facet 重发一次（不是放弃这一页）', n4.length === 2 && !new URL(n4[1]).searchParams.get('category'), JSON.stringify(n4));
+  check('被拒时 hint 如实说不接受该分类', !!rr && typeof rr.hint === 'string' && /分类/.test(rr.hint), rr && String(rr.hint));
+  check('被拒时不得把该分类回填到卡片', !!rr && rr.items.every((it) => !it.category), JSON.stringify(rr && rr.items.map((it) => it.category)));
+}
+
+console.log('');
+console.log('Test 12: facet 态的 480 是窗口深度、totalAll 才是目录条数');
+{
+  // 样本自洽：limit=24 时上游给的 totalPages 就是 480/24=20（实测 limit=48 → 10）。
+  const shape = (extra) => Object.assign({ page: 1, limit: 24, total: 480, totalPages: 20, hasNext: true, totalIsExact: true, isCapped: true, maxResults: 480, totalAll: 532411 }, extra || {});
+  const r = await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: null, fetchJson: async () => mkData(24, { search: '', sortBy: 'stars' }, shape()) });
+  console.log('   实测(facet 首页): total=' + String(r.total) + ' totalPages=' + String(r.totalPages) + ' hasMore=' + String(r.hasMore) + ' hint=' + String(r.hint));
+  check('facet 态总数报 totalAll（不是窗口 480）', r.total === 532411, String(r.total));
+  check('总页数只能是窗口页深 480/24=20（不得用 totalAll 反推）', r.totalPages === 20, String(r.totalPages));
+  check('hint 同时给出目录条数与可翻页深度', /532411/.test(String(r.hint)) && /480/.test(String(r.hint)), String(r.hint));
+  const rEnd = await searchSkillsMp({ query: '', page: 10, pageSize: 48, category: 'debugging', cache: null, fetchJson: async () => mkData(48, { search: '', sortBy: 'stars' }, shape({ page: 10, limit: 48, hasNext: false })) });
+  check('窗口末页 hasNext=false → hasMore 必须 false', rEnd.hasMore === false, String(rEnd.hasMore));
+  check('末页仍报 totalAll', rEnd.total === 532411, String(rEnd.total));
+  const rNoAll = await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'tools', cache: null, fetchJson: async () => mkData(24, { search: '', sortBy: 'stars' }, { page: 1, limit: 24, total: 480, totalPages: 20, hasNext: true, totalIsExact: false, isCapped: true, maxResults: 480 }) });
+  check('没有 totalAll 时绝不报数字总数', rNoAll.total === undefined, String(rNoAll.total));
+  const rPlain = await searchSkillsMp({ query: 'pdf', page: 1, pageSize: 24, cache: null, fetchJson: async () => mkData(5, { search: 'pdf', sortBy: 'stars' }, { page: 1, limit: 24, total: 5, totalPages: 1, hasNext: false, totalIsExact: true }) });
+  check('普通翻完的精确态不回退（total 照报 5）', rPlain.total === 5 && rPlain.hasMore === false, String(rPlain.total) + '/' + String(rPlain.hasMore));
+}
+
+console.log('');
+console.log('Test 13: stars 不再写死为 0，口径注释必须改对');
+{
+  const rows = [Object.assign(rawRow(0), { stars: 469982 }), Object.assign(rawRow(1), { stars: 1602 })];
+  const r = await searchSkillsMp({ query: '', page: 1, pageSize: 24, cache: null, fetchJson: async () => ({ skills: rows, filters: { search: '', sortBy: 'stars' }, pagination: { page: 1, limit: 24, total: 2, totalIsExact: true, hasNext: false } }) });
+  check('stars 取上游真实值', r.items[0].stars === 469982 && r.items[1].stars === 1602, JSON.stringify(r.items.map((i) => i.stars)));
+  const src = fs.readFileSync(path.join(REPO, 'src', 'extra-sources.js'), 'utf8');
+  const s = src.indexOf('export async function searchSkillsMp');
+  const e = src.indexOf('// ---------------------------------------------------------------- ModelScope', s);
+  const body = src.slice(s, e);
+  check('skillsmp 区域内不再有 stars: 0', !/stars: 0/.test(body), '');
+  check('skillsmp 区域内不再称 stars 是 placeholder', !/placeholder/i.test(body), '');
+}
+
+console.log('');
+console.log('Test 14: 排序键映射到上游生效的 sortBy，且不再本页重排');
+{
+  const unordered = [Object.assign(rawRow(0), { stars: 10, updatedAt: 5 }), Object.assign(rawRow(1), { stars: 900, updatedAt: 9 }), Object.assign(rawRow(2), { stars: 50, updatedAt: 7 })];
+  const mk = () => ({ skills: unordered.slice(), filters: { search: '', sortBy: 'stars' }, pagination: { page: 1, limit: 24, total: 3, totalIsExact: true, hasNext: false } });
+  const urls = [];
+  const rStars = await searchSkillsMp({ query: '', page: 1, pageSize: 24, sort: 'stars', cache: null, fetchJson: async (u) => { urls.push(u); return mk(); } });
+  check('sort=stars 发 sortBy=stars', paramsOf(urls[0]).get('sortBy') === 'stars', String(urls[0]));
+  check('stars 由服务端排，本页不得重排', rStars.items.map((i) => i.stars).join(',') === '10,900,50', rStars.items.map((i) => i.stars).join(','));
+  const urls2 = [];
+  const rUpd = await searchSkillsMp({ query: '', page: 1, pageSize: 24, sort: 'updated', cache: null, fetchJson: async (u) => { urls2.push(u); return mk(); } });
+  check('sort=updated 映射到上游唯一生效的 sortBy=recent', paramsOf(urls2[0]).get('sortBy') === 'recent', String(urls2[0]));
+  check('updated 也不得本页重排（条目顺序即上游序）', rUpd.items.map((i) => i.name).join(',') === 'pdf-tool-0,pdf-tool-1,pdf-tool-2', rUpd.items.map((i) => i.name).join(','));
+  const urls3 = [];
+  const rName = await searchSkillsMp({ query: '', page: 1, pageSize: 24, sort: 'name', cache: null, fetchJson: async (u) => { urls3.push(u); return mk(); } });
+  check('sort=name 不发 sortBy（上游无 name 排序）', paramsOf(urls3[0]).get('sortBy') === null, String(urls3[0]));
+  check('sort=name 仍本地升序', rName.items[0].name <= rName.items[2].name, JSON.stringify(rName.items.map((i) => i.name)));
+  const urls4 = [];
+  await searchSkillsMp({ query: '', page: 1, pageSize: 24, sort: 'installCount', cache: null, fetchJson: async (u) => { urls4.push(u); return mk(); } });
+  check('installCount 绝不伪造 sortBy', paramsOf(urls4[0]).get('sortBy') === null, String(urls4[0]));
+}
+
+console.log('');
+console.log('Test 15: 取证注释必须把 facet 窗口与白名单写成可复核的事实');
+{
+  const src = fs.readFileSync(path.join(REPO, 'src', 'extra-sources.js'), 'utf8');
+  const s = src.indexOf('// ---------------------------------------------------------------- skillsmp');
+  const e = src.indexOf('export async function searchSkillsMp', s);
+  const notes = src.slice(s, e);
+  check('注释写明 480 是窗口深度不是条数', /480/.test(notes) && /窗口/.test(notes) && /不是/.test(notes), '');
+  check('注释引用上游自报 totalAll 实测值', /totalAll/.test(notes) && /532411/.test(notes), notes.slice(0, 200));
+  check('注释写明白名单是真子集（63 接受 / 11 拒绝）', /63/.test(notes) && /11/.test(notes) && /(INVALID_CATEGORY|400)/.test(notes), '');
+}
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

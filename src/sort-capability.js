@@ -6,9 +6,9 @@
 //   skills.sh    search API 行带 installs（实测 4,431,266 首条）→ installCount/name
 //   clawhub      browse 端点 sort=downloads|stars|newest|updated|trending|name 全部服务端全盘排序
 //                （实测单调）；sort=installs 不单调 → 用 downloads 代替；search 端点仅本地
-//   skillsmp     API 被 Cloudflare 挡（走 python 降级）；上游回显 filters={search,sortBy}，
-//                sortBy=recent 服务端生效，未知键静默 200（2026-11-22 实测，非 400）；
-//                仅 name 有跨页稳定证据 → 仅 name
+//   skillsmp     legacy /api/skills（走 python 传输）：sortBy=stars|recent 服务端全盘，
+//                跨页单调实测 p1 最小 updatedAt = p2 最大 = 1795140060；installCount 上游无此键；
+//                name 无服务端键 → 只能本页升序 → stars/updated/name
 //   trusttools   GET sort_by=install_count 服务端全盘（446,924 首条）；sort_by=stars 被忽略、
 //                newest/updated/trending/name 返回 EMPTY（上游坏）→ installCount/name(窗口本地)
 //   browse.sh    一次返回全量 479 条，installCount/updated/name 本地全量排 = 真实全盘
@@ -41,7 +41,7 @@ const CAPABILITIES = {
   // search（带查询）路径 trending 无字段支撑（score 是相关性分桶、rolling60DayInstalls 稀疏近零），
   // 其余键由 handler 的本地 getter 覆盖（stars/newest 取自 native.skill.*，updated 取顶层 updatedAt）。
   "clawhub": ["downloadCount", "stars", "newest", "updated", "trending", "name"],
-  "skillsmp": ["name"],
+  "skillsmp": ["stars", "updated", "name"],
   "trusttools": ["installCount", "name"],
   "browse.sh": ["installCount", "updated", "name"],
   "lobehub": ["installCount", "stars", "newest", "updated", "name"],

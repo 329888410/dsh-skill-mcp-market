@@ -635,7 +635,18 @@ export async function lobehubAgentSkill(identifier) {
 // a moving target — measured live 2026-11-22: a browse page answers total 1200 (the site's own hero
 // counts 4,248,026 SKILL.md files) with totalIsExact:false plus isCapped/maxResults; a search page
 // answers page*limit+1 with totalIsExact:false; only an exhausted search answers totalIsExact:true.
-// The judgement below reads those fields and never invents a total of its own.
+// 分类 facet 另有两个口径（全部 2026-11-22 走 getJsonEscalating/python 实测，回归见 test-skillsmp-search.mjs）：
+//   · 带 facet 时 pagination.total 恒 480 —— limit=8/24/48 下 totalPages 60/20/10，乘积都是 480，
+//     10 个不同分类与 2 个 occupation 全报同一个 480。那是窗口深度，不是该分类的条数。
+//   · 同一响应里上游另自报 pagination.totalAll = 该面真实条数：category=debugging → 532411、
+//     category=cli-tools → 21484、occupation=software-developers → 1124877。language=zh 与纯浏览态不给该字段，
+//     此时总数照旧不报。所以判据是先看窗口再看精确，total 取 totalAll，页数只能取窗口页深。
+//   · facet 与 search 不能同时用：search=pdf total=7，加 category=ide-plugins 仍报 7，但首 6 条与不带 facet
+//     的结果重叠 0/6 —— 上游忽略 facet 且静默换成另一个集合。带关键词时一律不发 facet。
+//   · /zh/categories 页面给 75 个 slug，legacy 白名单只接受其中 63 个，另 11 个回 HTTP 400
+//     body {"success":false,"error":{"code":"INVALID_CATEGORY",...}}（tools、business、data-ai、databases
+//     都在被拒之列）。词表只能解析 HTML，没有公开的编目端点可查，所以运行时必须对 400 兜底。
+// 其余判据（search= 键、limit 上界）同样以那组实测为准，注释只写复核过的事实。
 const SKILLSMP_TTL = 10 * 60 * 1000;
 // limit 上界不是推测值：上游自己把边界写在错误体里。交错重放 4 轮（48/49/40/50 交替，排除
 // 「请求次数触发 Cloudflare 挑战」这一混淆项）原文：limit=48 → HTTP 200 n=48（4/4 轮），
@@ -661,25 +672,48 @@ function skillsmpTarget(raw) {
   // 搜索参数与总数口径的回归测试：test/test-skillsmp-search.mjs。
   // 抓取方法与 searchClawHub 同构：把 json 抓取注入成参数，确定性测试才不用真打 skillsmp。
   // 默认值保持线上行为：Cloudflare 按 TLS 指纹拦抢，只有 CPython urllib 能过。
-export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache, sort = "", fetchJson = getJsonEscalating }) {
+export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "", fetchJson = getJsonEscalating }) {
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(SKILLSMP_MAX_LIMIT, Number(pageSize) || 24));
-  const key = `skillsmp:${q || "all"}:${p}:${size}:${sort || ""}`;
+  // facet 是服务端过滤，缓存键必须带上它；带关键词时上游会忽略 facet 并静默换集合（见上），
+  // 所以 facet 只在纯浏览态生效。
+  const facet = q ? "" : String(category || "").trim().toLowerCase();
+  const key = `skillsmp:${q || "all"}:${facet || "any"}:${p}:${size}:${sort || ""}`;
   const cached = cache ? await cache.get(key, SKILLSMP_TTL) : undefined;
   if (cached && Array.isArray(cached.items) && cached.items.length) return { ...cached, source: "skillsmp" };
   // 实测：/api/skills 只认 search。q、keyword、query 一律被忽略（data.filters 只在真键生效时
-  // 回显 {"search":...}），所以别再把别名当「兜底」一起发——那样面板会以为搜过了，实际拿的是全库首页。
+  // 回显 {"search":...}），所以别不要再把别名当「兜底」一起发——那样面板会以为搜过了，实际拿的是全库首页。
   const params = new URLSearchParams({ page: String(p), limit: String(size) });
   if (q) params.set("search", q);
-  const data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, {
+  // sortBy 实测服务端全盘生效且跨页单调（p1 最小 updatedAt 等于 p2 最大 = 1795140060），
+  // 所以这两个键交给上游，绝不再在本页重排——本页重排会把服务端的全盘序打乱。
+  if (sort === "stars") params.set("sortBy", "stars");
+  else if (sort === "updated") params.set("sortBy", "recent");
+  if (facet) params.set("category", facet);
+  const options = {
     headers: { referer: "https://skillsmp.com/" },
     timeoutMs: 20000,
     // 唯一需要 python 的站点：Cloudflare 按 TLS 指纹拦截，fetch/curl 均 403，只有 CPython urllib 能过。
     pythonFirst: true,
-  });
+  };
+  let data;
+  let facetUsed = facet;
+  let facetRefused = false;
+  const refusedNote = `skillsmp 不接受分类「${facet}」（上游回 400 INVALID_CATEGORY），已按全部分类返回这一页`;
+  try {
+    data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, options);
+  } catch (err) {
+    // 75 个站点 slug 里 legacy 只认 63 个（其余 HTTP 400 INVALID_CATEGORY）。词表只能从页面解析，
+    // 无法运行时预知，所以被拒时去掉 facet 重发一次：宁可给全库首页并说明，也不许整源进 degraded。
+    if (!facet) throw err;
+    params.delete("category");
+    data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, options);
+    facetRefused = true;
+    facetUsed = "";
+  }
   const rows = Array.isArray(data.skills) ? data.skills : [];
-  // skillsmp 能力：仅 name（API 被 Cloudflare 挡、CLI 无 installCount）。其他键保持上游序。
+  // name 没有对应的服务端 sort 键，只能本页升序（本页不是全盘，口径由聚合层给 note）；stars/updated 已交上游。
   sortRawRows(rows, sort, { name: (r) => r.name ?? r.skillName });
   const items = rows.slice(0, size).map((raw) => {
     const { repo, branch, skillDir } = skillsmpTarget(raw);
@@ -696,21 +730,26 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
       upstreamUrl: repo ? `${repo}@${branch}` : "",
       skillDir,
       ref: branch,
-      // The upstream `stars` field is a placeholder (identical across unrelated rows),
-      // so it is not surfaced as a popularity signal.
-      stars: 0,
-      category: "",
+      // 实测 stars/forks 是仓库真实值（plain 首行 stars=469982、sortBy=recent 首行 1602，forks 同理）；
+      // 同一仓库的多个技能共用该仓库 star 数是上游口径，不是占位符，照实透出。
+      stars: Number(raw.stars) || 0,
+      // 行上没有任何分类字段（实测 16 键里没有 category/topics/tags），分类只能来自本次浏览的 facet，
+      // 由请求侧回填；facet 被上游拒绝时不回填，绝不给卡片安一个上游没承认的分类。
+      category: facetUsed,
       installable: Boolean(repo),
     };
   });
   // Upstream decides what counts as a total, not this function. Measured shapes:
   //   browse             total 1200 + totalIsExact:false + isCapped:true + maxResults:1200 -> window cap
+  //   facet browse       total 480 + isCapped:true + maxResults:480 + totalAll -> 窗口深度与真实条数是两个数
   //   search, unfinished total = page*limit+1 + totalIsExact:false -> a lower bound that moves per page
   //   search, exhausted  totalIsExact:true -> that number IS the full match set
   const pg = data.pagination || {};
   const upstreamTotal = Number(pg.total);
-  const exactTotal = pg.totalIsExact === true && Number.isFinite(upstreamTotal);
+  const upstreamAll = Number(pg.totalAll);
+  // 先窗口后精确：capped 态里那个 total 是窗口深度（facet 态恒 480），拿它当总数就是谎报目录条数。
   const windowed = pg.isCapped === true || pg.maxResults !== undefined || pg.totalIsExact === false;
+  const exactTotal = !windowed && pg.totalIsExact === true && Number.isFinite(upstreamTotal);
   let total;
   let hasMore;
   let totalPages;
@@ -723,17 +762,27 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
     // Leave the count unknown instead of presenting a window as the catalogue, and say why on the
     // hint channel (sources.js:598 collects hints, client.js renders them as one notice line).
     hasMore = typeof pg.hasNext === "boolean" ? pg.hasNext : undefined;
-    // A number is nameable only when upstream states the window size itself (maxResults). A bare
-    // totalIsExact:false — or a bare isCapped — ships a value that moves every page, so quoting it
-    // would be this function inventing a figure upstream never stated.
+    // A number is nameable only when upstream states the window size itself (maxResults) or the real
+    // size of that facet (totalAll). A bare totalIsExact:false ships a value that moves every page,
+    // so quoting it would be this function inventing a figure upstream never stated.
     const window = Number(pg.maxResults) || 0;
-    hint = window > 0
-      ? `skillsmp 上游把结果窗口截在约 ${window} 条（该数字来自上游自报的窗口上限，不是目录总数），更早/更晚的条目需要换关键词继续找`
-      : SKILLSMP_UNBOUNDED_NOTE;
+    if (Number.isFinite(upstreamAll)) {
+      total = upstreamAll;
+      const depth = window > 0 ? Math.max(1, Math.ceil(window / size)) : Number(pg.totalPages) || 1;
+      totalPages = depth;
+      if (pg.hasNext === false) hasMore = false;
+      hint = `skillsmp 该分类目录共 ${upstreamAll} 条（上游自报 totalAll），可浏览窗口只有 ${window} 条即 ${depth} 页 × ${size} 条，`;
+      hint += `第 ${depth} 页之后取不到也不计数，换关键词或换分类能继续往里走`;
+    } else if (window > 0) {
+      hint = `skillsmp 上游把结果窗口截在约 ${window} 条（该数字来自上游自报的窗口上限，不是目录总数），更早/更晚的条目需要换关键词继续找`;
+    } else {
+      hint = SKILLSMP_UNBOUNDED_NOTE;
+    }
+    if (facetRefused) hint = refusedNote;
   } else {
     // No pagination block at all: still unknown, and no fabricated lower bound.
     hasMore = items.length === size;
-    hint = SKILLSMP_UNBOUNDED_NOTE;
+    hint = facetRefused ? refusedNote : SKILLSMP_UNBOUNDED_NOTE;
   }
   const payload = { source: "skillsmp", items, total, hasMore, totalPages };
   if (hint) payload.hint = hint;
@@ -742,6 +791,7 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
   if (cache && items.length) await cache.put(key, payload);
   return payload;
 }
+
 
 // ---------------------------------------------------------------- ModelScope
 // PUT https://modelscope.cn/api/v1/dolphin/skills {PageNumber,PageSize,Query?} → Data.SkillList,

@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.145
+- **skillsmp 分类 facet 透传 + facet 总数口径（Phase 1，零配额 legacy API）**：
+  `searchSkillsMp` 此前根本不收 `category`，聚合层（`src/sources.js:614`）已经把分类传进
+  每个 handler，skillsmp 这一路直接丢掉——选分类 chip 等于没选。现在纯浏览态把 facet 发给
+  上游 `category=`，缓存键加 facet 段（原来两个分类的同一页会串成一条缓存）。
+- **带关键词时绝不发 facet**（实测 `search=pdf` total=7，加 `category=ide-plugins` 仍报 7，
+  但首 6 条与不带 facet 的结果重叠 0/6）：上游忽略 facet 且静默换成另一个集合，
+  发出去就是「用户以为按分类筛过，实际拿到别的东西」。
+- **facet 词表只有 63/75 被 legacy 接受**（其余 HTTP 400 `INVALID_CATEGORY`，tools、business、
+  data-ai、databases 都在被拒之列），且没有公开的编目端点可查（`/api/categories`、
+  `/api/v1/facets`、`/api/filters`、`/api/stats` 等 10 个候选逐个实测 404）。因此被拒时
+  去掉 facet 重发一次并在 hint 里说明，绝不因一个非法分类让整源进 degraded。
+- **修正「480 当目录条数」的新缺陷面**：带 facet 时上游 `pagination.total` 恒 480
+  （limit=8/24/48 下 totalPages 60/20/10，乘积都是 480；10 个分类 + 2 个 occupation 全报同一个数），
+  那是窗口深度。同一响应里上游另自报 `totalAll` = 真实条数（`category=debugging` → 532411、
+  `cli-tools` → 21484、`occupation=software-developers` → 1124877）。现在 total 取 totalAll，
+  totalPages 只能取窗口页深，hint 同时写明「目录共 N 条、可浏览窗口只有 M 条即 K 页」；
+  窗口翻完（`hasNext:false`）不再谎称有下一页；没有 totalAll 时照旧不报数字。
+  判据顺序同步改为「先窗口后精确」——旧写法里 facet 态 `totalIsExact:true` + `isCapped:true` 
+  同时成立时会走精确分支，把窗口深度 480 当总数报出去。
+- **卡片分类回填**：skillsmp 的行上没有分类字段（实测 16 个键里没有 category/topics/tags），
+  分类只能来自本次浏览的 facet，由请求侧回填；facet 被拒时不回填，不给卡片安一个上游没承认的分类。
+- **stars 不再是 0**：`src/extra-sources.js` 旧注释称上游 stars 是占位符并写死 `stars: 0`；
+  实测 plain 首行 stars=469982、`sortBy=recent` 首行 1602，forks 同理，是真实的仓库星数
+  （同一仓库的多个技能共用该仓库 star 数是上游口径）。现在照实透出，卡片才显得出 ★。
+- **排序能力矩阵不再低估**：`sortBy=stars|recent` 实测服务端全盘生效且跨页单调
+  （p1 最小 updatedAt = p2 最大 = 1795140060），`src/sort-capability.js` 的 `"skillsmp"` 从
+  `["name"]` 改为 `["stars", "updated", "name"]`，handler 把 stars→`sortBy=stars`、
+  updated→`sortBy=recent` 交上游，并取消这两个键的本地重排（本页重排会打乱服务端全盘序）；
+  `installCount` 上游无此键，仍诚实拒绝。
+- **回归**：`test/test-skillsmp-search.mjs` 新增 Test 11-15（facet 透传/回填/缓存键/400 兜底、
+  totalAll 口径与页深、stars 真值、sort 映射与不重排、取证注释锁），套件 43→72 项；
+  `test/test-sort-options.mjs` 的 skillsmp 三格与矩阵逐字锁同步。反向破坏 10 向（不发 facet、
+  不回填、缓存键去 facet、400 不兜底、不用 totalAll、恢复旧的精确优先判据、stars 写死 0、
+  不发 sortBy=stars、不发 sortBy=recent、矩阵退回 name-only）全部被抓红，源码逐字节还原。
+- 取证细节（10 个编目端点候选全 404、75 slug 白名单逐个实测、480/totalAll 原始响应）写在 `src/extra-sources.js` skillsmp 段注释与 `test/test-skillsmp-search.mjs` 头注；Phase 2（面板固定词表的分类入口）单独发版。
+
 ## 0.5.144
 
 - **skills.sh 的总数不再随页码变（D1）**：`searchSkillsSh` 旧写法 `hasMore = rows.length >= depth`、`total = hasMore ? Math.max(Number(data.count) || 0, depth + 1) : (p - 1) * size + rows.length`。直打上游坐实 `/api/search` 的响应键里 `count` 恒等于本次返回行数（limit 10/24/30/60 → 10/24/30/60），**上游从不报总数**，且没有 offset 参数、单次硬顶 200 条（q=test/code/pdf 在 limit=200 与 500 下都回 200 行；q=agent 144、q=skill 129、q=dev 196 未撞顶）。于是实测复算 q=agent size=24：page1 报「共约 25」、page2 49、page3 73、page8 312（此时 hasMore 已 false）、page9 336 —— 总数随页码线性增长，且明说「没有下一页」时仍在按页凑数。新口径：请求窗口多要一条作探针（`probe = size * p + 1`），三态判定 —— 探针那条到手 ⇒ 只能说还有下一页且 `total` 未知；窗口内没取满 ⇒ 见底，`total = rows.length` 与页码无关；撞 200 顶 ⇒ `total` 未知并把原因写进 hint（面板通知线是活路径 client.js:815/:845）。真实上游复验：pdf p1/p2 均 `total=undefined hasMore=true`；agent p8 `total=144 hasMore=false pages=6`（真实末页之后，面板翻不到）；test p9 `total=undefined hasMore=false` 且 hint 带 200；zqq-never-match-xyz p1 `total=0`（空结果不谎称到底）。
