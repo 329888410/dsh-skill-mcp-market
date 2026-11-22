@@ -70,24 +70,27 @@ async function getJsonClawHub(url, attempt = 0) {
   }
 }
 
-// clawhubCategoryOf —— clawhub 行上的分类载体是 topics 数组（实测 browse 50 行里 38 行
-// 非空，如 ["self-improvement","context"]），上游**没有** category 键（三行样本的键是
-// ownerHandle/slug/displayName/summary/description/topics/tags/stats/createdAt/updatedAt/
-// latestVersion/metadata）；旧写法 raw.category || "" 因此恒空，面板的分类 chip 对
-// clawhub 永远不出现。取 topics 首项当分类是**近似**：面板的分类过滤只作用于当前页并
-// 会用 categoryNote 明说（sources.js 的本地过滤分支），所以近似不会伪装成服务端过滤。
-// search 端点行上既无 topics 也无 category（实测 21 键）→ 仍返回空，分类 chip 不出现，
-// 这是事实而不是缺陷。
+// clawhubCategoryOf —— 分类载体的实测顺序：raw.category → raw.categories[0] → raw.topics[0]。
+// 2026-11-22 复测（getJsonEscalating 直打真实端点，各 50 行样本）：/api/v1/search 行上
+// categories 非空 50/50（如 ["knowledge"]）、topics 键 0/50、category 键 0/50；
+// /api/v1/skills（browse）行上 categories 非空 49/49、topics 非空 27/49、category 键 0。
+// 0.5.138 当年只看三行样本得出「载体是 topics、上游无 category 键」，据此只读 topics，
+// 于是两条路径都存在的 categories 被整个丢弃，面板分类 chip 对 clawhub 永不出现。
+// 保留 raw.category 优先（上游今天不给，给了就是权威值，test-clawhub-quality Test 9 锁它）；
+// topics 仍作兜底（browse 侧真有）。取首项是**近似**：面板的分类过滤只作用于当前页并用
+// categoryNote 明说（sources.js 的本地过滤分支），所以近似不会伪装成服务端过滤。
 export function clawhubCategoryOf(raw) {
   const direct = String((raw && raw.category) || "").trim();
   if (direct) return direct;
-  const topics = raw && raw.topics;
-  if (!Array.isArray(topics)) return "";
-  for (const t of topics) {
-    const s = String(t || "").trim().toLowerCase();
-    if (s) return s;
-  }
-  return "";
+  const firstNonEmpty = (v) => {
+    if (!Array.isArray(v)) return "";
+    for (const t of v) {
+      const s = String(t || "").trim().toLowerCase();
+      if (s) return s;
+    }
+    return "";
+  };
+  return firstNonEmpty(raw && raw.categories) || firstNonEmpty(raw && raw.topics);
 }
 
 function mapClawHubRows(rows, q, mode, limitOverride) {
@@ -627,9 +630,22 @@ export async function lobehubAgentSkill(identifier) {
 // ---------------------------------------------------------------- skillsmp
 // skillsmp.com answers 403 "Just a moment…" to this process's fetch/https but 200 to the
 // curl transport (see src/http.js): the edge fingerprints the TLS client, not the headers.
-// The payload is `{ skills: [...], pagination: { total } }`; every row carries the exact
-// GitHub location, so an install is a plain repo+skillDir download.
+// The payload is `{ skills: [...], pagination: {...}, filters: {...} }`; every row carries the exact
+// GitHub location, so an install is a plain repo+skillDir download. The numbers in pagination are
+// a moving target — measured live 2026-11-22: a browse page answers total 1200 (the site's own hero
+// counts 4,248,026 SKILL.md files) with totalIsExact:false plus isCapped/maxResults; a search page
+// answers page*limit+1 with totalIsExact:false; only an exhausted search answers totalIsExact:true.
+// The judgement below reads those fields and never invents a total of its own.
 const SKILLSMP_TTL = 10 * 60 * 1000;
+// limit 上界不是推测值：上游自己把边界写在错误体里。交错重放 4 轮（48/49/40/50 交替，排除
+// 「请求次数触发 Cloudflare 挑战」这一混淆项）原文：limit=48 → HTTP 200 n=48（4/4 轮），
+// limit=49 与 limit=50 → HTTP 400 Bad Request，body =
+//   {"error":"Invalid limit; expected one integer between 1 and 48",...}（4/4 轮同形）；
+// 44/45/46/47 另经 getJsonEscalating（插件真实取数路径）逐个实测 n=limit。
+// 注意：裸 fetch 对这些请求拿到的是 403「Just a moment...」挑战页，那不是上游对 limit 的答复，
+// 所以取证必须走 getJsonEscalating/python 传输。旧实现钳到 50 = 每页宽 48~50 的请求都会被拒。
+const SKILLSMP_MAX_LIMIT = 48;
+const SKILLSMP_UNBOUNDED_NOTE = "skillsmp 搜索窗口会随翻页移动，上游未报总数时不给数字";
 
 function skillsmpTarget(raw) {
   const route = raw.route || {};
@@ -642,15 +658,21 @@ function skillsmpTarget(raw) {
   return { repo, branch, skillDir };
 }
 
-export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
+  // 搜索参数与总数口径的回归测试：test/test-skillsmp-search.mjs。
+  // 抓取方法与 searchClawHub 同构：把 json 抓取注入成参数，确定性测试才不用真打 skillsmp。
+  // 默认值保持线上行为：Cloudflare 按 TLS 指纹拦抢，只有 CPython urllib 能过。
+export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache, sort = "", fetchJson = getJsonEscalating }) {
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
-  const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
+  const size = Math.max(1, Math.min(SKILLSMP_MAX_LIMIT, Number(pageSize) || 24));
   const key = `skillsmp:${q || "all"}:${p}:${size}:${sort || ""}`;
   const cached = cache ? await cache.get(key, SKILLSMP_TTL) : undefined;
   if (cached && Array.isArray(cached.items) && cached.items.length) return { ...cached, source: "skillsmp" };
-  const params = new URLSearchParams({ q, page: String(p), limit: String(Math.max(size, 10)) });
-  const data = await getJsonEscalating(`https://skillsmp.com/api/skills?${params.toString()}`, {
+  // 实测：/api/skills 只认 search。q、keyword、query 一律被忽略（data.filters 只在真键生效时
+  // 回显 {"search":...}），所以别再把别名当「兜底」一起发——那样面板会以为搜过了，实际拿的是全库首页。
+  const params = new URLSearchParams({ page: String(p), limit: String(size) });
+  if (q) params.set("search", q);
+  const data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, {
     headers: { referer: "https://skillsmp.com/" },
     timeoutMs: 20000,
     // 唯一需要 python 的站点：Cloudflare 按 TLS 指纹拦截，fetch/curl 均 403，只有 CPython urllib 能过。
@@ -681,8 +703,40 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
       installable: Boolean(repo),
     };
   });
-  const total = Number(data.pagination && data.pagination.total) || p * size + (rows.length >= size ? 1 : 0);
-  const payload = { source: "skillsmp", items, total, hasMore: p * size < total };
+  // Upstream decides what counts as a total, not this function. Measured shapes:
+  //   browse             total 1200 + totalIsExact:false + isCapped:true + maxResults:1200 -> window cap
+  //   search, unfinished total = page*limit+1 + totalIsExact:false -> a lower bound that moves per page
+  //   search, exhausted  totalIsExact:true -> that number IS the full match set
+  const pg = data.pagination || {};
+  const upstreamTotal = Number(pg.total);
+  const exactTotal = pg.totalIsExact === true && Number.isFinite(upstreamTotal);
+  const windowed = pg.isCapped === true || pg.maxResults !== undefined || pg.totalIsExact === false;
+  let total;
+  let hasMore;
+  let totalPages;
+  let hint;
+  if (exactTotal) {
+    total = upstreamTotal;
+    hasMore = Boolean(pg.hasNext);
+    totalPages = Number(pg.totalPages) || (total ? Math.max(1, Math.ceil(total / size)) : 1);
+  } else if (windowed) {
+    // Leave the count unknown instead of presenting a window as the catalogue, and say why on the
+    // hint channel (sources.js:598 collects hints, client.js renders them as one notice line).
+    hasMore = typeof pg.hasNext === "boolean" ? pg.hasNext : undefined;
+    // A number is nameable only when upstream states the window size itself (maxResults). A bare
+    // totalIsExact:false — or a bare isCapped — ships a value that moves every page, so quoting it
+    // would be this function inventing a figure upstream never stated.
+    const window = Number(pg.maxResults) || 0;
+    hint = window > 0
+      ? `skillsmp 上游把结果窗口截在约 ${window} 条（该数字来自上游自报的窗口上限，不是目录总数），更早/更晚的条目需要换关键词继续找`
+      : SKILLSMP_UNBOUNDED_NOTE;
+  } else {
+    // No pagination block at all: still unknown, and no fabricated lower bound.
+    hasMore = items.length === size;
+    hint = SKILLSMP_UNBOUNDED_NOTE;
+  }
+  const payload = { source: "skillsmp", items, total, hasMore, totalPages };
+  if (hint) payload.hint = hint;
   // An empty page is never cached: one upstream hiccup must not blank the market for ten
   // minutes, and the next request should retry immediately.
   if (cache && items.length) await cache.put(key, payload);

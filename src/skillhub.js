@@ -169,10 +169,12 @@ export async function searchSkills({ query = "", page = 1, pageSize = 20, catego
   return {
     source: "skillhub",
     items,
-    total: Number(data.total ?? items.length) || items.length,
+    // 0.5.144（D4）：上游没报总数时不给数字（与 clawhub / skills.sh / lobehub 同规）。
+    total: Number.isFinite(Number(data.total)) && Number(data.total) > 0 ? Number(data.total) : items.length ? undefined : 0,
     page: Number(data.page ?? page) || page,
-    pageSize: items.length || pageSize,
-    hasMore: items.length >= pageSize,
+    pageSize: size,
+    // 0.5.144（D4）：请求页宽钳到 50，判据却拿未钳制的入参比 —— pageSize=60 时上游回 60 行也谎称最后一页。
+    hasMore: items.length >= size,
   };
 }
 // 曾有的 categories() 已删除：它请求 /api/skills/categories（实测 405 Method Not Allowed），

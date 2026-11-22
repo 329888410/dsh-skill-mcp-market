@@ -901,7 +901,7 @@ const CARD_BATCH = 48;
           // 与下面 setMcpHasMore 共用同一个判定：缓存里必须存住这个信号，否则切源
           // 再切回时命中缓存只恢复了卡片与页数，hasMore 还停在上一个源的值上。
           const mcpMore = d.canLoadMore !== undefined ? Boolean(d.canLoadMore) : (d.page || nextPage) < (d.totalPages || 1);
-          if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [], page: d.page || nextPage, totalPages: d.totalPages || 0, total: d.total || rows.length, hasMore: mcpMore };
+          if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [], page: d.page || nextPage, totalPages: d.totalPages || 0, total: d.total, hasMore: mcpMore };
           // Append must not repeat a card: the registry pages by version rows, so a server
           // may legitimately return a slug that is already on screen.
           setMcps(opts.append
@@ -2233,7 +2233,7 @@ const CARD_BATCH = 48;
             tab === 'mcp' && (mcpTotal > 0 || mcps.length > 0)
               ? h('div', { style: S.status },
                   mcpSource === 'lobehub'
-                    ? `LobeHub · 共 ${mcpTotal.toLocaleString()} 个连接器 · 第 ${mcpPage}/${mcpTotalPages} 页`
+                    ? pagerSummary({ label: 'LobeHub', total: mcpTotal, page: mcpPage, n: mcpTotalPages, unknown: !mcpTotalPages, hasMore: mcpHasMore })
                     : `MCP 官方注册表 · 第 ${mcpPage} 页${mcpHasMore ? '（可继续加载）' : ''}`)
               : null,
             error ? h('div', { style: S.err }, error) : null,

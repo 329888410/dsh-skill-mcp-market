@@ -125,7 +125,7 @@ function mapItem(raw) {
  * Search the LobeHub marketplace. Registered credentials are reused; a first run without any
  * registers this plugin automatically so the tab is never dead on arrival.
  */
-export async function searchLobeHubMarket({ query = "", pageSize = 24, category = "", sort = "", page = 1, cache } = {}) {
+export async function searchLobeHubMarket({ query = "", pageSize = 24, category = "", sort = "", page = 1, cache, run = runCli } = {}) {
   // The API rejects `--page-size 60` with "Bad Request"; 40 answers reliably.
   const size = Math.max(1, Math.min(40, Number(pageSize) || 24));
   const pageNumber = Math.max(1, Number(page) || 1);
@@ -148,7 +148,7 @@ export async function searchLobeHubMarket({ query = "", pageSize = 24, category 
     let lastError;
     for (let tries = 0; tries < 3; tries += 1) {
       try {
-        return await runCli(args, timeoutMs);
+        return await run(args, timeoutMs);
       } catch (error) {
         lastError = error;
         if (!/fetch failed|ETIMEDOUT|ECONNRESET|socket hang up/i.test(String(error.message || error))) throw error;
@@ -176,11 +176,14 @@ export async function searchLobeHubMarket({ query = "", pageSize = 24, category 
     const order = sort === "ratingAverage" ? byRating : sort === "createdAt" ? byNewest : byInstalls;
     items.sort(order);
   }
+  // 0.5.144（D3）：缺失/0/NaN 都算「上游没说规模」，宁可 undefined 也不编数（0.5.140 起全仓同规）。
+  const totalCount = Number(data.totalCount);
+  const totalPagesNum = Number(data.totalPages);
   const result = {
     source: "lobehub",
     sourceLabel: "LobeHub",
     items,
-    total: Number(data.totalCount) || items.length,
+    total: Number.isFinite(totalCount) && totalCount > 0 ? totalCount : undefined,
     // Upstream mixes display names ("Finance") with real filter codes ("finance"); only the
     // lowercase codes are valid `--category` values, so they are what the panel offers.
     categories: Array.isArray(data.categories)
@@ -188,7 +191,9 @@ export async function searchLobeHubMarket({ query = "", pageSize = 24, category 
       : [],
     page: Number(data.currentPage) || 1,
     pageSize: Number(data.pageSize) || size,
-    totalPages: Number(data.totalPages) || 1,
+    totalPages: Number.isFinite(totalPagesNum) && totalPagesNum > 0 ? totalPagesNum : undefined,
+    // 0.5.144（D3）：本页取满即「后面可能还有」——规模未知时下一页不能因 totalPages 缺失被永久禁用。
+    hasMore: items.length >= size,
   };
   if (cache) await cache.put(key, result);
   return result;

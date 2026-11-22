@@ -196,12 +196,12 @@ console.log('Test 8: 卡片不得显示被复制出来的安装数（live 实测
 console.log('');
 
 console.log('');
-console.log('Test 9: clawhub 的分类载体是 topics（上游无 category 键）');
+console.log('Test 9: clawhub 的分类载体是 categories 数组（2026-11-22 复测：search 50/50、browse 49/49 行带非空 categories；topics 仅 browse 侧存在 27/49，category 键两侧均为 0）');
 {
-  // 取证：browse 行 50 条样本里 topics 非空 38、tags 是 {"latest":"4.0.5"} 这种对象、
-  // 行上根本没有 category 键；search 行 21 个键里既没有 topics 也没有 category。
-  // 我方 mapClawHubRows 写的是 category: raw.category || "" → 恒空，于是面板的
-  // 分类 chip（由 item.category 派生）对 clawhub 永远不出现。
+  // 取证修订（2026-11-22 实测，推翻 0.5.138 的三行样本结论）：search 行 50/50 带
+  // categories（["knowledge"] 等）且 topics/category 键均为 0；browse 行 49/49 带
+  // categories、topics 仅 27/49 非空、category 键 0。旧结论「上游无 category 键、
+  // search 行也无 topics」来自当年的三行样本，措辞与今日实测不符；载体顺序相应修订为
   // 用动态 import：函数尚不存在时 ESM 静态 import 会让整个套件在链接期崩掉
   // （NO-SUMMARY），拿不到「具体哪条判据失败」的原文。
   let mod = null;
@@ -217,6 +217,10 @@ console.log('Test 9: clawhub 的分类载体是 topics（上游无 category 键�
     check('search 行（两者皆无）→ 空', fn({ displayName: 'Pdf', downloads: 1 }) === '', '');
     check('空入参不抛', fn(null) === '' && fn(undefined) === '');
     check('首个空 topic 被跳过', fn({ topics: ['', ' GitHub '] }) === 'github', JSON.stringify(fn({ topics: ['', ' GitHub '] })));
+    check('categories 首项作为分类（小写）', fn({ categories: ['Research', 'creative'] }) === 'research', JSON.stringify(fn({ categories: ['Research', 'creative'] })));
+    check('categories 空数组 → 落到 topics（真实行上两者并存）', fn({ categories: [], topics: ['Context'] }) === 'context', JSON.stringify(fn({ categories: [], topics: ['Context'] })));
+    check('categories 非数组 → 落到 topics', fn({ categories: 'knowledge', topics: ['Context'] }) === 'context', JSON.stringify(fn({ categories: 'knowledge', topics: ['Context'] })));
+    check('categories 与 topics 都非空时优先取 categories（browse 行实测 27/49 如此）', fn({ categories: ['Research'], topics: ['Context'] }) === 'research', JSON.stringify(fn({ categories: ['Research'], topics: ['Context'] })));
   }
   // 接线：mapClawHubRows 必须调用它，而不是留着 raw.category 那个上游没有的键
   const esSrc = fs.readFileSync(new URL('../src/extra-sources.js', import.meta.url), 'utf8');

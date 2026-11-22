@@ -6,8 +6,9 @@
 //   skills.sh    search API 行带 installs（实测 4,431,266 首条）→ installCount/name
 //   clawhub      browse 端点 sort=downloads|stars|newest|updated|trending|name 全部服务端全盘排序
 //                （实测单调）；sort=installs 不单调 → 用 downloads 代替；search 端点仅本地
-//   skillsmp     API 被 Cloudflare 挡（走 python 降级），CLI --sort 只有 stars|recent；
-//                本地只对已取回的 rows 排 name → 仅 name
+//   skillsmp     API 被 Cloudflare 挡（走 python 降级）；上游回显 filters={search,sortBy}，
+//                sortBy=recent 服务端生效，未知键静默 200（2026-11-22 实测，非 400）；
+//                仅 name 有跨页稳定证据 → 仅 name
 //   trusttools   GET sort_by=install_count 服务端全盘（446,924 首条）；sort_by=stars 被忽略、
 //                newest/updated/trending/name 返回 EMPTY（上游坏）→ installCount/name(窗口本地)
 //   browse.sh    一次返回全量 479 条，installCount/updated/name 本地全量排 = 真实全盘

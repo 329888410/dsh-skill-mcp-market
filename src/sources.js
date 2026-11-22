@@ -249,6 +249,11 @@ function sortSkillsShRows(rows, sort) {
   return rows;
 }
 
+// 上游单次硬顶：实测 2026-11-22 q=test/code/pdf 在 limit=200 与 limit=500 下都回 200 行，
+// q=agent 回 144 行 —— 200 是「取不到的就不存在」的窗口上限，不是目录总数。
+// 这个数只用于「请求窗口是否已撞顶」的判定，永远不参与对外报告的计数。
+const SKILLS_SH_WINDOW_CAP = 200;
+
 async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
@@ -257,7 +262,10 @@ async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort
   // legitimate state, so browse the (whole) catalogue instead.
   if (q.length < 2) return browseSkillsSh({ query: q, page: p, pageSize: size, cache, sort });
   // 上游没有 offset：只能一次取到第 p 页的深度，再在本地切出最后一屏。
-  const depth = Math.min(200, size * p);
+  // 窗口多要 1 条：只有真的拿得到第 size*p+1 条，才有资格说「还有下一页」；
+  // 少给一条就说明集合见底，此时行数是**精确总数**而不是下界。
+  const probe = size * p + 1;
+  const depth = Math.min(SKILLS_SH_WINDOW_CAP, probe);
   const url = `https://www.skills.sh/api/search?q=${encodeURIComponent(q)}&limit=${depth}`;
   // 上游每次现算：同一查询短时内复用结果，重复搜索从 ~3s 降到 ~0ms。
   const searchKey = `skillssh:search:${q.toLowerCase()}:${depth}:${sort || ""}`;
@@ -299,9 +307,36 @@ async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort
     DESCRIPTION_BUDGET_MS,
   );
   fillMissingDescriptions(items);
-  const hasMore = rows.length >= depth;
-  const total = hasMore ? Math.max(Number(data.count) || 0, depth + 1) : (p - 1) * size + rows.length;
-  return { source: "skills.sh", items, total, hasMore };
+  // hasMore 与 total 同源于证据（旧写法用 rows.length >= depth 单独判「还有下一页」，
+  // 于是正好取满一页就被说成还有下一页，还把 depth+1 报成总数）：
+  // 旧口径的两个缺陷（实测同一个 q=agent 翻页报 25/49/73/312/336）：
+  //   ① data.count 恒等于本次返回的行数（limit=10/24/30/60 → count=10/24/30/60），
+  //      它不是目录总数，却被 Math.max 当成总数报出去；
+  //   ② 另一支用 (p-1)*size+rows.length 把「已经翻过的页」加进总数，
+  //      同一个查询每翻一页就长大一截。两条都是拿页码算数，不是拿证据算数。
+  // 现在只剩三种可证明的形态：
+  //   ① 取到探针那条 ⇒ 确实还有下一页，但上游没有总数可报 ⇒ total 未知（未知保持未知）；
+  //   ② 窗口内没取满 ⇒ 行数就是**精确总数**，与页码无关；
+  //   ③ 撞上游硬顶 ⇒ 再取也不会更多，总数仍未知（200 不是目录总数，不能冒充计数），
+  //      并把原因写进 hint（聚合层 :607 收 hint，面板按行显示）。
+  let hasMore = false;
+  const hitCap = depth >= SKILLS_SH_WINDOW_CAP && rows.length >= SKILLS_SH_WINDOW_CAP;
+  let total;
+  let hint = "";
+  if (rows.length > size * p) {
+    // 探针那条到手 ⇒ 下一页确实存在；上游没有总数 ⇒ 保持未知。
+    hasMore = true;
+    total = undefined;
+  } else if (hitCap) {
+    total = undefined;
+    hint = "skills.sh 搜索单次最多返回 " + SKILLS_SH_WINDOW_CAP +
+      " 条，上游没有偏移参数；已取满这一窗，后面的结果取不到也不计数，换个更具体的关键词能看到别的结果";
+  } else {
+    // 窗口内没取满 ⇒ 行数就是这个查询的完整集合，精确总数，与页码无关。
+    hasMore = false;
+    total = rows.length;
+  }
+  return { source: "skills.sh", items, total, hasMore, hint };
 }
 
 /**
@@ -427,7 +462,8 @@ async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cache, sort
           note: "通过官方 browse CLI 安装（npx browse skills add）；本次结果来自 CLI 备用通道",
         }));
         if (cache) await cache.put("browse_sh_api", items.length ? rows : cliRows);
-        return { source: "browse.sh", items: cliItems, total: cliItems.length, hasMore: false, hint: "browse.sh Web API 无结果，结果来自官方 CLI" };
+        // 0.5.144（D6）：CLI 只 --limit size，窗口条数不是目录总数；取满即如实说「还有取不到的」。
+        return { source: "browse.sh", items: cliItems, total: undefined, hasMore: cliItems.length >= size, hint: "browse.sh Web API 无结果，结果来自官方 CLI；CLI 单次最多返回 " + size + " 条，窗口之外取不到也不计数" };
       }
     } catch (cliErr) {
       matched.hint = "browse.sh Web API 与官方 CLI 均无结果或不可达";

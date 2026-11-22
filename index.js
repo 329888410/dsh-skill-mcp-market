@@ -123,6 +123,7 @@ async function loadLobeHubCatalog(cache, query = "", options = {}) {
         page: result.page,
         totalPages: result.totalPages,
         total: result.total,
+        hasMore: result.hasMore,
       };
     }
     return {
@@ -136,6 +137,7 @@ async function loadLobeHubCatalog(cache, query = "", options = {}) {
       page: result.page,
       totalPages: result.totalPages,
       total: result.total,
+      hasMore: result.hasMore,
     };
   } catch (error) {
     const stale = await cache.get(key, 7 * 24 * 3600 * 1000);
@@ -935,14 +937,16 @@ export async function apply(ctx, config = {}) {
       const installed = args.includeInstalled === false ? [] : await mcp.list();
       const page = Number(catalog.page) || 1;
       return {
-        total: catalog.total || items.length,
+        // 0.5.144（D5）：与 RPC 面同口径 —— 上游没报规模就不给数字，不再拿本页条数冒充总数。
+        total: catalog.estimatedTotal || catalog.total || undefined,
         items,
         installed,
         page,
         totalPages: catalog.totalPages || 0,
         // Paging is real for BOTH markets now: LobeHub has a page count, the registry walks
         // cursors, and either one reports whether another page exists.
-        canLoadMore: catalog.hasMore !== undefined ? Boolean(catalog.hasMore) : page < (catalog.totalPages || 1),
+        // 0.5.144（D3/D5）：与 RPC 面同一判据；totalPages 未知时回落 Infinity（由 hasMore 说话），不再谎称只有 1 页。
+        canLoadMore: catalog.hasMore !== undefined ? Boolean(catalog.hasMore) : page < (catalog.totalPages || Infinity),
         categories: catalog.categories || [],
         source: wanted,
         mcpDirs: settings.mcpDirs,
@@ -1608,12 +1612,10 @@ function needsConfirmFor(patch, current) {
           source: wanted,
           page: catalog.page || 1,
           totalPages: catalog.totalPages || 0,
-          total: catalog.estimatedTotal || catalog.total || catalog.items.length,
+          total: catalog.estimatedTotal || catalog.total || undefined,
           // The registry has no published total; it walks cursors, so only `hasMore` can
           // answer "is there another page" — the panel must not guess from totalPages.
-          canLoadMore: catalog.hasMore !== undefined
-            ? Boolean(catalog.hasMore)
-            : (catalog.page || 1) < (catalog.totalPages || 1),
+          canLoadMore: catalog.hasMore !== undefined ? Boolean(catalog.hasMore) : (catalog.page || 1) < (catalog.totalPages || Infinity),
         };
       }
       case "mcp.install": {
