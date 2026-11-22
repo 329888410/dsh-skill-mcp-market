@@ -182,25 +182,33 @@ async function extendClawHubCatalog(cache, need, sortBy = "") {
   return state;
 }
 
-export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
+export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache, sort = "", fetchJson = getJsonClawHub }) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
   const q = String(query || "").trim();
-  // 同一 (query,page,size) 5 分钟内复用：clawhub 一次搜索要并发打 1–6 个上游页。
+  // 同一 (query,page,size) 5 分钟内复用：clawhub 单次搜索取整个上游窗口再本地翻页。
   const cKey = `clawhub:search:${q.toLowerCase()}:${p}:${size}:${sort || ""}`;
   if (cache) {
     const hit = await cache.get(cKey, 5 * 60 * 1000);
     if (hit && Array.isArray(hit.items) && hit.items.length) return { ...hit, source: "clawhub" };
   }
   if (q) {
-    // search 端点固定回 10 条/页，顺着 page 取到当前页并拼接上首页，避免翻页拿空。
+    // 上游 /api/v1/search 实测：顶层只有 results（无 total/count）；page 参数被忽略
+    // （page=1 与 page=2 首两条是同一批）；limit 生效但 100 是硬上限（limit=150/200/
+    // 300/500/1000 恒回 100 条），且 limit=10 的返回正好是 limit=100 的同序前缀。
+    // 所以取数口径 = 单次请求整个 100 条窗口 + 本地翻页。旧实现按 page 并发打 1–6 个
+    // 假分页请求再拼窗口，实测 total 在页码之间跳（page1=11、page2=10）、page≥2 全空。
+    const WINDOW_CAP = 100;
     const wanted = Math.min(60, size * p);
-    const pages = [];
-    const perPage = 10;
-    for (let i = 1; i <= Math.min(6, Math.ceil(wanted / perPage)); i += 1) {
-      pages.push(`https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&page=${i}&limit=${perPage}`);
+    const searchUrl = `https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&limit=${WINDOW_CAP}`;
+    let searchSettled = null;
+    let searchFailure = null;
+    try {
+      searchSettled = await fetchJson(searchUrl);
+    } catch (err) {
+      searchFailure = err;
     }
-    const settled = await Promise.allSettled(pages.map((url) => getJsonClawHub(url)));
+    const settled = searchFailure ? [{ status: "rejected", reason: searchFailure }] : [{ status: "fulfilled", value: searchSettled }];
     if (settled.every((item) => item.status === "rejected")) {
       // Web API 全挂 → 官方 CLI 备用（表格文本按列解析；仅 Web 故障时启用）
       let cliRows = [];
@@ -246,10 +254,15 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
   sortRawRows(merged, sort, CLAWHUB_SEARCH_SORT_GETTERS);
   const slicedRows = merged.slice((p - 1) * size, p * size);
     const out = mapClawHubRows(slicedRows, q, "search", slicedRows.length);
-    out.total = merged.length >= wanted ? wanted + 1 : merged.length;
-    out.hasMore = merged.length >= wanted;
+    // wanted 现在只服务 CLI 降级（Web 端点不再分页）。
+    const capped = merged.length >= WINDOW_CAP;
+    out.total = capped ? undefined : merged.length;
+    out.hasMore = capped ? p * size < WINDOW_CAP : p * size < merged.length;
+    out.totalPages = capped ? undefined : Math.max(1, Math.ceil(merged.length / size));
+    if (capped) out.hint = `clawhub 搜索上游单次最多回 ${WINDOW_CAP} 条且不报总数，再往后的结果需要换关键词继续找`;
     if (cache && out.items && out.items.length) await cache.put(cKey, out);
-out.totalPages = out.hasMore ? undefined : Math.max(1, Math.ceil(merged.length / size));
+    // total/hasMore/totalPages/hint 全部在 cache.put 之前赋值（旧写法把
+    // totalPages 排在 put 之后，缓存副本因此少一个字段）。
     return out;
   }
   // 浏览：上游 browse 端点支持服务端全盘排序（实测 sort=downloads 跨 cursor 全局单调，首条≈494k）。

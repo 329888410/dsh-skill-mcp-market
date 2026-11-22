@@ -1,7 +1,9 @@
 # Changelog
 
-- **空页不再被说成「目录已到底」**（同一轮门内实测的第二处不诚实）：trusttools 在门里出现过一次首页静默空响应（items=0、degraded=0、total=0），handler 的 `hasMore` 当时退化成 `items.length >= size` = false，聚合层于是对外宣称「已是最后一页」—— 一次抓取失败被说成整个目录只有这一屏，比谎报总数更误导（用户会以为源已穷尽、不再翻页）。现在 `false` 只有在响应带真实总数证据时才是结论，否则保持 `undefined`（未知），分页器继续显示「可继续加载」。
-- **上游状态 vs 本侧回归的判定收敛成一个 helper**：新增 `emptyWithoutEvidence`（degraded>0 / total>0 / hasMore===true 都算有证据，三者皆无才算上游静默空响应）。test-nocache 与 test-paging 之前各写一套相近判据 —— 两套判据互相打架正是假绿来源，现在两处调用同一函数；真值表 6 例进 test-paging-verdict（含反向破坏：写成恒 true 一律当上游问题，就会被 total>0 却空页那例抓到）。修复后 test-paging 13 passed（旧行为下同一场景判 FAIL —— 门里红、单跑三次绿的那种 flake 消失），test-nocache 13 passed / 1 skipped。
+## 0.5.143
+
+- 修复 clawhub 搜索结果总数与翻页（真实上游取证 2026-11-23）：上游 `/api/v1/search` 顶层只有 `results`、没有 `total`/`count`，`page` 参数被忽略（page=1 与 page=2 首两条同一批），`limit` 生效但 100 是硬上限（实测 limit=150/200/300/500/1000 恒回 100 条），且 limit=10 的返回正好是 limit=100 的同序前缀。旧实现按页码并发打 1–6 个假分页请求再拼窗口，于是同一查询的总数随页码跳（实测 `q=pdf` page1 报 total=11、page2 报 total=10），page≥2 全空、页大小 50 时 total 缩成 10——那是拿窗口凑数的下界 `wanted+1`，不是上游事实。现在取数口径改为单次请求整个 100 条窗口 + 本地翻页：未撞上限时 `total` 就是这个集合的真实条数（与页码无关）、`totalPages` 可算；撞上限时 `total`/`totalPages` 保持未知（不报 100 也不报 101），`hasMore` 只在窗口内承诺，并给出提示「clawhub 搜索上游单次最多回 100 条且不报总数，再往后的结果需要换关键词继续找」。附带收益：一次请求取代最多 6 次并发。真实上游复验 `q=pdf`：page1/2/3 各 24 条、page11 空、total 与 pages 恒为 undefined、hasMore 只在窗口尽头转 false（修复前 page2/3 是 0 条且 total 在页间跳）。`searchClawHub` 增加 `fetchJson` 注入口（默认走真实取数，仅为确定性测试开口）。
+- 新增回归：`test/test-clawhub-quality.mjs` Test 11 用注入 handler 断言 total 与页码无关、未撞上限时等于窗口真实长度、第 4 页不再翻到空页、不再出现 wanted+1 下界、撞上限时 total/pages 双未知且给出说明、只发一次请求且带 limit=100。反向破坏四向均转红（变异先过 `node --check`，排除语法错误冒充红）：A `capped` 恒 false → 3 条红（total 报 100、pages 报 10、说明消失）；B `out.total = merged.length`（无视上限）→ 1 条红；C `hasMore = merged.length >= wanted`（退回旧窗口下界判据）→ 1 条红（越 100 条仍承诺有货）；D `WINDOW_CAP = 10` → 5 条红（窗口截断后 total/翻页/说明/limit 全塌）。每向恢复后与基线字节一致。
 
 ## 0.5.142
 
@@ -38,6 +40,9 @@
 - **卡片计数的文本锁按真形升级（不是放宽）**：接线 visibleCounts 后 test-search-fanout-latency 两条锁立刻变红（`FAIL 下载数一条且带真值守卫与千分位`、`FAIL 安装数同样有真值守卫`）—— 这正是它们该做的事。原锁只匹配 `item.installs ? h('span'`，无法区分「包了一层守卫」和「压根没包」；现在拆成三条：技能卡下载数过同源守卫、技能卡安装数过同源守卫、MCP 卡安装数仍是直接守卫（那一侧没有 downloads 兄弟字段可比）。检查数 185 → 188。
 
 ## 0.5.136
+
+- **空页不再被说成「目录已到底」**（同一轮门内实测的第二处不诚实）：trusttools 在门里出现过一次首页静默空响应（items=0、degraded=0、total=0），handler 的 `hasMore` 当时退化成 `items.length >= size` = false，聚合层于是对外宣称「已是最后一页」—— 一次抓取失败被说成整个目录只有这一屏，比谎报总数更误导（用户会以为源已穷尽、不再翻页）。现在 `false` 只有在响应带真实总数证据时才是结论，否则保持 `undefined`（未知），分页器继续显示「可继续加载」。
+- **上游状态 vs 本侧回归的判定收敛成一个 helper**：新增 `emptyWithoutEvidence`（degraded>0 / total>0 / hasMore===true 都算有证据，三者皆无才算上游静默空响应）。test-nocache 与 test-paging 之前各写一套相近判据 —— 两套判据互相打架正是假绿来源，现在两处调用同一函数；真值表 6 例进 test-paging-verdict（含反向破坏：写成恒 true 一律当上游问题，就会被 total>0 却空页那例抓到）。修复后 test-paging 13 passed（旧行为下同一场景判 FAIL —— 门里红、单跑三次绿的那种 flake 消失），test-nocache 13 passed / 1 skipped。
 
 - **聚合层两处「骗绿」路径（clawhub 无界流触发的主路径，行为断言 + 四条反向证伪）**：
   ① **handler 声明未知总数却被谎报成随页增长**：clawhub browse 是 cursor 无界流，handler 明确把 total/totalPages 置 undefined 表示「未知」（extra-sources.js:253-260 注释原话：谎报下界会让用户以为目录就这么大）；聚合层却把 undefined 当「没报总数」，兜底成 p*size+1 —— 实测 page=1 报 13、page=60 报 721，一个几千条的目录显示成「共约 13 个」。现在区分两种情形：「没报」（total=0）仍反推下界，Test 13 契约原样保留；「显式未知」（total=undefined）保持未知一路到底 —— 聚合层 reportedTotal=undefined，client 里四处把未知冒充成本页条数的 `|| rows.length` 一并清除，pagerSummary 对 total<=0 本就不渲染数量子句。**红→绿原文**：`FAIL 显式未知的 total 不随页码增长 13,25,37,721` → OK。

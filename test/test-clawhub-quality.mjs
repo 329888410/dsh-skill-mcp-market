@@ -18,9 +18,11 @@
 //    而且用的是原始 sort 而不是 effectiveSort：上游 sort=name 是码位序，dispatcher 再
 //    localeCompare 一遍，实测结果与上游顺序完全不一致（码位升序=false、
 //    localeCompare 升序=true）；supportsSort 为假时 effectiveSort 为空（注释说要
-//    「降级为不排序，保持上游顺序」），这段却照排不误。
+// ③ clawhub search 取数口径（src/extra-sources.js:195-253）：上游 search 端点不认 page、
+//    不报总数、limit 硬上限 100。Test 10 锁住「total 与页码无关」与「撞上限保持未知」。
 import fs from 'node:fs';
 import { makeCache, searchSkills } from '../src/sources.js';
+import { searchClawHub } from '../src/extra-sources.js';
 import { safeTempDir } from '../src/home.js';
 import { blockEnd } from './anchor-lib.mjs';
 
@@ -266,6 +268,46 @@ console.log('Test 10: 分类过滤保留的「无分类信息条目」必须如�
   check('无一匹配时保留量也如实告知', r3.items.length === 1 && /另有 1 项/.test(r3.categoryNote || ''), r3.items.length + ' / ' + JSON.stringify(r3.categoryNote));
 }
 
+
+console.log('');
+console.log('Test 11: clawhub search 的 total/hasMore 不得随页码变化（上游无总数、page 被忽略）');
+{
+  // 实测上游 /api/v1/search：顶层只有 results（无 total/count）；page 参数被忽略
+  // （page=1 与 page=2 首两条是同一批）；limit 生效但 100 是硬上限（limit=150..1000
+  // 恒回 100 条），且 limit=10 的返回正好是 limit=100 的同序前缀。旧实现按 page 并发
+  // 打 1–6 个假分页请求再拼窗口，实测 total 在页码之间跳（page1=11、page2=10）。
+  const rows = (n, tag) => Array.from({ length: n }, (unused, i) => ({ id: tag + "-" + i, slug: tag + "-" + i, displayName: tag + "-" + i, ownerHandle: "o", installs: 5, downloads: 9 }));
+  const mkHandler = (window) => async (url) => {
+    const limit = Number(new URL(url).searchParams.get("limit"));
+    return { results: window.slice(0, limit) };
+  };
+  const probe = async (window, ps) => {
+    const out = [];
+    for (const p of ps) {
+      const r = await searchClawHub({ query: "pdf", page: p, pageSize: 10, cache: null, fetchJson: mkHandler(window) });
+      out.push({ p: p, items: r.items.length, total: r.total, hasMore: r.hasMore, pages: r.totalPages, hint: r.hint });
+    }
+    return out;
+  };
+  const small = await probe(rows(37, "s"), [1, 2, 3, 4]);
+  console.log('   实测(窗口 37): ' + JSON.stringify(small));
+  const totals = new Set(small.map((x) => x.total));
+  check('未撞上限时 total 与页码无关', totals.size === 1, [...totals].join(','));
+  check('未撞上限时 total 就是窗口长度（该 query 的完整集合）', small[0].total === 37, String(small[0].total));
+  check('第 4 页仍返回该页条目（不再翻到空页）', small[3].items === 7, String(small[3].items));
+  check('不再谎报 wanted+1 这种下界', small.every((x) => x.total !== 11 && x.total !== 21 && x.total !== 31), small.map((x) => x.total).join(','));
+  const big = await probe(rows(100, "b"), [1, 5, 10, 11]);
+  console.log('   实测(撞 100 上限): ' + JSON.stringify(big));
+  check('撞上限时 total 保持未知（既不报 100 也不报 101）', big.every((x) => x.total === undefined), big.map((x) => String(x.total)).join(','));
+  check('撞上限时 pages 保持未知', big.every((x) => x.pages === undefined), big.map((x) => String(x.pages)).join(','));
+  check('上限内仍可翻页（第 10 页有货）', big[2].items === 10, String(big[2].items));
+  check('越过 100 条上限后不再承诺还有更多', big[3].items === 0 && big[3].hasMore === false, JSON.stringify(big[3]));
+  check('撞上限时给出说明（用户知道为何没有总数）', typeof big[0].hint === 'string' && String(big[0].hint).includes('100'), String(big[0].hint));
+  const urls = [];
+  await searchClawHub({ query: "pdf", page: 3, pageSize: 24, cache: null, fetchJson: async (u) => { urls.push(u); return { results: rows(100, "u") }; } });
+  check('单次请求取代多页并发（等待时间随之下降）', urls.length === 1, JSON.stringify(urls));
+  check('请求带上 limit=100（窗口上限）', urls.length === 1 && Number(new URL(urls[0]).searchParams.get("limit")) === 100, urls[0]);
+}
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
