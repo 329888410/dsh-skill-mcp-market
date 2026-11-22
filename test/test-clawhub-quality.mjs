@@ -313,6 +313,98 @@ console.log('Test 11: clawhub search 的 total/hasMore 不得随页码变化（�
   check('请求带上 limit=100（窗口上限）', urls.length === 1 && Number(new URL(urls[0]).searchParams.get("limit")) === 100, urls[0]);
 }
 console.log('');
+console.log('');
+console.log('Test 12: clawhub 条目身份是 ownerHandle/slug 对，不是上游 raw.id 也不是安装路由');
+{
+  // 取证样本：100 条真实 search 行 + 119 条 browse 行（2026-11-22 直取 clawhub.ai，原文见
+  // C:\Users\Public\dsh-scratch\clw-audit\raw-capture.json / raw-browse2.json）。
+  //  · search 行 raw.id：57/100 自带 "clawhub:" 前缀（如 clawhub:kd75kdbc9phg92p12av465mbf1820dqb），
+  //    另 43/100 是跨源形态 skills-sh:google/skills/<slug> —— 两种都不是 clawhub 自己的身份；
+  //  · browse 行 raw.id：0/119 存在，身份只有 ownerHandle + slug（219/219 行两者齐全）；
+  //  · 旧 id 公式 `clawhub:${raw.id || reference || raw.slug}` 于是同时产出
+  //    clawhub:clawhub:<opaque> 与 clawhub:skills-sh:… 两种形态，而 item.id 正是翻页去重键
+  //    （client.js:822 new Set(prev.map(x => x.id))）→ 同一技能跨 search/browse 被算成两条。
+  //  · install.reference 是安装路由（跨源行是 skills-sh:<owner>/<repo>/<path>，不可改写），只能
+  //    留在 installRef；实测 search 行 reference 末段 100/100 == raw.slug，故身份取自
+  //    ownerHandle/slug 与安装路由同源可信。旧公式还把 reference 切段当卡片 slug/owner：
+  //    40/100 行卡片 slug ≠ raw.slug、43/100 行卡片 owner 被切成 "skills-sh:google" 这类错值
+  //    （卡片直接显示它，client.js:1727），100 行里 12 张卡共用 slug「superpowers」、10 张共用
+  //    「skills」——安装名与「✓ 已安装」判定（client.js:1748 x.slug === item.slug）和 busy 键
+  //    （client.js:1754 install:${item.slug}）因此串到别的卡片上。
+  const mkRow = (o) => ({
+    id: o.id,
+    slug: o.slug,
+    ownerHandle: o.owner,
+    displayName: o.slug,
+    summary: '一行简介',
+    install: o.reference ? { reference: o.reference } : undefined,
+    canonicalUrl: o.canonicalUrl,
+    stats: { downloads: 10, installs: 2 },
+  });
+  const rows = [
+    mkRow({ id: 'clawhub:kd75kdbc9phg92p12av465mbf1820dqb', owner: 'bestrocky', slug: 'proactive-agent-lite' }),
+    mkRow({ id: 'skills-sh:google/skills/agent-platform-alert-configuration', owner: 'google-labs', slug: 'agent-platform-alert-configuration', reference: 'skills-sh:google/skills/agent-platform-alert-configuration', canonicalUrl: '/skills-sh/google/skills/agent-platform-alert-configuration' }),
+    mkRow({ owner: 'why20261', slug: 'douyin-real-hot-rise' }),
+  ];
+  const r = await searchClawHub({ query: 'pdf', page: 1, pageSize: 24, cache: null, fetchJson: async () => ({ results: rows }) });
+  const ids = r.items.map((x) => x.id);
+  check('id 形态统一为 clawhub:<ownerHandle>/<slug>', ids.join('|') === 'clawhub:bestrocky/proactive-agent-lite|clawhub:google-labs/agent-platform-alert-configuration|clawhub:why20261/douyin-real-hot-rise', ids.join('|'));
+  check('不再出现 clawhub:clawhub: 双前缀', ids.every((x) => !x.startsWith('clawhub:clawhub:')), ids.join('|'));
+  check('id 不再直接采用上游跨源 raw.id', ids.every((x) => !x.includes('skills-sh:')), ids.join('|'));
+  check('卡片 owner 用 raw.ownerHandle（不再被切成 skills-sh:google）', r.items.map((x) => x.owner).join('|') === 'bestrocky|google-labs|why20261', r.items.map((x) => x.owner).join('|'));
+  check('卡片 slug 用 raw.slug（不再是安装路由第二段）', r.items.map((x) => x.slug).join('|') === 'proactive-agent-lite|agent-platform-alert-configuration|douyin-real-hot-rise', r.items.map((x) => x.slug).join('|'));
+  check('installRef 保持上游安装路由原样', r.items[1].installRef === 'skills-sh:google/skills/agent-platform-alert-configuration', JSON.stringify(r.items[1].installRef));
+  check('browse 形态 homepage 仍是 /<ownerHandle>/<slug>', r.items[2].homepage === 'https://clawhub.ai/why20261/douyin-real-hot-rise', r.items[2].homepage);
+  // 同 slug 不同作者是两个技能：clawhub 落盘布局就是 @<owner>/<slug>（src/cli-install.js:136、:148，
+  // src/skills.js:798 与 :874 以两层布局判卸载/恢复）。100 条真实 search 行里 distinct raw.slug
+  // 只有 84（distinct 身份对 100），去重键退回裸 slug 就会在合并/目录流里静默丢 16 条。
+  const twin = [mkRow({ owner: 'alice', slug: 'pdf-tools' }), mkRow({ owner: 'bob', slug: 'pdf-tools' })];
+  const t = await searchClawHub({ query: 'twin', page: 1, pageSize: 24, cache: null, fetchJson: async () => ({ results: twin }) });
+  check('同 slug 不同作者是两条（去重键含作者）', t.items.length === 2, JSON.stringify(t.items.map((x) => x.id)));
+  // 用动态 import：函数尚不存在时静态 import 会让整个套件在链接期崩掉（NO-SUMMARY），
+  // 拿不到「具体哪条判据失败」的原文（同 Test 9 的写法）。
+  let mod = null;
+  let mErr = '';
+  try { mod = await import('../src/extra-sources.js'); } catch (e) { mErr = String((e && e.message) || e); }
+  const idOf = mod && mod.clawhubIdOf;
+  check('extra-sources 导出 clawhubIdOf', typeof idOf === 'function', mErr || '未导出');
+  if (typeof idOf === 'function') {
+    // CLI 降级行只有字符串 owner（extra-sources.js:226 造 {name,owner,displayName,slug}，既无
+    // ownerHandle 也无 install.reference）。本机未装 clawhub CLI（spawnSync clawhub ENOENT），
+    // 该路径不能 live 测，因此直接判定纯函数，不许产出 clawhub:undefined/…
+    check('CLI 降级行回落字符串 owner', idOf({ owner: 'octo', slug: 'x' }) === 'octo/x', idOf({ owner: 'octo', slug: 'x' }));
+    check('身份缺任一段时不造假 id', idOf({ slug: 'x' }) === '' && idOf({ ownerHandle: 'o' }) === '', JSON.stringify([idOf({ slug: 'x' }), idOf({ ownerHandle: 'o' })]));
+    check('ownerHandle 优先于 owner 对象（search 行 57/100 带 {handle,…}）', idOf({ ownerHandle: 'o', owner: { handle: 'h' }, slug: 's' }) === 'o/s', idOf({ ownerHandle: 'o', owner: { handle: 'h' }, slug: 's' }));
+    // owner 对象没有 ownerHandle 时也必须取 .handle：String(对象) 会产出 "[object Object]"，
+    // 那会拼出 id "clawhub:[object Object]/x" 并让「✓ 已安装」判定（client.js:1748）永远不命中。
+    check('owner 对象取 .handle（不写 [object Object]）', idOf({ owner: { handle: 'h' }, slug: 's' }) === 'h/s', idOf({ owner: { handle: 'h' }, slug: 's' }));
+    check('owner 对象无 handle 时不造假 id', idOf({ owner: {}, slug: 's' }) === '', idOf({ owner: {}, slug: 's' }));
+  }
+  const esSrc = fs.readFileSync(new URL('../src/extra-sources.js', import.meta.url), 'utf8');
+  const esLines = esSrc.split(String.fromCharCode(10));
+  const mStart = esLines.findIndex((l) => l.trimStart().startsWith('function mapClawHubRows('));
+  check('mapClawHubRows 起点存在', mStart >= 0, String(mStart));
+  const mBody = esLines.slice(mStart, blockEnd(esSrc, mStart, 'mapClawHubRows') + 1).join(String.fromCharCode(10));
+  check('mapClawHubRows 体内不再把 raw.id 当身份', mBody.indexOf('raw.id ||') < 0, '');
+  check('mapClawHubRows 体内改用 clawhubIdOf', mBody.indexOf('clawhubIdOf(raw)') >= 0, '');
+  // browse 目录累加器不吃 fetchJson（:181/:346 直调 getJsonClawHub），无法注入，只能上文本锁。
+  // 取函数体不能用 anchor-lib 的 blockEnd：warmClawHubCatalog(cache, options = {}) 与
+  // searchClawHub({ query = "", ... }) 的签名里带内层花括号，深度在签名行就归零，blockEnd
+  // 会把起点自身当成结尾（实测 end==start），取到的体只有一行、判据恒假。这里改成「扫到下
+  // 一个 0 列 } 行」；esLines 按 \n 切开后每行结尾仍带 \r，裸比较 '}' 永远不等，必须先剥。
+  const esClean = esSrc.split(String.fromCharCode(10)).map((l) => l.replace(/\r$/, ''));
+  const bodyOf = (fn) => {
+    const s = esClean.findIndex((l) => l.trimStart().startsWith('async function ' + fn + '(') || l.trimStart().startsWith('export async function ' + fn + '('));
+    check(fn + ' 起点存在', s >= 0, String(s));
+    let e = s + 1;
+    while (e < esClean.length && esClean[e] !== '}') e++;
+    return esClean.slice(s, e + 1).join(String.fromCharCode(10));
+  };
+  for (const fn of ['extendClawHubCatalog', 'warmClawHubCatalog', 'searchClawHub']) {
+    const body = bodyOf(fn);
+    check(fn + ' 去重键改用 clawhubIdOf（不再 raw.id/raw.slug）', body.indexOf('clawhubIdOf(raw)') >= 0 && body.indexOf('raw.id ?? raw.slug') < 0, '');
+  }
+}
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
 

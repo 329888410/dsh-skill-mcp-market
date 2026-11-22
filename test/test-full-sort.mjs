@@ -167,20 +167,31 @@ console.log('Test 5: skillsmp 按安装数必须被诚实拒绝（保持上游�
     // 空转绿灯修复：两侧都空时 '' === '' 恒真，会把「Cloudflare 挡住导致 skillsmp 一条都没有」
     // 判成「降级正确」。必须区分：空且 degraded 非空 = 上游不可达（SKIP）；
     // 空但无 degraded = handler 回归（FAIL）。有数据时比较表达式逐字不变。
-    if (!a.items.length && !b.items.length) {
-      // 两侧皆空：'' === '' 恒真，绝不能落到比较。
-      // degraded 非空 = 上游不可达（SKIP）；degraded 为空 = handler 回归（FAIL）。
-      if (a.degraded && a.degraded.length) skip('skillsmp 不可达（degraded 非空），降级比较无从判定');
-      else check('skillsmp 返回空且无 degraded（handler 回归）', false, 'items=0 且 degraded=[]');
+    //
+    // 单边降级同样无从判定（2026-11-22 21:4x 实测：4 轮里有 1 轮 a 超时回 0 条、
+    // b 正常回 12 条，degraded=['skillsmp:来源响应超时（预算 12s），已跳过']，
+    // 旧判据只看「两侧皆空」于是走进比较分支，把「这台机器此刻取不到 skillsmp」
+    // 报成本仓库回归 —— 门内原文 FAIL installCount 被降级为不排序 a= | b=skillsmp:morluto…，
+    // 以及 FAIL a 与基线条目集合一致 a=0 b=12）。降级是上游侧状态、不是排序语义，
+    // 所以任一侧 degraded 非空即 SKIP 并如实打出名单；单边空但没降级仍是真回归。
+    const dg = (r) => (r.degraded || []).map((d) => d.source + ':' + String(d.error || '')).join(',');
+    if ((a.degraded && a.degraded.length) || (b.degraded && b.degraded.length)) {
+      skip('skillsmp 取数降级（sort 侧 [' + dg(a) + '] / 基线侧 [' + dg(b) + ']），降级比较无从判定');
+    } else if (!a.items.length && !b.items.length) {
+      // 两侧皆空且都没降级：这是 handler 回归，绝不能落到 '' === '' 的比较上。
+      check('skillsmp 返回空且无 degraded（handler 回归）', false, 'items=0 且 degraded=[]');
     } else if (smpKey(b) !== smpKey(b2)) {
       skip('skillsmp 上游序自身在漂（两次 sort 为空的结果不同），降级比较无从判定');
+    } else if (!a.items.length || !b.items.length) {
+      // 单边空、两侧都未降级 = 带 sort 的那一路自己丢了条目，真回归。
+      check('单边为空且无 degraded（sort 路径回归）', false, 'a=' + a.items.length + ' b=' + b.items.length);
     } else {
       check('installCount 被降级为不排序', smpKey(a) === smpKey(b), 'a=' + smpKey(a).slice(0, 70) + ' | b=' + smpKey(b).slice(0, 70));
       const sa = new Set(a.items.map((i) => i.id));
       const sb = new Set(b.items.map((i) => i.id));
       check('a 与基线条目集合一致（没因 sort 走不同分支）', sa.size === sb.size && [...sa].every((x) => sb.has(x)), 'a=' + sa.size + ' b=' + sb.size);
     }
-  } catch (e) { skip('skillsmp（Cloudflare）'); }
+  } catch (e) { skip('skillsmp（Cloudflare）：' + String(e && e.message || e).slice(0, 60)); }
 }
 
 console.log('');
@@ -206,20 +217,57 @@ console.log('Test 7: 聚合模式（source=all）的排序不得被能力降级�
 {
   // 回归：supportsSort('all', ...) 恒 false → effectiveSort 被清空 → 聚合排序静默失效。
   // 聚合时 dispatcher 必须仍对合并结果排序（各 handler 也应收到 sort 以便取各自的头部条目）。
-  let merged = null, plain = null, errored = false;
+  //
+  // 本段原先完全依赖真实上游：门里 59 套件并发时每个源各 12s 预算（sources.js:588
+  // budgetMs=12000），一旦 skillhub/trusttools/lobehub/browse.sh 集体超时，只剩
+  // skillsmp+modelscope 两个「上游确实没有安装量列」的源（实测 extras:951 installs:0、
+  // modelscope 无 install_count），withData 必然为空 —— 于是把「这台机器此刻被压满」
+  // 判成本仓库回归（2026-11-22 21:0x 门内实测：22 passed, 1 failed「aggregation sort
+  // applied (nonzero installs exist) [0,0,0,0,0,0]」，同一改动单跑 22/0/4skip）。
+  // searchSkills 本来就提供 handlers 注入点（sources.js:607 注释：fake handler 才能在
+  // 没有网络、没有上游波动的情况下断言并发与顺序性质），排序语义属于 dispatcher，
+  // 所以判据改走注入；真实上游那一层退到下面的 live 段，并补上「 answered 源全无
+  // 安装量」这个原先缺失的 SKIP 分支。
+  const mk = (src, vals) => ({
+    source: src,
+    items: vals.map((v, k) => ({ id: src + '-' + k, name: src + '-' + k, source: src, installs: v })),
+    total: vals.length,
+    totalPages: 1,
+  });
+  const aggHandlers = {
+    // 故意把高值放在后面、两个源交错，本地不排就绝不可能单调
+    'src-a': async () => mk('src-a', [5, 90, 7, 60]),
+    'src-b': async () => mk('src-b', [42, 3, 77, 11]),
+    // 上游确实没有安装量列的源：参与合并但不得把非零判据凑上
+    'src-zero': async () => mk('src-zero', [0, 0]),
+  };
+  const inj = await searchSkills({ query: 'agent', source: 'all', page: 1, pageSize: 24, cache: null, sort: 'installCount', handlers: aggHandlers });
+  const injVals = inj.items.map((i) => Number(i.installs) || 0);
+  check('aggregation sort applied (nonzero installs exist)', injVals.filter((x) => x > 0).length > 0, injVals.join(','));
+  const injData = injVals.filter((x) => x > 0);
+  check('aggregation page monotonic over nonzero', injData.every((x, k, arr) => k === 0 || arr[k - 1] >= x), injData.join(','));
+  check('dispatcher 合并后确实重排（注入序被打乱）', inj.items.map((i) => i.id).join('|') !== 'src-a-0|src-a-1|src-a-2|src-a-3|src-b-0|src-b-1|src-b-2|src-b-3|src-zero-0|src-zero-1', inj.items.map((i) => i.id).join('|'));
+  check('零安装量源未被丢弃（合并完整性）', inj.items.length === 10 && inj.items.some((i) => i.source === 'src-zero'), 'n=' + inj.items.length);
+  const injPlain = await searchSkills({ query: 'agent', source: 'all', page: 1, pageSize: 24, cache: null, sort: '', handlers: aggHandlers });
+  check('sorted != plain（sort 真的改变了聚合序）', inj.items.map((i) => i.id).join('|') !== injPlain.items.map((i) => i.id).join('|'), injPlain.items.map((i) => i.installs).join(','));
+  // 真实上游侧的聚合排序：只在「至少一个 answered 源带安装量」时才判，否则 SKIP。
+  let merged = null, errored = false;
   try {
     const c4 = makeCache(path.join(safeTempDir(), 'dsh-agg-' + Date.now()));
     merged = await searchSkills({ query: 'agent', source: 'all', page: 1, pageSize: 24, cache: c4, sort: 'installCount' });
-    plain = await searchSkills({ query: 'agent', source: 'all', page: 1, pageSize: 24, cache: c4, sort: '' });
   } catch (e) { errored = true; }
+  const answered = (merged && merged.items ? merged.items : []).filter((i) => !((merged.degraded || []).some((d) => d.source === i.source)));
+  const liveVals = answered.map((i) => Number(i.installs) || 0);
   if (errored || !merged || !merged.items.length) { skip('aggregation（上游不可达）'); }
+  else if (!liveVals.some((x) => x > 0)) {
+    // 全部 answered 源都没有安装量数据 = 此刻只有 skillsmp/modelscope 这类无该列的源回话
+    // （或被压满时其它源超时），不是排序回归；把降级名单如实打出来便于复核。
+    skip('aggregation live：answered 源均无 installs 数据（degraded=' + (merged.degraded || []).map((d) => d.source).join(',') + '）');
+  }
   else {
-    const v = merged.items.map((i) => Number(i.installs) || 0);
-    const withData = v.filter((x) => x > 0);
-    check('aggregation sort applied (nonzero installs exist)', withData.length > 0, v.slice(0, 6).join(','));
-    // 排序后的聚合页里，非零 installs 必须降序（0 值条目允许混在后面）
-    check('aggregation page monotonic over nonzero', withData.every((x, k, arr) => k === 0 || arr[k - 1] >= x), withData.slice(0, 6).join(','));
-    check('sorted != plain (sort actually took effect)', merged.items.map((i) => i.id).join('|') !== plain.items.map((i) => i.id).join('|'));
+    check('aggregation live sort applied (nonzero installs exist)', liveVals.filter((x) => x > 0).length > 0, liveVals.slice(0, 6).join(','));
+    const liveData = liveVals.filter((x) => x > 0);
+    check('aggregation live page monotonic over nonzero', liveData.every((x, k, arr) => k === 0 || arr[k - 1] >= x), liveData.slice(0, 6).join(','));
   }
 }
 console.log('');

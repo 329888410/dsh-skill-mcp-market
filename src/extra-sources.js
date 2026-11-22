@@ -93,6 +93,33 @@ export function clawhubCategoryOf(raw) {
   return firstNonEmpty(raw && raw.categories) || firstNonEmpty(raw && raw.topics);
 }
 
+// clawhubIdOf —— clawhub 条目的**身份**是 ownerHandle/slug 对（2026-11-22 实测 219 行 =
+// search 100 + browse 119：ownerHandle+slug 齐全 219/219，176 个 distinct 身份对、同键多形态 0）。
+// 上游 raw.id 不是身份：57/100 是自带 "clawhub:" 前缀的不透明 id
+//（clawhub:kd75kdbc9phg92p12av465mbf1820dqb），另 43/100 是跨源形态 skills-sh:google/skills/<slug>；
+// browse 行 0/119 有 raw.id。旧 id 公式 `clawhub:${raw.id || reference || raw.slug}` 于是同时产出
+// clawhub:clawhub:<opaque> 与 clawhub:skills-sh:… 两种形态，而 item.id 正是翻页去重键（client.js:822
+// new Set(prev.map(x => x.id))）→ 同一技能跨 search/browse 被算成两条。
+// install.reference 不参与身份判定：跨源行的 reference 是真安装路由（skills-sh:<owner>/<repo>/<path>，
+// 必须原样留在 installRef），拿它的切段当身份会把卡片 owner 写成 "skills-sh:google" 这类错值
+//（实测 43/100 行如此，且卡片直接显示它）。CLI 降级行只有字符串 owner（:226 造 {name,owner,…}
+// 无 ownerHandle），回落 raw.owner；两段缺任一段就返回空串——宁可空也不造假 id。
+// 身份 = owner/slug 对。owner 有两种上游形态：ownerHandle 字符串（219/219 行都有），
+// 以及 owner 对象 {handle,displayName,image}（search 100 行里 57 行是对象）——
+// 直接 String(对象) 会写出 "[object Object]"，必须先取 .handle。
+function clawhubOwnerOf(raw) {
+  if (!raw) return "";
+  if (raw.ownerHandle) return String(raw.ownerHandle).trim();
+  const o = raw.owner;
+  if (typeof o === "string") return o.trim();
+  return String((o && o.handle) || "").trim();
+}
+export function clawhubIdOf(raw) {
+  const owner = clawhubOwnerOf(raw);
+  const slug = String((raw && raw.slug) || "").trim();
+  return owner && slug ? `${owner}/${slug}` : "";
+}
+
 function mapClawHubRows(rows, q, mode, limitOverride) {
   const limit = limitOverride ?? 24;
   const items = (Array.isArray(rows) ? rows : []).slice(0, limit).map((raw) => {
@@ -100,15 +127,15 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
     const reference =
       String(install.reference || "").trim() ||
       (raw.ownerHandle && raw.slug ? `${raw.ownerHandle}/${raw.slug}` : "");
-    const [owner, slug] = reference.includes("/") ? reference.split("/") : [];
     return {
-      id: `clawhub:${raw.id || reference || raw.slug}`,
-      slug: slug || raw.slug || String(raw.displayName || "").toLowerCase(),
+      // 身份缺段时回落安装路由，绝不产出空 id（旧写法在这里会写成 clawhub:undefined）。
+      id: `clawhub:${clawhubIdOf(raw) || reference}`,
+      slug: raw.slug || String(raw.displayName || "").toLowerCase(),
       name: raw.displayName || raw.name || raw.slug || reference,
       description: raw.summary || raw.description || "",
       source: "clawhub",
       sourceLabel: "clawhub",
-      owner: owner || raw.ownerHandle || "",
+      owner: clawhubOwnerOf(raw),
       homepage: `https://clawhub.ai${raw.canonicalUrl || `/${reference}`}`,
       upstreamUrl: "",
       installRef: reference,
@@ -164,7 +191,7 @@ async function extendClawHubCatalog(cache, need, sortBy = "") {
   const catKey = sortBy ? `${CLAWHUB_CATALOG_KEY}:${sortBy}` : CLAWHUB_CATALOG_KEY;
   let state = cache ? await cache.get(catKey, CLAWHUB_CATALOG_TTL) : undefined;
   if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false };
-  const seen = new Set(state.rows.map((raw) => String(raw.id ?? raw.slug ?? "")));
+  const seen = new Set(state.rows.map((raw) => clawhubIdOf(raw)));
   let guard = 0;
   while (!state.done && state.rows.length < need) {
     guard += 1;
@@ -172,7 +199,7 @@ async function extendClawHubCatalog(cache, need, sortBy = "") {
     const data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=50${sortBy ? `&sort=${encodeURIComponent(sortBy)}` : ""}${cursor}`);
     const rows = Array.isArray(data.items) ? data.items : Array.isArray(data.results) ? data.results : [];
     for (const raw of rows) {
-      const key = String(raw.id ?? raw.slug ?? "");
+      const key = clawhubIdOf(raw);
       if (!key || seen.has(key)) continue;
       seen.add(key);
       state.rows.push(raw);
@@ -245,7 +272,7 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
       if (item.status !== "fulfilled") continue;
       const rows = Array.isArray(item.value?.results) ? item.value.results : Array.isArray(item.value?.items) ? item.value.items : [];
       for (const raw of rows) {
-        const key = String(raw.id ?? raw.slug ?? raw.displayName ?? "");
+        const key = clawhubIdOf(raw) || String(raw.displayName ?? "");
         if (!key || seen.has(key)) continue;
         seen.add(key);
         merged.push(raw);
@@ -331,7 +358,7 @@ export async function warmClawHubCatalog(cache, options = {}) {
   // 总页数因此是「共约」下界而不是精确值——这是上游能力边界，不是本地缺陷。
   const budget = Math.max(50, Number(options.budget) || 1200);
   const state0 = cache ? await cache.get(CLAWHUB_CATALOG_KEY, CLAWHUB_CATALOG_TTL) : undefined;
-  const seen = new Set((state0?.rows || []).map((raw) => String(raw.id ?? raw.slug ?? "")));
+  const seen = new Set((state0?.rows || []).map((raw) => clawhubIdOf(raw)));
   const rows = [...(state0?.rows || [])];
   let cursor = state0?.cursor || null;
   let done = state0?.done || false;
@@ -343,7 +370,7 @@ export async function warmClawHubCatalog(cache, options = {}) {
       const data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=50${qs}`);
       const batch = Array.isArray(data.items) ? data.items : Array.isArray(data.results) ? data.results : [];
       for (const raw of batch) {
-        const key = String(raw.id ?? raw.slug ?? "");
+        const key = clawhubIdOf(raw);
         if (key && !seen.has(key)) { seen.add(key); rows.push(raw); }
       }
       const next = data.nextCursor || null;

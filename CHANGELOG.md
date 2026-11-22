@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.146
+
+- clawhub 条目身份修正：`item.id` 过去直接采用上游 `raw.id`，而 search 端点的 `raw.id` 有两种形态——57/100 行已经自带 `clawhub:` 前缀（拼出来是 `clawhub:clawhub:kd75kdbc9…`），43/100 行是跨源形态（`skills-sh:google/skills/…`，与安装路由逐字相同）。同一技能在 search 与 browse 两种形态下 id 不同构，翻页追加去重（client.js:822）与目录累加去重（extra-sources.js 三处）因此失效。新增导出 `clawhubIdOf(raw)`：身份一律取 clawhub 的 owner/slug 对（实测 219/219 行带 `ownerHandle`+`slug`，176 个 distinct 键、同键多形态 0），`install.reference` 保持上游安装路由原样不被改写（跨源行它是真路由，改了会误装）。
+- 卡片字段随身份一起归正：`owner` 不再从安装路由切段（旧写法把 43/100 行切成 `skills-sh:google` 这种值并直接显示在卡片上），改走 `clawhubOwnerOf`——`ownerHandle` 优先，`owner` 是字符串时用它，是对象时取 `.handle`（search 100 行里 57 行 `owner` 是 `{handle,displayName,image}` 对象，直接 `String()` 会写出 `[object Object]`）；`slug` 不再被安装路由第二段覆盖（旧写法 40/100 行错值，12 张卡共用 `superpowers`、10 张共用 `skills`），而 `item.slug` 正是「✓ 已安装」判定（client.js:1748）与安装中 busy 键（client.js:1754）的依据，错值会让一个卡片的安装态串到另外十几张。
+- 三处目录/合并去重键改用 `clawhubIdOf`（`extendClawHubCatalog`、`warmClawHubCatalog`、`searchClawHub` 合并键）。裸 `slug` 当键会丢数据：100 条真实 search 行 distinct `raw.slug` 只有 84，distinct 身份对是 100。
+- 回归 test/test-clawhub-quality.mjs Test 12 共 17 项判据：三种真实行形态（自带 `clawhub:` 前缀 / 跨源 `raw.id`+`install.reference` / browse 无 id）的 id 拼接、无双前缀、id 不含 `skills-sh:`、owner 与 slug 拼接、`installRef` 原样、browse 形态 homepage 仍是 `/<ownerHandle>/<slug>`、同 slug 不同作者必须两条款、`clawhubIdOf` 的 CLI 降级回落（本机未装 clawhub CLI，`spawnSync clawhub ENOENT`，该路径只能注入纯函数测）、身份缺段不造假 id、owner 对象取 `.handle`。RED 原文 12 条 FAIL（`69 passed, 12 failed`），GREEN `86 passed, 0 failed`。
+- 反向破坏证伪 5 向（每轮 `node --check` 后按字节还原并校验）：id 公式退回 `raw.id || reference || raw.slug` → 5 failed；search 合并键退回裸 slug → 2 failed；目录累加键退回 `raw.id ?? raw.slug` → 1 failed；`clawhubOwnerOf` 退化成 `String(o)` → 2 failed（`[object Object]/s`）。第一版判据存在盲区：owner 只测了 `ownerHandle` 与字符串 `owner`，把 `String(对象)` 的变异放过去（`84 passed, 0 failed`），补上 owner 对象两条判据后该变异才会红。
+- 测试自身的机制缺陷修正：函数体提取原先用 anchor-lib 的 `blockEnd`（按花括号深度扫），而 `warmClawHubCatalog(cache, options = {})` 与 `searchClawHub({ query = "", … })` 的签名里带内层花括号，深度在签名行就归零，取到的「函数体」只有一行、判据恒假；改为扫到下一个 0 列 `}` 行，并且必须先剥行尾 `\r`（源文件是 CRLF，按 `\n` 切开后每行结尾带 `\r`，裸比较 `'}'` 永远不等）。
+- `test-full-sort` Test 7 重写为决定化判据，并把一处假红根治：该段原先只靠真实上游做「聚合排序生效」断言，而每个源只有 12s 预算（sources.js:588 `budgetMs = 12000`），门内 59 套件并发压满时 skillhub/trusttools/lobehub/browse.sh 四个带安装量的源集体超时，只剩上游本身没有 installs 列的 skillsmp+modelscope（extra-sources.js:951 `installs: 0`）回话，`withData.length > 0` 恒假——于是把「这台机器此刻被压满」判成本仓库回归（门内原文 `FAIL aggregation sort applied (nonzero installs exist) [0,0,0,0,0,0]`，同一改动单跑 `22 passed, 0 failed`）。现改走 `searchSkills` 既有的 handlers 注入点断言排序语义（高值刻意放后面、两源交错），真实上游那一层保留但补上「answered 源均无 installs 数据」的 SKIP 分支并如实打印 degraded 名单。
+- 同一套件 Test 5（skillsmp 按安装数须被诚实拒绝）也补上单边降级判据：旧写法只挡「两侧皆空」，而实测 4 轮里有 1 轮带 sort 的那一路超时回 0 条、基线那一路正常回 12 条（degraded 名单为 `skillsmp:来源响应超时（预算 12s），已跳过`），于是走进比较分支，把「这台机器此刻取不到 skillsmp」报成本仓库回归（门内原文 `FAIL installCount 被降级为不排序 a= | b=skillsmp:morluto…` + `FAIL a 与基线条目集合一致 a=0 b=12`）。现改为任一侧 degraded 非空即 SKIP 并打出名单；「单边为空但两侧都没降级」保留为真回归判据。修正后连跑三次 `32 passed, 0 failed, 0 skipped` / `31 passed, 0 failed, 1 skipped` / `30 passed, 0 failed, 1 skipped`。
+- 该重写的反向证伪（`node --check` 后按字节还原 sha=500eae81348bb237）：把 `aggregateSort` 整个关掉 → `23 passed, 5 failed`；installCount 比较符反向 → `29 passed, 2 failed`；把多源条件去掉让单源路径也二次重排（旧缺陷②）→ 本套件 `27 passed, 0 failed` 抓不到，跨套件实跑由 `test-search-fanout-latency.mjs:159` 的文本锁抓住（`195 passed, 1 failed`「聚合排序兜底限定在多源且用 effectiveSort」）。
+- 门禁 59 套件。
+
 ## 0.5.145
 - **skillsmp 分类 facet 透传 + facet 总数口径（Phase 1，零配额 legacy API）**：
   `searchSkillsMp` 此前根本不收 `category`，聚合层（`src/sources.js:614`）已经把分类传进
