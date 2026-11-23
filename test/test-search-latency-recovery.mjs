@@ -70,7 +70,8 @@ console.log('');
 console.log('Test 3: 冷却窗口到期后自动重试（TTL 是上限不是永久）');
 {
   const calls = { dead: 0 };
-  const handlers = { dead: async () => { calls.dead++; await sleep(5000); return { items: [], total: 0 }; } };
+  // 冷却只在聚合路径开启（Test 7），窗口测试因此多带一个健康 handler 凑成多源。
+  const handlers = { dead: async () => { calls.dead++; await sleep(5000); return { items: [], total: 0 }; }, ok: async () => ({ items: [{ slug: 'k', name: 'k', source: 'ok' }], total: 1, totalPages: 1 }) };
   const cache = freshCache();
   const ps = { query: 'q', source: 'all', page: 1, pageSize: 24, handlers, cache, budgetMs: 300 };
   const realNow = Date.now;
@@ -128,6 +129,14 @@ console.log('Test 5: 源码锁 —— 冷却与合并必须写在真实实现里
   const hasCacheArg = call.split(String.fromCharCode(10)).some((l) => l.trim() === 'cache,' || l.trim() === 'cache');
   check('调用 fanOutSources 时把 cache 交进去（冷却需要它）', hasCacheArg, JSON.stringify(call.slice(0, 140)));
   check('冷却键前缀存在', src.indexOf('market_src_timeout') >= 0, '');
+  // 冷却归属由源码锁住：默认关、只有聚合路径显式开（剥注释，否则被解释文字骗过）。
+  const code = src.split(String.fromCharCode(10)).filter((l) => {
+    const t = l.trimStart();
+    return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+  }).join(String.fromCharCode(10));
+  check('fanOutSources 默认不冷却（cooldownMs = 0）', /cooldownMs = 0[,}]/.test(code), '');
+  check('聚合冷却时长是具名常量', /const AGGREGATE_COOLDOWN_MS = 120000;/.test(code), '');
+  check('只有 picked 多于一个源才传冷却时长', /cooldownMs: picked\.length > 1 \? AGGREGATE_COOLDOWN_MS : 0/.test(code), '');
   check('在途合并表在 settle 时清除（合并 ≠ 永久缓存）', /inflight[A-Za-z]*\.delete\(/.test(src), '');
   check('既有超时文案保持不变（其它套件的判据依赖它）', src.indexOf('来源响应超时（预算 ') >= 0, '');
 }
@@ -155,6 +164,47 @@ console.log('Test 6: 死分支移除后，槽位契约与冷却短路仍然成�
   check('names 含重复名时 results/degraded 槽位数不变', dup.results.length === 3 && dup.degraded.length === 2, JSON.stringify({ r: dup.results.length, d: dup.degraded.length }));
   check('重复名两次都真取上游（不再有隐式复用；picked 实际不含重复）', n === 3, 'n=' + n);
   check('同名的两条 degraded 文案都是超时（不是冷却）', dup.degraded.every((x) => /已跳过/.test(x.error) && !/冷却中/.test(x.error)), dgOf(dup));
+}
+
+console.log('');
+console.log('Test 7: 面板单源路径永不进入冷却（用户 2026-11-23 决策：all 聚合只存在于工具，不能影响 UI 面板）');
+{
+  const calls = { lone: 0, slow: 0 };
+  const handlers = {
+    lone: async () => { calls.lone++; await sleep(400); return { items: [{ slug: 'l', name: 'l', source: 'lone' }], total: 1, totalPages: 1 }; },
+    slow: async () => { calls.slow++; await sleep(5000); return { items: [{ slug: 's', name: 's', source: 'slow' }], total: 1, totalPages: 1 }; },
+  };
+  const cache = freshCache();
+  // ① 面板形态：source 指定单源且该源注定超时 —— 同词连搜四次都必须真打上游
+  const ps = { query: 'q', source: 'slow', page: 1, pageSize: 24, handlers, cache, budgetMs: 300 };
+  const t1 = Date.now(); const r1 = await searchSkills(ps); const ms1 = Date.now() - t1;
+  check('面板单源首次：预算内切断并如实 degraded', ms1 < 1500 && /slow/.test(dgOf(r1)), ms1 + 'ms ' + dgOf(r1));
+  const t2 = Date.now(); const r2 = await searchSkills(ps); const ms2 = Date.now() - t2;
+  check('面板单源第二次：仍真重试（calls.slow=2，没有被冷却短路）', calls.slow === 2, 'calls.slow=' + calls.slow);
+  check('面板单源第二次：文案不再出现「冷却/不再重试/稍后」', !/冷却|不再重试|稍后/.test(dgOf(r2)), dgOf(r2));
+  check('面板单源第二次：等待与首次同量级（不是被跳过后的瞬时）', ms2 >= ms1 / 3, '首次' + ms1 + 'ms 第二次' + ms2 + 'ms');
+  await searchSkills(ps); await searchSkills(ps);
+  check('面板单源第四次同词：累计四次全部打到上游', calls.slow === 4, 'calls.slow=' + calls.slow);
+  // ② 对照组：同一个坏源走聚合路径（两个 handler ⇒ wanted>1），第二次仍要短路
+  const agg = { query: 'q', source: 'all', page: 1, pageSize: 24, handlers, cache, budgetMs: 300 };
+  calls.slow = 0;
+  await searchSkills(agg);
+  check('聚合首次：坏源真打上游', calls.slow === 1, 'calls.slow=' + calls.slow);
+  const ta = Date.now(); const ra = await searchSkills(agg); const msa = Date.now() - ta;
+  check('聚合第二次：冷却仍生效（不再打上游）', calls.slow === 1, 'calls.slow=' + calls.slow);
+  check('聚合第二次：不再重付整段预算', msa < 150, msa + 'ms');
+  check('聚合第二次：坏源仍如实进 degraded（冷却≠静默丢源）', (ra.degraded || []).some((d) => d.source === 'slow'), dgOf(ra));
+  // ③ 直调 fanOutSources：不传 cooldownMs = 默认不冷却；显式传仍可启用
+  const { fanOutSources } = await import('../src/sources.js');
+  let direct = 0;
+  const dcache = freshCache();
+  const dargs = { names: ['slow'], budgetMs: 300, cache: dcache, cooldownKey: 'q', run: async () => { direct++; await sleep(5000); return { items: [], total: 0 }; } };
+  await fanOutSources(dargs); await fanOutSources(dargs);
+  check('直调不传 cooldownMs：默认不冷却（两次都真取）', direct === 2, 'direct=' + direct);
+  let explicit = 0;
+  const eargs = { names: ['slow'], budgetMs: 300, cache: dcache, cooldownKey: 'q', cooldownMs: 120000, run: async () => { explicit++; await sleep(5000); return { items: [], total: 0 }; } };
+  await fanOutSources(eargs); await fanOutSources(eargs);
+  check('显式传 cooldownMs：冷却能力仍在（第二次被短路）', explicit === 1, 'explicit=' + explicit);
 }
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

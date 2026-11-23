@@ -539,6 +539,11 @@ const SOURCE_HANDLERS = {
   modelscope: searchModelScope,
 };
 
+// 短冷却只属于聚合路径（agent 的 source=all 搜索）：面板每个 tab 只有一个源，
+// 把源永久拉黑会让用户「再点一次看看」直接吃空面板。时长从字面量提为具名常量，
+// 便于源码锁判定归属（test-search-latency-recovery Test 5/Test 7）。
+const AGGREGATE_COOLDOWN_MS = 120000;
+
 /**
  * 并发拉取多个来源，并按 names 顺序折叠结果。
  *
@@ -550,8 +555,12 @@ const SOURCE_HANDLERS = {
  * budgetMs 给每个源单独设上限：超预算的源记为 degraded 并写明超时，不再拖住整次搜索。
  * results 与 degraded 都按 names 顺序输出 —— 并发完成先后不能影响展示顺序，
  * 否则同一条件搜两次会得到不同的列表。
+ *
+ * cooldownMs 默认 0 = 本函数不冷却任何源。冷却是聚合路径的专属策略，由调用方
+ * （fanOnce 在 picked.length > 1 时）显式传入；面板单源路径因此每次搜索都会真打
+ * 上游，不会因为上一次超时就在窗口内被静默跳过。
  */
-export async function fanOutSources({ names, run, budgetMs = 12000, cache = null, cooldownMs = 120000, cooldownKey = "" }) {
+export async function fanOutSources({ names, run, budgetMs = 12000, cache = null, cooldownMs = 0, cooldownKey = "" }) {
   const list = Array.isArray(names) ? names : [];
   const cooldownPrefix = cooldownKey ? "market_src_timeout:" + cooldownKey + ":" : "market_src_timeout:";
   const cooling = async (name) => {
@@ -633,6 +642,7 @@ async function fanOnce({ query, source, cache, sort, category, handlers, budgetM
       names: picked,
       budgetMs,
       cache,
+      cooldownMs: picked.length > 1 ? AGGREGATE_COOLDOWN_MS : 0,
       cooldownKey: String(query == null ? "" : query).trim().toLowerCase(),
       run: (name) => {
         const handler = (handlers && handlers[name]) || SOURCE_HANDLERS[name];
