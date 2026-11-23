@@ -36,12 +36,19 @@ console.log('Test A: 测试连接后刷新卡片');
   // 但必须校验区间确实只含这一个调用点，否则会跨到别的按钮体。
   check('probe 体区间不跨其它按钮', pi - start < 260 && (body.match(/await call\(/g) || []).length === 1, 'span=' + (pi - start) + ' calls=' + (body.match(/await call\(/g) || []).length);  check('成功分支刷新列表', /if \(r\.ok\)[\s\S]{0,200}loadInstalled/.test(body) || /loadInstalled[\s\S]{0,120}已连接|连接正常[\s\S]{0,120}loadInstalled/.test(body), body.slice(0, 200));
   check('pending 分支也刷新（启动完成后卡片相位会变）', body.split('loadInstalled').length >= 2, 'loadInstalled 出现 ' + (body.match(/loadInstalled/g) || []).length + ' 次');
+  // 用户实测（0.5.148）：点「测试连接」只看到一闪「处理中」，结果没地方看。
+  // 三条分支都必须给出可读结果，且失败不能只写进红条（红条会被后续操作冲掉）。
+  check('成功分支给工具数', /测试连接成功[\s\S]{0,80}个工具/.test(body), body.replace(/\s+/g, ' ').slice(0, 140));
+  check('失败分支也走 notice（不只 setError）', /测试连接失败/.test(body) && /setNotice[\s\S]{0,160}未连上/.test(body), '');
+  check('pending 分支说明下一步动作', /稍后再点一次「测试连接」/.test(body), '');
 }
 
 console.log('');
 console.log('Test B: 全选只选可见项');
 {
-  const sa = once(c, "'全不选' : '全选'", '全选按钮');
+  // 0.5.149 起面板里有两处「全不选/全选」切换：技能批量条（这里锁的）和 MCP 工具禁用浮窗
+  // （由 test-tool-deny.mjs 锁）。锚必须带批量条自己的口径前缀，否则 once 命中 2 次直接崩套件。
+  const sa = once(c, "expandedVisible.length > 0 ? '全不选' : '全选'", '技能批量条全选按钮');
   const seg = c.slice(Math.max(0, sa - 500), sa + 300);
   check('全选存在', sa > 0);
   // 口径：全选集合必须与 selectedVisible 同源（排除折叠/隐藏项），而不是 filteredInstalled 全集

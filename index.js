@@ -29,6 +29,7 @@ import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCach
 import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js";
 // 技能市场分类词表（skillsmp /zh/categories 实测抓取）只随 settings.get 走：读缓存 + 后台补取，
 // 面板首屏的 RPC 不等外网抓取。
+import { readSkillsMpCategoryVocabulary, skillsmpCategoryVocabulary } from "./src/extra-sources.js";
 import { evaluation as skillhubEvaluation } from "./src/skillhub.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";

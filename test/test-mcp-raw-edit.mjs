@@ -161,6 +161,12 @@ console.log('Test 5: 面板 UI（默认不加载 + 明文警告）');
   check('保存带 confirm', /'mcp\.raw\.set'[\s\S]{0,220}confirm: true/.test(c));
   check('command/args 只读提示已撤（完全可编辑）', !/面板不开放改写/.test(c));
   check('textarea 编辑原文', /value: mcpRaw\.text/.test(c));
+  // 用户实测（0.5.148）：「定义原文的文本框也太小了，很难用啊」——原文是整份 JSON，
+  // 180px 只够七八行。判据锁高度量级与可拉伸，不锁具体像素。
+  const ta = c.indexOf('value: mcpRaw.text');
+  const taStyle = ta > 0 ? c.slice(ta - 320, ta + 60) : '';
+  check('原文 textarea 高度 ≥ 400（不再是 180）', /height: (\d{3,})/.test(taStyle) && Number(RegExp.$1) >= 400, '样式切片=' + taStyle.replace(/\s+/g, ' ').slice(-90));
+  check('原文 textarea 可手动拉伸', /resize: 'vertical'/.test(taStyle), '');
 }
 
 console.log('');

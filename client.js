@@ -2103,9 +2103,9 @@ function categoryLabelLite(chip) {
                 setError('');
                 try {
                   const r = await call('mcp.probe', { serverName: item.serverName, timeoutMs: 8000 });
-                  if (r.ok) { setNotice(`${item.serverName} 连接正常，${r.tools.length} 个工具`); await loadInstalled(); }
-                  else if (r.pending) { setNotice(`${item.serverName} 已挂载，服务器还在启动中，稍后再点一次测试连接`); await loadInstalled(); }
-                  else setError(`${item.serverName} 未连上：${r.error || ''}`);
+                  if (r.ok) { setNotice(`✅ 测试连接成功：${item.serverName} 连接正常，${r.tools.length} 个工具（本条提示会保留，可放心查看）`); await loadInstalled(); }
+                  else if (r.pending) { setNotice(`⏳ ${item.serverName} 已挂载，服务器还在启动中（约需几秒到几十秒）；稍后再点一次「测试连接」即可`); await loadInstalled(); }
+                  else setNotice(`❌ 测试连接失败：${item.serverName} 未连上——${r.error || '未知原因'}（检查该连接器是否被停用、命令是否可执行）`);
                 } catch (e) {
                   setError(`测试失败：${e.message || e}`);
                 } finally {
@@ -2472,7 +2472,8 @@ function categoryLabelLite(chip) {
                                         '注意：原文视图会显示环境变量明文（detail 的掩码在这里失效），保存前请确认这台机器可信。')
                                     : null,
                                   h('textarea', {
-                                    style: { ...S.input, height: 180, fontFamily: 'ui-monospace, monospace', fontSize: 11, whiteSpace: 'pre' },
+                                    // 用户实测「文本框太小难用」：定义原文是整份 JSON，180px 只能看七八行。
+                                    style: { ...S.input, height: 480, resize: 'vertical', fontFamily: 'ui-monospace, monospace', fontSize: 11, whiteSpace: 'pre' },
                                     value: mcpRaw.text,
                                     spellCheck: false,
                                     onChange: (e) => setMcpRaw({ ...mcpRaw, text: e.target.value, dirty: true, error: '' }),
@@ -2560,7 +2561,7 @@ function categoryLabelLite(chip) {
                             onClick: () => setMcpToolOpen(open ? '' : tool.name) },
                             h('label', { style: { ...S.row, gap: 6, cursor: mcpTools.hasDetails ? 'default' : 'not-allowed' },
                               onClick: (e) => e.stopPropagation(),
-                              title: mcpTools.hasDetails ? '取消勾选 = 禁用该工具（从模型工具表消失，真正省上下文）' : '旧服务端未提供工具详情，无法编辑禁用列表',
+                              title: mcpTools.hasDetails ? '勾选 = 禁用该工具（从模型工具表消失，真正省上下文）；取消勾选 = 重新启用' : '旧服务端未提供工具详情，无法编辑禁用列表',
                             },
                               h('input', {
                                 type: 'checkbox',
@@ -2587,6 +2588,21 @@ function categoryLabelLite(chip) {
                           h('span', { style: { ...S.status, fontSize: 11 } },
                             `已禁用 ${toolDenyDraft.length} 个`,
                             toolDenyApplied > 0 ? ` · ${toolDenyApplied} 个会话已生效` : ''),
+                          // 全选/全不选作用于「当前搜索可见」这一口径，和技能批量条一致；
+                          // 分批还没显示完时只算已显示的部分，并在标题里写明，避免用户以为全选了整份清单。
+                          h('button', {
+                            style: S.btn(),
+                            disabled: !mcpTools.hasDetails || renderedTools.length === 0,
+                            title: visibleTools.length > renderedTools.length
+                              ? `只作用于已显示的 ${renderedTools.length} 个（还有 ${visibleTools.length - renderedTools.length} 个未显示，需先点“继续显示”）`
+                              : `全选/全不选当前搜索可见的 ${renderedTools.length} 个工具`,
+                            onClick: () => {
+                              // 注意：这里刻意不用带括号的箭头参数写法，那个形式是 perf 套件的唯一起锚。
+                              const names = renderedTools.map(tool => tool.name);
+                              const allOn = names.every((n) => toolDenyDraft.includes(n));
+                              setToolDenyDraft(allOn ? toolDenyDraft.filter((n) => !names.includes(n)) : [...new Set([...toolDenyDraft, ...names])]);
+                            },
+                          }, renderedTools.length && renderedTools.every((tool) => toolDenyDraft.includes(tool.name)) ? '全不选' : '全选'),
                           h('button', {
                             style: S.btn('primary'),
                             disabled: busy === 'saveToolDeny' || toolDenyDraft.join('\u0000') === (mcpTools.deniedOriginal || []).join('\u0000'),

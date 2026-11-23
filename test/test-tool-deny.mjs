@@ -124,6 +124,15 @@ console.log('Test 4: 面板 UI（浮窗 checkbox + 保存）');
   check('打开浮窗读取 deniedTools', /data\.deniedTools/.test(c));
   check('保存走 mcp.tools.set', /'mcp\.tools\.set'/.test(c));
   check('保存结果给会话生效数', /个会话已生效|会话已生效/.test(c));
+  // 用户实测（0.5.148）：勾选=禁用但标题写「取消勾选 = 禁用」，且浮窗没有全选入口
+  // （技能批量条的「全选」在另一处，管不到这里）。三条判据锁语义照实 + 浮窗自己的全选。
+  check('勾选语义标题照实（勾选=禁用）', /勾选 = 禁用该工具/.test(c) && !/取消勾选 = 禁用该工具/.test(c), '标题与 checked 语义必须同向');
+  const fi = c.indexOf("'保存禁用列表'");
+  const foot = fi > 0 ? c.slice(Math.max(0, fi - 1600), fi + 200) : '';
+  check('浮窗底部切片可取', foot.length > 800, 'foot=' + foot.length);
+  check('浮窗自带全选/全不选（不是技能批量条那个）', /全选/.test(foot) && /全不选/.test(foot), foot.replace(/\s+/g, ' ').slice(0, 120));
+  check('全选只作用搜索可见项（与技能批量条同口径）', /只作用于当前搜索可见/.test(foot) || /visibleTools/.test(foot), '');
+  check('分批未显示完时全选口径写明只算已显示', /已显示/.test(foot) || /还有.*未显示/.test(c), '');
 }
 
 console.log('');
