@@ -206,5 +206,68 @@ console.log('Test 7: 面板单源路径永不进入冷却（用户 2026-11-23 �
   await fanOutSources(eargs); await fanOutSources(eargs);
   check('显式传 cooldownMs：冷却能力仍在（第二次被短路）', explicit === 1, 'explicit=' + explicit);
 }
+
+console.log('');
+console.log('Test 8: 每源预算可配置，但默认表为空 ⇒ 可见结果逐条不变（效率项「不改变可见结果」那半）');
+{
+  const mk = (delay, slug, n) => async () => { calls8[slug] = (calls8[slug] || 0) + 1; await sleep(delay); return { items: [{ id: slug + '1', slug: slug + '1', name: slug + '1', source: slug }, { id: slug + '2', slug: slug + '2', name: slug + '2', source: slug }], total: n || 2, totalPages: 1 }; };
+  let calls8 = {};
+  const h8 = { slow: mk(2500, 'slow'), a: mk(200, 'a'), b: mk(200, 'b') };
+  const dgSlugs = (r) => (r.items || []).map((i) => i.slug).join(',');
+  // ① 基线：统一预算 1000ms —— slow 超时，a/b 正常回
+  const base = { query: 'q8', source: 'all', page: 1, pageSize: 24, handlers: h8, cache: freshCache(), budgetMs: 1000 };
+  const t0 = Date.now(); const rBase = await searchSkills(base); const msBase = Date.now() - t0;
+  check('基线（无 overrides）：slow 超时进 degraded，a/b 条目齐全', dgOf(rBase).includes('slow|来源响应超时（预算 1s），已跳过') && dgSlugs(rBase) === 'a1,a2,b1,b2', dgOf(rBase) + ' items=' + dgSlugs(rBase));
+  // ② 只给 slow 单独设预算（其余仍是调用方的 1000）：条目集合与基线逐条相同，文案写它自己那一份预算
+  const only = { query: 'q8', source: 'all', page: 1, pageSize: 24, handlers: h8, cache: freshCache(), budgetMs: 1000, budgetOverrides: { slow: 1000 } };
+  const rOnly = await searchSkills(only);
+  check('overrides 与默认值相等时：items 集合与 total 逐条等于基线', dgSlugs(rOnly) === dgSlugs(rBase) && rOnly.total === rBase.total, dgSlugs(rOnly) + ' total=' + rOnly.total + ' vs ' + dgSlugs(rBase) + ' total=' + rBase.total);
+  check('overrides 与默认值相等时：degraded 文案逐字符等于基线（可见结果零变化）', dgOf(rOnly) === dgOf(rBase), dgOf(rOnly) + ' vs ' + dgOf(rBase));
+  // ③ 单独放宽 slow：只多回来 slow 那两条，a/b 一字不变
+  const wide = { query: 'q8', source: 'all', page: 1, pageSize: 24, handlers: h8, cache: freshCache(), budgetMs: 1000, budgetOverrides: { slow: 5000 } };
+  const t1 = Date.now(); const rWide = await searchSkills(wide); const msWide = Date.now() - t1;
+  check('给慢源单独放宽预算：该源条目回来（这才是这套机制的用意）', dgSlugs(rWide) === 'slow1,slow2,a1,a2,b1,b2' && rWide.degraded.length === 0, dgSlugs(rWide) + ' ' + dgOf(rWide));
+  check('放宽后只等该源的真实耗时，不受调用方 1000ms 预算误砍', msWide >= 2400 && msWide < 4600, msWide + 'ms 基线' + msBase + 'ms');
+  const dgA = (r) => (r.items || []).filter((i) => i.source !== 'slow').map((i) => i.slug).join(',');
+  check('其余源的条目不因某源预算变化而改变（不是把结果搅乱）', dgA(rWide) === dgSlugs(rBase).replace('b1,b2', 'b1,b2') && dgA(rWide) === 'a1,a2,b1,b2', dgA(rWide));
+  // ③b 两个慢源各配各的预算：降级文案里的秒数必须是该源自己的预算，判定也必须按各自的值。
+  const two = {
+    slow: async () => { await sleep(5000); return { items: [{ slug: 'slow1', name: 's', source: 'slow' }], total: 1, totalPages: 1 }; },
+    middling: async () => { await sleep(4000); return { items: [{ slug: 'mid1', name: 'm', source: 'middling' }], total: 1, totalPages: 1 }; },
+    a: async () => ({ items: [{ slug: 'a1', name: 'A', source: 'a' }], total: 1, totalPages: 1 }),
+  };
+  const r7 = await searchSkills({ query: 'q8two', source: 'all', page: 1, pageSize: 24, handlers: two, cache: freshCache(), budgetMs: 1000, budgetOverrides: { slow: 5200, middling: 2000 } });
+  const slugs7 = dgSlugs(r7);
+  check('各自预算：放宽到 5.2s 的源按时回来（不是整批共用调用方的 1s）', slugs7.indexOf('slow1') >= 0, slugs7);
+  check('各自预算：只放宽到 2s 的源仍被自己那一份砍掉（不是整批共用 5.2s）', slugs7.indexOf('mid1') < 0, slugs7);
+  const dg7 = (r7.degraded || []).map((x) => x.source + '|' + x.error).join(' || ');
+  check('降级文案按各自的预算写秒数', dg7.indexOf('middling|来源响应超时（预算 2s），已跳过') >= 0, dg7);
+  check('降级文案里不许出现调用方的 1s（那会把实际等了 2s 的源说成 1s）', dg7.indexOf('预算 1s）') < 0, dg7);
+  // ④ 表里没有这个源 / 值不是正数 ⇒ 原样用调用方预算（默认路径不可能被表污染）
+  const junk = { query: 'q8', source: 'all', page: 1, pageSize: 24, handlers: h8, cache: freshCache(), budgetMs: 1000, budgetOverrides: { slow: 0, a: '12000', b: null } };
+  const rJunk = await searchSkills(junk);
+  check('表里的 0/字符串/null 一律不生效（等价于不传）', dgSlugs(rJunk) === dgSlugs(rBase) && dgOf(rJunk) === dgOf(rBase), dgSlugs(rJunk) + ' ' + dgOf(rJunk));
+  // ⑤ 在途合并：预算段进键后，同条件仍只打一次；不同预算表不合并
+  calls8 = {};
+  const c8 = freshCache();
+  const pair = { query: 'q8m', source: 'all', page: 1, pageSize: 24, handlers: { a: mk(120, 'a'), b: mk(120, 'b') }, cache: c8, budgetMs: 3000 };
+  await Promise.all([searchSkills(pair), searchSkills(pair)]);
+  check('空表下同条件并发仍合并（每个源只打一次上游）', calls8.a === 1 && calls8.b === 1, JSON.stringify(calls8));
+  calls8 = {};
+  await Promise.all([searchSkills({ ...pair, query: 'q8m' }), searchSkills({ ...pair, query: 'q8m', budgetOverrides: { a: 9000 } })]);
+  check('预算表不同 ⇒ 合并键不同（各打各的，不会把不同口径的结果互相顶替）', calls8.a === 2, JSON.stringify(calls8));
+  // ⑥ 源码锁：默认值提常量、默认表为空、文案按该源自己的预算算秒数
+  const fs2 = await import('node:fs');
+  const path2 = await import('node:path');
+  const src = fs2.readFileSync(path2.resolve(import.meta.dirname, '..', 'src/sources.js'), 'utf8').replace(/\r\n/g, String.fromCharCode(10));
+  const code6 = src.split(String.fromCharCode(10)).filter((l) => { const t = l.trimStart(); return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*'); }).join(String.fromCharCode(10));
+  check('默认预算是具名常量且等于 12000（现状没被动过）', /const DEFAULT_BUDGET_MS = 12000;/.test(code6), '');
+  check('默认可配置表必须是空表（非空就是改变用户可见行为，需另立版本与口径）', /const SOURCE_BUDGET_OVERRIDES = \{\};/.test(code6), '');
+  check('fanOutSources 与 searchSkills 的默认值都取自常量，不再是裸 12000', (code6.match(/budgetMs = DEFAULT_BUDGET_MS/g) || []).length === 2, String((code6.match(/budgetMs = DEFAULT_BUDGET_MS/g) || []).length));
+  check('两条超时文案的秒数按该源实际预算算（否则多源文案会说谎）', (code6.match(/Math\.round\(budgetFor\(name, budgetMs, budgetOverrides\) \/ 1000\)/g) || []).length === 2 && code6.indexOf('Math.round(budgetMs / 1000)') < 0, '');
+  check('超时判定用解析后的预算 b（不是整批共用一个 budgetMs）', /const b = budgetFor\(name, budgetMs, budgetOverrides\);/.test(code6) && /setTimeout\(\(\) => resolve\(\{ timeout: true \}\), b\)/.test(code6), '');
+  check('合并键的预算段走 budgetKey（空表时逐字符等于旧的 String(budgetMs)）', /budgetKey\(picked, budgetMs, budgetOverrides\)/.test(code6) && /return same \? String\(budgetMs\)/.test(code6), '');
+}
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

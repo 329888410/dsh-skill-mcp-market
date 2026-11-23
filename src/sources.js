@@ -544,6 +544,27 @@ const SOURCE_HANDLERS = {
 // 便于源码锁判定归属（test-search-latency-recovery Test 5/Test 7）。
 const AGGREGATE_COOLDOWN_MS = 120000;
 
+// 每源预算的默认值与可配置表。默认表为空 ⇒ 每个源拿到的预算与 DEFAULT_BUDGET_MS 逐毫秒相同，
+// 也就是说这套机制启用与否不改变任何用户可见结果（items/total/超时文案里的秒数都不动）。
+// 要调某个源就在表里写名字，或在调用处传 budgetOverrides（测试与灰度用）。
+const DEFAULT_BUDGET_MS = 12000;
+const SOURCE_BUDGET_OVERRIDES = {};
+
+// 解析某个源本轮实际可用的预算：表里没有该源（或值不是正数）就原样返回调用方的预算。
+const budgetFor = (name, budgetMs, overrides) => {
+  const table = overrides || SOURCE_BUDGET_OVERRIDES;
+  const v = table ? table[name] : undefined;
+  return typeof v === "number" && v > 0 ? v : budgetMs;
+};
+
+// 在途合并键里的预算段：没有任何源被改预算时必须逐字符等于旧写法 String(budgetMs)，
+// 否则合并命中率会在默认路径上白白掉下去（Test 8 锁这一条）。
+const budgetKey = (names, budgetMs, overrides) => {
+  let same = true;
+  for (const n of names) { if (budgetFor(n, budgetMs, overrides) !== budgetMs) { same = false; break; } }
+  return same ? String(budgetMs) : names.map((n) => budgetFor(n, budgetMs, overrides)).join(",");
+};
+
 /**
  * 并发拉取多个来源，并按 names 顺序折叠结果。
  *
@@ -553,6 +574,8 @@ const AGGREGATE_COOLDOWN_MS = 120000;
  * 并发后总耗时接近最慢的那一个源。
  *
  * budgetMs 给每个源单独设上限：超预算的源记为 degraded 并写明超时，不再拖住整次搜索。
+ * 需要按源区分时用 budgetOverrides（或表里预置的名字）——解析只发生在 settle 与文案两处，
+ * 默认表为空时每个源拿到的预算等于 budgetMs，可见结果逐条不变。
  * results 与 degraded 都按 names 顺序输出 —— 并发完成先后不能影响展示顺序，
  * 否则同一条件搜两次会得到不同的列表。
  *
@@ -560,7 +583,7 @@ const AGGREGATE_COOLDOWN_MS = 120000;
  * （fanOnce 在 picked.length > 1 时）显式传入；面板单源路径因此每次搜索都会真打
  * 上游，不会因为上一次超时就在窗口内被静默跳过。
  */
-export async function fanOutSources({ names, run, budgetMs = 12000, cache = null, cooldownMs = 0, cooldownKey = "" }) {
+export async function fanOutSources({ names, run, budgetMs = DEFAULT_BUDGET_MS, cache = null, cooldownMs = 0, cooldownKey = "", budgetOverrides = null }) {
   const list = Array.isArray(names) ? names : [];
   const cooldownPrefix = cooldownKey ? "market_src_timeout:" + cooldownKey + ":" : "market_src_timeout:";
   const cooling = async (name) => {
@@ -576,9 +599,10 @@ export async function fanOutSources({ names, run, budgetMs = 12000, cache = null
       (result) => ({ result }),
       (error) => ({ error: String(error && error.message ? error.message : error) }),
     );
-    if (!(budgetMs > 0)) return work;
+    const b = budgetFor(name, budgetMs, budgetOverrides);
+    if (!(b > 0)) return work;
     let timer = null;
-    const guard = new Promise((resolve) => { timer = setTimeout(() => resolve({ timeout: true }), budgetMs); });
+    const guard = new Promise((resolve) => { timer = setTimeout(() => resolve({ timeout: true }), b); });
     return Promise.race([work, guard]).finally(() => clearTimeout(timer));
   };
   const cooldownNow = await Promise.all(list.map(cooling));
@@ -597,13 +621,13 @@ export async function fanOutSources({ names, run, budgetMs = 12000, cache = null
     const name = list[i];
     const box = settled[i];
     if (box && box.cooldown) {
-      const message = '来源响应超时（预算 ' + Math.round(budgetMs / 1000) + 's），已跳过（冷却中，本轮不再重试）';
+      const message = '来源响应超时（预算 ' + Math.round(budgetFor(name, budgetMs, budgetOverrides) / 1000) + 's），已跳过（冷却中，本轮不再重试）';
       degraded.push({ source: name, error: message });
       results.push({ name, ok: false, result: null, error: message });
       continue;
     }
     if (box && box.timeout) {
-      const message = '来源响应超时（预算 ' + Math.round(budgetMs / 1000) + 's），已跳过';
+      const message = '来源响应超时（预算 ' + Math.round(budgetFor(name, budgetMs, budgetOverrides) / 1000) + 's），已跳过';
       degraded.push({ source: name, error: message });
       results.push({ name, ok: false, result: null, error: message });
       continue;
@@ -624,7 +648,7 @@ export async function fanOutSources({ names, run, budgetMs = 12000, cache = null
 // fan 对象后各自折叠，items 数组互不共享。
 const inflight = new Map();
 
-async function fanOnce({ query, source, cache, sort, category, handlers, budgetMs, effectiveSort, p, size, picked }) {
+async function fanOnce({ query, source, cache, sort, category, handlers, budgetMs, effectiveSort, p, size, picked, budgetOverrides }) {
   const key = [
     handlers ? "test" : "live",
     String(query == null ? "" : query),
@@ -633,7 +657,7 @@ async function fanOnce({ query, source, cache, sort, category, handlers, budgetM
     String(size),
     String(sort || ""),
     String(category || ""),
-    String(budgetMs),
+    budgetKey(picked, budgetMs, budgetOverrides),
   ].join("\u0001");
   const pending = inflight.get(key);
   if (pending) return pending;
@@ -641,6 +665,7 @@ async function fanOnce({ query, source, cache, sort, category, handlers, budgetM
     return await fanOutSources({
       names: picked,
       budgetMs,
+      budgetOverrides,
       cache,
       cooldownMs: picked.length > 1 ? AGGREGATE_COOLDOWN_MS : 0,
       cooldownKey: String(query == null ? "" : query).trim().toLowerCase(),
@@ -658,7 +683,7 @@ async function fanOnce({ query, source, cache, sort, category, handlers, budgetM
   }
 }
 
-export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "", category = "", handlers = null, budgetMs = 12000 }) {
+export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "", category = "", handlers = null, budgetMs = DEFAULT_BUDGET_MS, budgetOverrides = null }) {
   // 注入 handlers 时（测试态）"all" 展开为注入的源集合：否则 fake handler 会被 8 个真实
   // 源淹没，测试照样打真实网络 —— 那测的就不是并发语义，而是上游当时的心情。
   const wanted = source === "all" ? (handlers && Object.keys(handlers).length ? Object.keys(handlers) : ALL_SOURCES) : [source];
@@ -684,7 +709,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   // handlers 是测试注入点：fake handler 才能在没有网络、没有上游波动的情况下断言
   // 并发与顺序性质。生产路径 handlers 为 null，仍走 SOURCE_HANDLERS。
   const fan = await fanOnce({
-    query, source, cache, sort, category, handlers, budgetMs,
+    query, source, cache, sort, category, handlers, budgetMs, budgetOverrides,
     effectiveSort, p, size, picked,
   });
   const degraded = fan.degraded;
