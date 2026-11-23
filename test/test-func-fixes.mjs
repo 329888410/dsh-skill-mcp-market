@@ -20,8 +20,11 @@ console.log('');
 console.log('Test 1: TrustTools 传上游的参数名必须是 search');
 {
   const src = fs.readFileSync(path.join(W, 'src/extra-sources.js'), 'utf8');
-  const seg = src.slice(src.indexOf('export async function searchTrustTools'));
-  const call = seg.slice(0, seg.indexOf('const batch'));
+  // 0.5.159 起，trusttools 的单页请求被抽进模块级 fetchTrustToolsPage（在 searchTrustTools 之前）。
+  // 只钉 searchTrustTools 函数体会让正常重构变成假红：断言范围必须覆盖真实请求构造路径。
+  const fn = src.indexOf('export async function searchTrustTools');
+  const hlp = src.indexOf('async function fetchTrustToolsPage');
+  const call = src.slice(hlp >= 0 ? Math.min(hlp, fn) : fn, src.indexOf('const batch', fn));
   check('posts search: query', /search:\s*query/.test(call), 'still q:');
   check('no longer posts q: query', !/\bq:\s*query/.test(call));
 }

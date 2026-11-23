@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.160
+
+- 收 0.5.159 的 CI 红灯：产品代码逐字节不动，只修一个被正常重构打断的**假红判据**（`test/test-func-fixes.mjs` Test 1）。
+- CI 归因（GitHub check-run 138021192576 annotations 原文，公开可得；Actions 日志端点仍 403 admin-only）：`[GATE] publish blocked: 1/64 suites red → test-func-fixes.mjs(FAIL)`、`[GATE] test-func-fixes.mjs :: FAIL posts search: query  still q:`。npm 因此没有 0.5.159（`registry` 包文档 `dist-tags.latest=0.5.158`，版本列表无 0.5.159），profile 安装报 `[ERR_PNPM_NO_MATCHING_VERSION] No matching version found for dsh-skill-mcp-market@0.5.159`。
+- 根因是判据而非功能：Test 1 用 `src.slice(indexOf("export async function searchTrustTools"))` 再截到 `const batch`，在函数体内找 `search: query`。0.5.159 为满足「分类请求与参照请求除 tags 外逐字段相同」把单页请求抽进模块级 `fetchTrustToolsPage`（位于 searchTrustTools **之前**），POST body 于是离开了那段切片 ⇒ 判据命中空串，`{ search: query }` 明明在 :580。`searchSkills` 的 lobehub 分支此前也有一次同类假红（Test 3 的 SKIP 那一条走真网络，CI 上 skipped）。
+- 修法：断言范围改为「从 `fetchTrustToolsPage` 与 `searchTrustTools` 中更靠前的那个起，到 `searchTrustTools` 内的 `const batch` 止」，两种代码形状（抽出的 helper / 内联 body）都覆盖。改后 `node --check` 通过、套件 9 passed, 0 failed（原 8 passed, 1 failed）；`test-trusttools-category-vocab` 84/0、`test-suite-inventory` 11/0、`test-dead-exports` 47/0 同轮复跑绿。
+- 本地当时另有第 2 红 `test-profile-sync`（`✗ no stale copies  profile:src\extra-sources.js`、`mirrors report 0.5.159  (work=0.5.159 profile=0.5.158 D=null)`）：那是发布前中间态（profile 尚未装 0.5.159/0.5.160），不是回归；CI 上该套件因无镜像目录 skipped（我用空 `DSH_MARKET_PROFILE_DIR`/`DSH_MARKET_MIRROR_DIR` 复现：1 passed, 0 failed）。安装本版后应转绿。
+- 版本号沿用「被 CI 拦下的号不复用」的既有口径（0.5.109/0.5.110 同形：0.5.109 至今不在 npm，修复随 0.5.110 发）。tag v0.5.159 保留为未发布标签，本版内容 = 0.5.159 全部改动 + 本次判据修正。
+
 ## 0.5.159
 
 - trusttools facet 自证口径从「行级命中」换成「pagination.total 对照」（src/extra-sources.js searchTrustTools），并修 GET 多 tag 线路编码。
