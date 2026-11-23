@@ -117,6 +117,13 @@ check('settings.get 带 sortCapabilities 三键', Boolean(d.sortCapabilities && 
   const cvDetail = '实际=' + String(cv && Array.isArray(cv.categories) ? cv.categories.length : JSON.stringify(cv === undefined ? '(字段缺失)' : cv)).slice(0, 90);
   // 0.5.153 起 categoryVocabulary 是按源分组（{skillsmp, clawhub}），播种只给了 skillsmp。
   check('词表通道按源分组带回 63 条分类', Boolean(cv && cv.skillsmp && Array.isArray(cv.skillsmp.categories) && cv.skillsmp.categories.length === 63), cvDetail);
+  // trusttools 那份是随包静态表，不经缓存不经网络：冷缓存（上面只播种了 skillsmp）也必须带回来。
+  // 这条正是 0.5.148 缺 import 的同一条通路——settings.get 内引用未导入符号会整段抛错，
+  // 而 0.5.157 新增的 trusttoolsCategoryVocabulary 若漏 import，红就红在这里。
+  const ttv = cv && cv.trusttools;
+  check('词表分组含 trusttools 静态表（冷缓存也在，不经网络）',
+    Boolean(ttv && Array.isArray(ttv.categories) && ttv.categories.length === 9 && String(ttv.source || '').indexOf('https://ai.trusttools.cn/') === 0),
+    '实际=' + String(ttv && Array.isArray(ttv.categories) ? ttv.categories.length : JSON.stringify(ttv === undefined ? '(无 trusttools 键)' : ttv)).slice(0, 90));
 check('settings.get 带 shipped 段', Boolean(d.shipped));
 
 console.log('');

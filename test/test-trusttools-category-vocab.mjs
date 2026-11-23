@@ -417,6 +417,73 @@ console.log('Test 9: 接线（import / settings.get 下发 / 面板归属 / 套�
         /test-trusttools-category-vocab\.mjs/.test(readLf('package.json')), safe((readLf('package.json').match(/"test:chain"[^\n]{0,90}/) || ['(无)'])[0]));
 }
 
+// ---------------------------------------------------------------- Test 10: 面板 chip 真行为
+// 接线判据（Test 9）只证明 ORIGIN 里写了 trusttools，不证明那一排 chip 真按词表画出来。
+// 0.5.151 那轮的漏验就是同一个形状：只核了「规范类出现」，没核「派生值消失」，
+// 结果 douyin/抖音 七个自由标签照样在面板上（用户实测点名）。这里跑真实函数体，
+// 和 skillsmp 套件同一口径（bodyOf 扫到 0 列闭括号；anchor-lib 的 blockEnd 会被签名里的
+// 默认值对象提前归零，那个坑 skillsmp 套件注释里已写明）。
 console.log('');
+console.log('Test 10: 面板 chip 真按 trusttools 词表画（跑真实函数体）');
+{
+    const clientLines = readLf('client.js').split(String.fromCharCode(10));
+    const bodyOf = (declNeedle) => {
+        const at = clientLines.findIndex((l) => l.indexOf(declNeedle) >= 0);
+        if (at < 0) return null;
+        for (let i = at + 1; i < clientLines.length; i++) if (clientLines[i] === '}') return clientLines.slice(at, i + 1).join(String.fromCharCode(10));
+        return null;
+    };
+    const outer = bodyOf('function categoryChipsForSource(');
+    const inner = bodyOf('function mergeCategoryVocab(');
+    check('面板两个函数体取得到（拿不到就是锚失效，不是实现有问题）',
+        outer !== null && inner !== null, safe('outer=' + (outer === null ? 'null' : 'ok') + ' inner=' + (inner === null ? 'null' : 'ok')));
+    let chips = null;
+    try {
+        chips = new Function(inner + String.fromCharCode(10) + outer + String.fromCharCode(10) + 'return categoryChipsForSource;')();
+    } catch (e) {
+        chips = null;
+        check('面板函数可执行', false, safe((e && e.message) || e));
+    }
+    if (typeof chips === 'function') {
+        const run = (source, derived, bySource) => chips(source, derived, bySource);
+        const freeTags = ['douyin', '抖音', 'json', 'ai-tools'];
+        const real = (() => { try { return trusttoolsCategoryVocabulary(); } catch { return null; } })();
+        check('词表在手时 trusttools 那一排全是规范 9 类（派生自由标签一个都不留）',
+            Array.isArray(real && real.categories) && (() => {
+                const got = run('trusttools', freeTags, { trusttools: real });
+                return got.length === 9 && got.every((c) => c.fixed === true)
+                    && got.every((c) => freeTags.indexOf(c.value) < 0);
+            })(), safe(JSON.stringify((() => { try { return run('trusttools', freeTags, { trusttools: real }).map((c) => c.value); } catch (e) { return String((e && e.message) || e); } })())));
+        check('顺序按词表顺序（无条数时不许瞎排）',
+            (() => { const g = run('trusttools', [], real); return g.map((c) => c.value).join(',') === real.categories.map((c) => c.slug).join(','); })(),
+            safe((() => { try { return run('trusttools', [], real).map((c) => c.value).join(','); } catch (e) { return String((e && e.message) || e); } })()));
+        check('chip 标签非空（label 回落 slug，绝不显示 undefined/空串）',
+            run('trusttools', [], real).every((c) => c.label && c.label !== 'undefined'),
+            safe(run('trusttools', [], real).map((c) => c.label).slice(0, 3).join(',')));
+        const legacy = run('trusttools', freeTags, real);
+        check('旧服务端单一形状（未分组）同样生效——面板热更新、服务端等重启是真实中间态',
+            legacy.length === 9 && legacy.every((c) => c.fixed === true), safe(JSON.stringify(legacy.map((c) => c.value).slice(0, 3)) + ' n=' + legacy.length));
+        const cold = run('trusttools', freeTags, { skillsmp: real });
+        check('本市场词表尚未下发时派生值保留（不能把分类入口关掉）',
+            cold.length === freeTags.length && cold.every((c) => c.fixed === false), safe(JSON.stringify(cold)));
+        // 线上稳定态是两份词表都热（新服务端 + skillsmp 也已补取）：只测冷路径兜底会漏掉分组取键这条路。
+        const bothHot = run('trusttools', freeTags, {
+            skillsmp: { source: 'https://skillsmp.com/', categories: [{ slug: 'debugging', label: '调试工具', totalAll: 532411 }] },
+            trusttools: real,
+        });
+        check('两份词表都热时本市场仍只用 trusttools 自己的词表（分组取键，不被别家覆盖）',
+            bothHot.length === 9 && bothHot.every((c) => c.fixed === true), safe(JSON.stringify(bothHot.map((c) => c.value).slice(0, 4)) + ' n=' + bothHot.length));
+        const foreign = run('trusttools', freeTags, { trusttools: Object.assign({}, real, { source: 'https://other-market.example/' }) });
+        check('词表来源前缀不是 trusttools 时整排丢弃退派生（串味防护真生效，不只是写了分支）',
+            foreign.length === freeTags.length && foreign.every((c) => c.fixed === false), safe(JSON.stringify(foreign)));
+        const leak = run('clawhub', ['weird-derived-slug'], { trusttools: real });
+        check('trusttools 词表不得出现在别的市场下（用户 0.5.151 点名的假分类）',
+            leak.length === 1 && leak[0].value === 'weird-derived-slug' && leak[0].fixed === false, safe(JSON.stringify(leak)));
+        const noKey = run('trusttools', freeTags, null);
+        check('settings.get 整体失败时退派生（pathsView 同款：不依赖它的那部分照常）',
+            noKey.length === freeTags.length && noKey.every((c) => c.fixed === false), safe(JSON.stringify(noKey)));
+    }
+}
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
