@@ -98,6 +98,13 @@ import zlib from 'node:zlib';
   const es = await import(pathToFileURL(path.join(W, 'src', 'extra-sources.js')).href);
   const page = zlib.gunzipSync(fs.readFileSync(path.join(W, 'test', 'fixtures', 'skillsmp-categories.html.gz'))).toString('utf8');
   const seeded = await es.skillsmpCategoryVocabulary({ cache: makeCache(path.join(home, 'market', 'cache')), getText: async () => ({ text: page }) });
+  // clawhub 那份也播种（注入名是 getJson，写错名字会静默走真网络）：
+  // 让 Promise.all 双读与分组形状在真执行里成立，而不是只有一种源热着。
+  const clawSeeded = await es.clawhubCategoryVocabulary({
+    cache: makeCache(path.join(home, 'market', 'cache')),
+    getJson: async () => ({ categories: [{ slug: 'security', label: 'Security' }, { slug: 'data', label: 'Data' }] }),
+  });
+  check('夹具 clawhub 词表已写入本次隔离缓存', Boolean(clawSeeded && Array.isArray(clawSeeded.categories) && clawSeeded.categories.length === 2), '实际=' + String(clawSeeded && clawSeeded.categories ? clawSeeded.categories.length : JSON.stringify(clawSeeded === undefined ? '(无)' : clawSeeded)).slice(0, 90));
   check('夹具词表已写入本次隔离缓存', Boolean(seeded && seeded.categories && seeded.categories.length === 63), '实际=' + (seeded && seeded.categories ? seeded.categories.length : String(seeded)));
 }
 
