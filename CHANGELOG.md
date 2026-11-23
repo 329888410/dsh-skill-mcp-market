@@ -38,6 +38,7 @@
 - 本版两半的验证口径必须分开写，不许混成「已 live 验证」：
   · **已 live 验证的是面板半段**（client.js 热更新即生效）：真开 live 面板逐源实测——clawhub 下 chip 行是本市场真实分类（douyin/ai-tools/tiktok/database/kuaishou/json），skillsmp 下才是带条数的词表（调试工具 532,411 / 销售与营销 407,969 / 系统管理 210,265 / 代码质量 203,368 / Git 工作流 182,885…），skills.sh 下不再出现任何分类入口，且「所选来源不提供分类信息」提示也不再出现。
   · **未经 live 验证的是服务端半段**（撤掉那句窗口说明改的是 src/extra-sources.js）。宿主 14:13:50 重启时加载的是 0.5.150，0.5.151 的 src 改动此刻不在进程里：真发 live RPC `skills.search source=skillsmp` 仍回 `["skillsmp：skillsmp 上游把结果窗口截在约 1200 条…更早/更晚的条目需要换关键词继续找"]`，即**那句失效文案现在 live 上仍然显示着**。判别不是靠猜：profile 落盘的 src/extra-sources.js 与仓库归一化 sha 相同（16429ce53073940d）且已不含该句，而进程内响应仍含该句 ⇒ 差异只在「进程加载的是旧模块」。已另做判别排除缓存因素：把 pageSize 换成 20/30（缓存键必 miss）仍出旧文案。这一半要等下次宿主重启才在 live 上生效，属部署时机，不是代码缺陷。
+  （0.5.154 轮闭合）宿主随后重启（GUI 端口 63068→62898），这一半现在 live 验过了：真发 RPC skills.search source=skillsmp 回 hints=[]、total=undefined、hasMore=true，且响应里已搜不到那句文案 —— 服务端半段与面板半段至此都算 live 已验。上面那段记录保留，因为它记的是当时的真实状态与判别方法（profile 落盘 sha 相同而进程内仍旧、pageSize 20/30 排除缓存因素），不是错账。
 - 门禁：发布前 60/62，两条红都判过——test-profile-sync（工作树已改、profile 未装新版的预期中间态）与 test-full-sort 的一条 live 网络判据 `plain == fresh（未被 name 排序污染）`（69s 那一轮撞上上游波动；单独连跑两次 31/0 与 32/0 均绿，属真网络抖动而非本轮改动，如实记录不掩盖）。那条抖动已在 0.5.152 固化成判据（Test 8 + compareVerdict 单一口径），不再靠人肉复跑收口。
 
 ## 0.5.150
