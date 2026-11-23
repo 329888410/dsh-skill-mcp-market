@@ -260,7 +260,12 @@ async function extendClawHubCatalog(cache, need, sortBy = "", category = "", fet
   if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false };
   const seen = new Set(state.rows.map((raw) => clawhubIdOf(raw)));
   let guard = 0;
-  while (!state.done && state.rows.length < need) {
+  // 上界必须真的检查：guard 变量早就存在但从未被判断，于是「每页返回同一批条目 +
+  // 每页换一个 nextCursor」这种病态上游会让 state.rows.length 永远追不上 need，
+  // 循环不结束（2026-11-23 注入实测 201 次仍未收敛）。生产里表现为整源挂到 12s
+  // 预算被切断，也就是「clawhub 不可达」的另一种成因。
+  const MAX_ROUNDS = 40;
+  while (!state.done && state.rows.length < need && guard < MAX_ROUNDS) {
     guard += 1;
     const cursor = state.cursor ? `&cursor=${encodeURIComponent(state.cursor)}` : "";
     const data = await fetchJson(`https://clawhub.ai/api/v1/skills?limit=50${sortBy ? `&sort=${encodeURIComponent(sortBy)}` : ""}${category ? `&category=${encodeURIComponent(category)}` : ""}${cursor}`);
@@ -389,7 +394,15 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
         : sort === "updated" ? "updated"
           : sort === "trending" ? "trending"
             : sort === "name" ? "name" : "";
-  const need = Math.min(2000, size * (p + 2));
+  // 预取口径按「上游每页给多少」分开：无分类浏览每次回满 50 条，多攒几页便宜，
+  // 保持 size*(p+2) 让翻页秒开；带分类时上游实测每次只回 13 条（limit=50/100/197
+  // 一样，文档：Bounded category reads may return a short or empty page with a
+  // continuation），同样的口径意味着首页 24 条要打 7 次串行 cursor（实测 11402ms，
+  // 正好撞满 12s 预算 → degraded=[clawhub]）。分类页因此只攒到本页所需 + 一页余量。
+  // 分类页只攒到「够这一页」的量（size*p）：多攒一页余量看着省翻页，实际把首页延迟
+  // 翻倍（13 条/轮 × 4 轮 ≈ 6s vs 2 轮 ≈ 3s），而目录本来就在缓存里累积，翻页是从
+  // 断点继续、不是重打。无分类浏览每次回满 50 条，预取便宜，保持 size*(p+2)。
+  const need = facetUsed ? Math.min(2000, size * p) : Math.min(2000, size * (p + 2));
   let state;
   try {
     state = await extendClawHubCatalog(cache, need, browseSort, facetUsed, fetchJson);

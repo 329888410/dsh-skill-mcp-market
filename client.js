@@ -188,12 +188,23 @@ function categoryChipLabel(value, vocab) {
 function categoryChipsForSource(source, derived, bySource) {
   const ORIGIN = { skillsmp: 'https://skillsmp.com/', clawhub: 'https://clawhub.ai/' };
   const key = String(source || '');
-  const expected = ORIGIN[key];
-  if (!expected || !bySource || typeof bySource !== 'object') return mergeCategoryVocab(derived, null);
-  const vocab = bySource[key];
+  if (!ORIGIN[key] || !bySource || typeof bySource !== 'object') return mergeCategoryVocab(derived, null);
+  // 两种下发形状都要吃：分组 { skillsmp, clawhub }（0.5.153 起），以及旧服务端那份未分组
+  // 的单一快照 {capturedAt,source,categories}。面板会热更新而宿主进程内的服务端要等重启，
+  // 「新面板 + 旧服务端」是真实存在的中间态——当时实测 skillsmp 的带条数 chip 整排消失。
+  // 旧形状按它自己的 source 认市场：只有 source 指向前缀与当前市场一致才生效（不串味）。
+  const legacy = Array.isArray(bySource.categories);
+  let vocab;
+  if (legacy) {
+    const owner = Object.keys(ORIGIN).find((k) => String(bySource.source || '').indexOf(ORIGIN[k]) === 0);
+    if (owner !== key) return mergeCategoryVocab(derived, null);
+    vocab = bySource;
+  } else {
+    vocab = bySource[key];
+  }
   const rows = (vocab && Array.isArray(vocab.categories)) ? vocab.categories : [];
   if (!rows.length) return mergeCategoryVocab(derived, null);
-  if (vocab.source != null && String(vocab.source).indexOf(expected) !== 0) return mergeCategoryVocab(derived, null);
+  if (!legacy && vocab.source != null && String(vocab.source).indexOf(ORIGIN[key]) !== 0) return mergeCategoryVocab(derived, null);
   return mergeCategoryVocab(derived, vocab);
 }
 function categoryLabelLite(chip) {

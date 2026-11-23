@@ -321,6 +321,12 @@ console.log('Test 8: 面板按源取词表（clawhub 词表不得串到别的市
     check('browse.sh 下两套词表都不出现', Array.isArray(other) && other.length === 1 && other[0].value === 'page-derived-slug', JSON.stringify(other && other.err ? other : other));
     const smp = run(['skillsmp', ['page-derived-slug'], bySource]);
     check('skillsmp 下仍是自己的词表（0.5.151 行为不回退）', Array.isArray(smp) && smp.length === 2 && smp[0].value === 'debugging' && smp[0].totalAll === 532411, JSON.stringify(smp && smp.err ? smp : smp));
+    // Y3 盲区：把 legacy 判据写成「没有 skillsmp 键就算旧形状」时，
+    // 「分组但某一路还没缓存」这种真实状态（冷 skillsmp、热 clawhub）会整排丢 chip。
+    const partial = run(['clawhub', ['page-derived-slug'], { skillsmp: null, clawhub: chVocab }]);
+    check('分组形状里另一路尚未缓存时仍取本市场词表', Array.isArray(partial) && partial.length === 15 && partial[0].value === 'integrations', JSON.stringify(partial && partial.err ? partial : { n: partial.length }));
+    const partial2 = run(['clawhub', ['page-derived-slug'], { clawhub: chVocab }]);
+    check('分组形状缺 skillsmp 键也不得当成旧形状', Array.isArray(partial2) && partial2.length === 15, JSON.stringify(partial2 && partial2.err ? partial2 : { n: partial2.length }));
     const crossed = run(['clawhub', ['page-derived-slug'], { clawhub: smpVocab, skillsmp: smpVocab }]);
     check('词表串味（clawhub 位上放 skillsmp 的词表）时按来源拒绝', Array.isArray(crossed) && crossed.length === 1, JSON.stringify(crossed && crossed.err ? crossed : crossed));
     const wire = lines.find((l) => l.includes('const vocabChips = categoryChipsForSource('));
@@ -331,6 +337,56 @@ console.log('Test 8: 面板按源取词表（clawhub 词表不得串到别的市
     check('面板 state 取自 settings.get 的分组词表字段', !!assign, (assign || '未取到回填行').trim().slice(0, 130));
     const labelHit = got && !got.err ? got.find((c) => c.value === 'integrations') : null;
     check('clawhub chip 显示上游 label 而不是裸 slug（词表字段名是 label）', !!labelHit && labelHit.label === 'Integrations', JSON.stringify(labelHit));
+}
+
+console.log('');
+console.log('Test 9: 带分类浏览不得为预取多付上游轮次（live 实测的超时根因）');
+{
+    // 2026-11-23 live 实测：category=security 时上游**每次只回 13 条**（limit=50/100/197
+    // 都一样，文档：Bounded category reads may return a short or empty page with a
+    // continuation），而旧 browse 路径沿用「攒到 size*(p+2) 条」的预取口径 —— 面板首页
+    // 24 条要 72 条，13 条/次就是 7 次串行 cursor，实测 11402ms，正好撞满 12s 预算：
+    // live RPC 回 degraded=[clawhub] + 「所选来源不提供分类信息，已忽略分类筛选」。
+    // 也就是说分类入口在 clawhub 上会因为自己的预取策略而整源超时。
+    // 判据不数文案，数上游轮次：注入 13 条/页的短页，page=1 必须只取够本页的量。
+    let pageSeq = 0;
+    // 每页行必须互不相同（真实 cursor 分页给的是新条目）。上一版注入让每页都是同一批
+    // slug，撞进 extendClawHubCatalog 的死循环（见 Test 10），那次「挂住」是真缺陷被
+    // 意外暴露，不是注入的本意 —— 这里把注入修正成真实形状，让 Test 9 只测预取轮次。
+    const mkShort = (slug, n) => { pageSeq += 1; return { items: Array.from({ length: n }, (_, k) => ({ slug: 'p' + pageSeq + '-' + k, ownerHandle: 'o', displayName: 'X' + k, summary: '', categories: [slug], topics: [], stats: { downloads: 500 - k, installs: 1, stars: 1, versions: 1 }, latestVersion: '1.0.0', updatedAt: 1, createdAt: 1 })), nextCursor: 'c' + pageSeq }; };
+    let calls = 0;
+    const r = await esMod.searchClawHub({ query: '', page: 1, pageSize: 24, cache: null, category: 'security', fetchJson: async (u) => { calls += 1; return mkShort('security', 13); } });
+    check('首页只取够本页的上游轮次（13 条/页 ⇒ 2 次，不再 7 次预取）', calls <= 3, 'calls=' + calls);
+    check('短页预取下首页仍给满 24 条', r.items.length === 24, 'items=' + r.items.length);
+    check('分类页仍声明服务端已筛（serverFacet=true）', r.serverFacet === true, JSON.stringify(r.serverFacet));
+    check('未翻完游标时总数留未知（不拿已攒条数冒充）', r.total === undefined && r.hasMore === true, 'total=' + JSON.stringify(r.total) + ' hasMore=' + JSON.stringify(r.hasMore));
+    // 无分类的浏览路径保持既有预取口径（那里 limit=50 每次回满页，预取便宜）
+    let calls2 = 0;
+    const r2 = await esMod.searchClawHub({ query: '', page: 1, pageSize: 24, cache: null, fetchJson: async (u) => { calls2 += 1; return mkShort('', 50); } });
+    check('无分类浏览仍按预取口径攒目录（满页时多攒几页不亏）', calls2 >= 1 && r2.items.length === 24, 'calls=' + calls2 + ' items=' + r2.items.length);
+}
+
+console.log('');
+console.log('Test 10: 目录累积必须有轮次上界（重复行 + 新 cursor 不得无限循环）');
+{
+    // 2026-11-23 意外暴露：extendClawHubCatalog 里有 let guard = 0; guard += 1; 却
+    // 从不检查 guard —— 上游只要「每页返回同一批条目 + 每页换一个 nextCursor」，
+    // state.rows.length 就永远追不上 need，循环不结束。生产里表现为整源挂到 12s 预算
+    // 被切断（degraded=[clawhub]），也就是「clawhub 不可达」的另一种成因。
+    // 判据：注入这种病态上游，调用次数必须有界且函数必须返回。
+    // 注入用「每页同一批条目 + 每页换新 cursor」的病态上游，并在第 200 次主动抛错。
+    // 不用 Promise.race + 定时器：那个循环只 await 已完成的 promise（微任务），
+    // 定时器是宏任务会被饿死 —— 上一版就是这么把套件挂到超时的（真缺陷，但红得无效）。
+    let calls3 = 0;
+    const dup = () => {
+      calls3 += 1;
+      if (calls3 > 200) throw new Error('INJECTED_STUCK_UPSTREAM');
+      return { items: [0, 1, 2].map((k) => ({ slug: 'same-' + k, ownerHandle: 'o', displayName: 'S' + k, summary: '', categories: ['security'], topics: [], stats: { downloads: 10, installs: 1, stars: 1, versions: 1 }, latestVersion: '1.0.0', updatedAt: 1, createdAt: 1 })), nextCursor: 'cursor-' + calls3 };
+    };
+    const done = await esMod.searchClawHub({ query: '', page: 1, pageSize: 24, cache: null, category: 'security', fetchJson: async () => dup() })
+      .then(() => 'returned').catch((e) => 'threw:' + String((e && e.message) || e).slice(0, 60));
+    check('病态上游下必须自行收敛（不靠外层预算切断）', done === 'returned', done + ' calls=' + calls3);
+    check('累积轮次有上界（不是无限串行 cursor）', calls3 > 0 && calls3 <= 60, 'calls=' + calls3);
 }
 
 console.log('');

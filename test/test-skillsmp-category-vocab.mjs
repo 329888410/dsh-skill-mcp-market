@@ -369,6 +369,16 @@ const foreign = scoped(['skillsmp', ['weird-derived-slug'], { skillsmp: { captur
 check('词表来源不是 skillsmp 页面时即使当前源是 skillsmp 也不接受', Array.isArray(foreign) && foreign.length === 1 && foreign[0].fixed === false, JSON.stringify(foreign && foreign.err ? foreign : foreign));
 const noSource = scoped(['skillsmp', ['weird-derived-slug'], { skillsmp: { capturedAt: 1, categories: vocab } }]);
 check('词表未声明来源时按 skillsmp 词表接受（旧快照不落 source 也要能用）', Array.isArray(noSource) && noSource.length === vocab.length + 1, JSON.stringify(noSource && noSource.err ? noSource : noSource.length));
+// live 判别（0.5.153 装完后实测）：面板 client.js 会热更新，而宿主进程内的 index.js
+// 要等重启——于是出现「新面板 + 旧服务端」的组合：旧服务端下发的是未分组的单一词表对象
+// {capturedAt,source,categories}。当时实测 skillsmp 那排带条数 chip 整排消失（只剩派生），
+// 这是我引入的向后不兼容：面板改吃分组形状却没兼容旧形状。判据锁住旧形状仍可用。
+const legacy = scoped(['skillsmp', ['weird-derived-slug'], { capturedAt: 1, source: 'https://skillsmp.com/zh/categories', categories: vocab }]);
+check('旧服务端下发的未分组单一词表对象仍要生效（新面板+旧服务端不得丢 chip）',
+    Array.isArray(legacy) && legacy.length === vocab.length + 1 && legacy[0].fixed === true,
+    JSON.stringify(legacy && legacy.err ? legacy : { n: legacy.length }));
+const legacyOther = scoped(['clawhub', ['weird-derived-slug'], { capturedAt: 1, source: 'https://skillsmp.com/zh/categories', categories: vocab }]);
+check('旧形状同样不得串到别的市场', Array.isArray(legacyOther) && legacyOther.length === 1, JSON.stringify(legacyOther && legacyOther.err ? legacyOther : legacyOther));
 // 接线：面板必须把当前源传进去，而不是无条件合并词表。
 
 const labeled = runClientFn('categoryChipLabel', ['debugging', { categories: vocab }]);
