@@ -336,6 +336,40 @@ if (Array.isArray(merged)) {
       (() => { const m = runClientFn('mergeCategoryVocab', [['backend'], null]); return Array.isArray(m) && m.length === 1 && m[0].value === 'backend'; })(),
       JSON.stringify(runClientFn('mergeCategoryVocab', [['backend'], null])));
 } else if (!merged || !merged.err) check('词表合并可执行', false, JSON.stringify(merged));
+// ---------------------------------------------------------------- 词表只属于 skillsmp
+// 用户实测（0.5.150 live）：这排带条数的分类 chip 在 skills.sh / clawhub / browse.sh 等
+// 每一个市场下都长一样，点上去要么「所选来源不提供分类信息，已忽略分类筛选」（实测
+// skills.sh category=debugging 回同样的 24 条），要么退成本地过滤当前页。词表来自
+// skillsmp.com/zh/categories，slug 只有 skillsmp 认——把它显示成别的市场的分类，
+// 本身就是假陈述。判据跑真实函数体。
+const scoped = (args) => {
+  const outer = bodyOf(clientLines, 'function categoryChipsForSource(', 'categoryChipsForSource');
+  if (outer === null) return { err: '未取到函数体 categoryChipsForSource' };
+  // 它委托 mergeCategoryVocab（面板里两者同在模块作用域）。new Function 是独立作用域，
+  // 所以把两份真实函数体一起放进去，还原模块作用域的依赖关系——跑的还是真代码。
+  const inner = bodyOf(clientLines, 'function mergeCategoryVocab(', 'mergeCategoryVocab');
+  if (inner === null) return { err: '未取到函数体 mergeCategoryVocab' };
+  try { return new Function(inner + String.fromCharCode(10) + outer + String.fromCharCode(10) + 'return categoryChipsForSource;')()(...args); }
+  catch (e) { return { err: String((e && e.message) || e) }; }
+};
+const smp = scoped(['skillsmp', ['weird-derived-slug'], { capturedAt: 1, categories: vocab }]);
+check('skillsmp 下词表 chip 照常生效', Array.isArray(smp) && smp.length === vocab.length + 1 && smp[0].fixed === true, JSON.stringify(smp && smp.err ? smp : (smp || []).slice(0, 2)));
+for (const other of ['clawhub', 'skills.sh', 'browse.sh', 'lobehub', 'skillhub', 'modelscope', 'trusttools', 'all', '', undefined]) {
+  const got = scoped([other, ['weird-derived-slug'], { capturedAt: 1, categories: vocab }]);
+  check('非 skillsmp（' + String(other) + '）不得出现词表 chip',
+      Array.isArray(got) && got.length === 1 && got[0].value === 'weird-derived-slug' && got[0].fixed === false,
+      JSON.stringify(got && got.err ? got : got));
+}
+check('派生 chip 在任意源都保留（关掉入口不是兜底）', (() => { const g = scoped(['clawhub', ['a', 'b'], null]); return Array.isArray(g) && g.length === 2; })(), JSON.stringify(scoped(['clawhub', ['a', 'b'], null])));
+// 词表自带来源字段：那不是 skillsmp 的页面时，即使当前源是 skillsmp 也不接受。
+// 没有这条判据时，删掉 stated 检查（把别处喂进来的词表也当 skillsmp 的）行为不变地通过，
+// 属于「写了分支没锁行为」——同 M5 那类假锁，这里当轮补上。
+const foreign = scoped(['skillsmp', ['weird-derived-slug'], { capturedAt: 1, source: 'https://other-market.example/categories', categories: vocab }]);
+check('词表来源不是 skillsmp 页面时即使当前源是 skillsmp 也不接受', Array.isArray(foreign) && foreign.length === 1 && foreign[0].fixed === false, JSON.stringify(foreign && foreign.err ? foreign : foreign));
+const noSource = scoped(['skillsmp', ['weird-derived-slug'], { capturedAt: 1, categories: vocab }]);
+check('词表未声明来源时按 skillsmp 词表接受（旧快照不落 source 也要能用）', Array.isArray(noSource) && noSource.length === vocab.length + 1, JSON.stringify(noSource && noSource.err ? noSource : noSource.length));
+// 接线：面板必须把当前源传进去，而不是无条件合并词表。
+
 const labeled = runClientFn('categoryChipLabel', ['debugging', { categories: vocab }]);
 check('chip 标签走中文映射而 value 仍是 slug',
     !!labeled && !labeled.err && labeled.value === 'debugging' && /\p{Script=Han}/u.test(String(labeled.label || '')),
@@ -355,6 +389,9 @@ const chipGate = lineIf("tab === 'skills' && (categories.length", '技能 chip �
 check('技能 chip 行门槛保留 categories.length（词表抓不到时不关掉入口）',
     /categories\.length/.test(chipGate), chipGate.trim().slice(0, 140));
 check('chip 行由派生与词表共同驱动', /categories/.test(chipGate) && /ocab/.test(chipGate), chipGate.trim().slice(0, 150));
+const wiringLine = lineIf('const vocabChips = categoryChipsForSource(', '词表 chip 接线');
+check('面板按当前源决定词表 chip（接线可执行）', /categoryChipsForSource\(source/.test(wiringLine), wiringLine.trim().slice(0, 150) || '未取到接线行');
+check('面板不再无条件合并词表', countHits(clientSrc, 'mergeCategoryVocab(categories, categoryVocab)') === 0, '');
 
 // 词表存在后本地过滤必须让位（否则点词表 chip 只剩首屏那一页里的几张卡）
 const localGate = lineIf('const visibleSkills = orderedSkills.filter', '本地分类过滤');

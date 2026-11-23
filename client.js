@@ -173,6 +173,18 @@ function categoryChipLabel(value, vocab) {
   const hit = rows.find((r) => String((r && r.slug) || '') === v);
   return { value: v, label: hit ? String(hit.name || v) : v };
 }
+// 词表 chip 只在它所属的那个市场里出现。这份词表抓自 skillsmp 的分类页，slug 只有
+// skillsmp 的上游认：在 skills.sh / clawhub 等市场下照样显示这排 chip，点上去只会得到
+// 「所选来源不提供分类信息，已忽略分类筛选」或退成本地过滤当前页——那是把别家的分类
+// 冒充本市场的，属于假陈述（用户 0.5.150 实测点名）。词表若自带来源字段且不是 skillsmp
+// 的页面，即使当前源是 skillsmp 也不接受（防未来别处喂进来的词表串味）。
+function categoryChipsForSource(source, derived, vocab) {
+  const rows = (vocab && Array.isArray(vocab.categories)) ? vocab.categories : [];
+  if (!rows.length) return mergeCategoryVocab(derived, null);
+  const stated = vocab.source == null || String(vocab.source).indexOf('https://skillsmp.com/') === 0;
+  if (String(source || '') !== 'skillsmp' || !stated) return mergeCategoryVocab(derived, null);
+  return mergeCategoryVocab(derived, vocab);
+}
 function categoryLabelLite(chip) {
   const label = String((chip && chip.label) || (chip && chip.value) || '');
   const n = Number(chip && chip.totalAll) || 0;
@@ -1791,7 +1803,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       });
       const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 10);
       // 固定词表在前（上游条目数降序），当前页派生的串补在后：词表抓不到时入口不关，改版也不丢。
-      const vocabChips = mergeCategoryVocab(categories, categoryVocab);
+      const vocabChips = categoryChipsForSource(source, categories, categoryVocab);
       const chipBySlug = {};
       for (const chip of vocabChips) if (!chipBySlug[chip.value]) chipBySlug[chip.value] = chip;
       const chipSlugs = ['all'].concat(vocabChips.map((c) => c.value));

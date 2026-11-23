@@ -78,7 +78,12 @@ console.log('Test 3: isCapped/maxResults 的窗口上限不得当成目录总数
   console.log('   实测(browse 窗口): total=' + String(r.total) + ' hasMore=' + String(r.hasMore) + ' hint=' + String(r.hint));
   check('browse 不报 1200 这种窗口总数', r.total === undefined, String(r.total));
   check('browse 不给由窗口推算的 totalPages', r.totalPages === undefined, String(r.totalPages));
-  check('browse 说明窗口来自 maxResults', typeof r.hint === 'string' && r.hint.includes('1200'), String(r.hint));
+  // 用户 2026-11-23 点名这句说明已失效、不要再显示：数字本身（maxResults=1200
+  // 实测仍在）不是问题，问题是它给的出路只有一条「换关键词继续找」，而面板现在
+  // 有 63 个分类 chip（各自带上游 totalAll 真实条数）可走。去掉说明不等于放弃口径：
+  // 总数与总页数必须继续留未知——不许因为「不再解释」就顺手把窗口当总数报出来。
+  check('browse 窗口态不再显示那条过时说明', r.hint === undefined || r.hint === '', String(r.hint));
+  check('去掉说明后总数仍不得冒充目录规模', r.total === undefined && r.totalPages === undefined, String(r.total) + '/' + String(r.totalPages));
   check('hasMore 沿用上游 hasNext=true', r.hasMore === true, String(r.hasMore));
   // 没有 isCapped 但 totalIsExact:false：同样是「不精确」，一样不许报数
   const r2 = await searchSkillsMp({ query: 'pdf', page: 1, pageSize: 24, cache: null, fetchJson: async () => mkData(24, { search: 'pdf', sortBy: 'stars' }, { page: 1, limit: 24, total: 25, hasNext: true, totalIsExact: false }) });
@@ -99,7 +104,9 @@ console.log('Test 3: isCapped/maxResults 的窗口上限不得当成目录总数
   // 窗口数字必须来自上游字段：换一种 maxResults，说明里的数字要跟着变
   const r5 = await searchSkillsMp({ query: '', page: 1, pageSize: 24, cache: null, fetchJson: async () => mkData(24, { search: '', sortBy: 'stars' }, { page: 1, limit: 24, total: 4242, totalPages: 6, hasNext: true, totalIsExact: false, isCapped: true, maxResults: 777 }) });
   console.log('   实测(maxResults=777): hint=' + String(r5.hint));
-  check('说明里的窗口数字取自 maxResults（不是写死的窗口值）', typeof r5.hint === 'string' && r5.hint.includes('777'), String(r5.hint));
+  // 窗口态整条说明已撤，所以这里改锁「换 maxResults 也不会冒出数字」：
+  // 撤掉一条说明不许顺手留下别的数字来源。
+  check('maxResults=777 时同样不显示窗口说明', (r5.hint === undefined || r5.hint === '') && !/777/.test(String(r5.hint)), String(r5.hint));
   // isCapped 只声明「有窗口」，没声明窗口多大：没有 maxResults 就不许从 total 倒推出数字。
   const r6 = await searchSkillsMp({ query: '', page: 1, pageSize: 24, cache: null, fetchJson: async () => mkData(24, { search: '', sortBy: 'stars' }, { page: 1, limit: 24, total: 1200, totalPages: 50, hasNext: true, totalIsExact: false, isCapped: true }) });
   check('只有 isCapped 没有 maxResults 时说明不得凭 total 编数字', !/\d/.test(String(r6.hint)), String(r6.hint));
@@ -130,7 +137,8 @@ console.log('Test 5: 聚合层不得再冒出窗口数字');
   console.log('   实测聚合: total=' + String(r.total) + ' totalPages=' + String(r.totalPages) + ' hints=' + JSON.stringify(r.hints));
   check('单源 skillsmp 的 browse 不报总数', r.total === undefined, String(r.total));
   check('单源 skillsmp 的 browse 不报总页数', r.totalPages === undefined, String(r.totalPages));
-  check('说明经 hints 通道到达展示层', Array.isArray(r.hints) && r.hints.length === 1 && /1200/.test(r.hints[0]), JSON.stringify(r.hints));
+  // 展示层收口：browse 不再有那条说明 ⇒ 聚合 hints 里不得再出现它（也不得冒出 1200）。
+  check('聚合 hints 不再携带那条窗口说明', Array.isArray(r.hints) && r.hints.length === 0 && !JSON.stringify(r.hints).includes('1200'), JSON.stringify(r.hints));
 }
 
 console.log('');

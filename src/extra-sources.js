@@ -885,9 +885,11 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
       if (pg.hasNext === false) hasMore = false;
       hint = `skillsmp 该分类目录共 ${upstreamAll} 条（上游自报 totalAll），可浏览窗口只有 ${window} 条即 ${depth} 页 × ${size} 条，`;
       hint += `第 ${depth} 页之后取不到也不计数，换关键词或换分类能继续往里走`;
-    } else if (window > 0) {
-      hint = `skillsmp 上游把结果窗口截在约 ${window} 条（该数字来自上游自报的窗口上限，不是目录总数），更早/更晚的条目需要换关键词继续找`;
-    } else {
+    } else if (window === 0) {
+      // 只有「连窗口多大都不知道」才需要那句话。窗口自报过 maxResults 时不再对用户念
+      // 科普（用户 2026-11-23 点名那条说明已失效）：总数与页数照旧留未知（上面不赋
+      // total/totalPages 就是这个意思），只是不解释——面板的分类 chip 各自带上游 totalAll，
+      // 「继续往里走」早就不止「换关键词」一条路，那句出路本身已经不成立。
       hint = SKILLSMP_UNBOUNDED_NOTE;
     }
     if (facetRefused) hint = refusedNote;
