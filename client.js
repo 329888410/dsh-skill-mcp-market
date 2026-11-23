@@ -194,7 +194,9 @@ function categoryChipLabel(value, vocab) {
 // 归属映射写在函数体内：这座岛的可测约定是「函数体能被 new Function 单独执行」，
 // 提到模块级常量会让两份真实函数体的拼接执行拿不到它（本轮实测 CATEGORY_VOCAB_ORIGIN is not defined）。
 function categoryChipsForSource(source, derived, bySource) {
-  const ORIGIN = { skillsmp: 'https://skillsmp.com/', clawhub: 'https://clawhub.ai/' };
+  // trusttools 没有可抓的词表端点（上游超时），词表是服务端随包发的静态表，source 同样指向上游站点，
+  // 所以归属核验与前两家走同一条规则，不做特例。
+  const ORIGIN = { skillsmp: 'https://skillsmp.com/', clawhub: 'https://clawhub.ai/', trusttools: 'https://ai.trusttools.cn/' };
   const key = String(source || '');
   if (!ORIGIN[key] || !bySource || typeof bySource !== 'object') return mergeCategoryVocab(derived, null);
   // 两种下发形状都要吃：分组 { skillsmp, clawhub }（0.5.153 起），以及旧服务端那份未分组

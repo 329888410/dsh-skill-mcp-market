@@ -495,12 +495,86 @@ export async function warmClawHubCatalog(cache, options = {}) {
   return { rows, done, budget };
 }
 
-export async function searchTrustTools({ query = "", page = 1, pageSize = 24, cache, sort = "" } = {}) {
+// ---------------------------------------------------------------- trusttools 分类词表
+// 上游没有可用的分类词表端点：实测 https://ai.trusttools.cn/api/skills/categories 与站点本身
+// 一样超时（2026-11-24 连测 7 次全 timeout），所以这份表不能像 clawhub/skillsmp 那样抓取缓存，
+// 只能作为随包发布的静态事实表。表体是 2026-11-23 从上游站点 bundle 抽出的 category→tags 映射，
+// 当时实测的过滤参数是 tags=（OR 语义：命中任一 tag 即属于该类），category= 参数被上游忽略。
+// 不带条数：tag 级总数（ai=9782 等）是 2026-11-23 的快照且不是 category 级，写进 chip 就是假数。
+// label 回落 slug：词表端点不可达，没有任何真显示名的实测依据，编中文标签等于造数据。
+const TRUSTTOOLS_ORIGIN = "https://ai.trusttools.cn/";
+const TRUSTTOOLS_CATEGORY_TAGS = {
+  "ai-automation": ["ai", "automation", "ml"],
+  "development": ["backend", "frontend", "api"],
+  "data": ["data", "analytics"],
+  "devops": ["devops", "cli", "scripting"],
+  "security": ["security", "testing", "debugging"],
+  "productivity": ["productivity"],
+  "docs": ["docs", "code-review"],
+  "cloud": ["cloud", "performance"],
+  "design": ["design", "frontend"],
+};
+
+/** 静态词表快照（形状与 skillsmp/clawhub 一致，面板按 source 前缀核验归属）。 */
+export function trusttoolsCategoryVocabulary() {
+  return {
+    capturedAt: Date.parse("2026-11-23T00:00:00Z"),
+    source: TRUSTTOOLS_ORIGIN,
+    categories: Object.keys(TRUSTTOOLS_CATEGORY_TAGS).map((slug) => ({
+      slug,
+      label: slug,
+      tags: TRUSTTOOLS_CATEGORY_TAGS[slug].slice(),
+    })),
+  };
+}
+
+/** 一个分类 slug → 上游 tags（OR 语义）。表外一律回 null（调用方据此拒发，不猜 tag）。 */
+export function trusttoolsTagsForCategory(category) {
+  const key = String(category || "").trim().toLowerCase();
+  if (!key || !Object.prototype.hasOwnProperty.call(TRUSTTOOLS_CATEGORY_TAGS, key)) return null;
+  return TRUSTTOOLS_CATEGORY_TAGS[key].slice();
+}
+
+// 行内 tags → 规范分类 slug（tag→category 逆映射）。旧实现取 tags[0]：那是作者自由填写的
+// 第一个标签（与 clawhub topics[0] 同族泄漏），既不是可比维度，也让聚合层的本地分类过滤
+// 拿 tags[0] 去比 slug——多 tag 分类（security=security/testing/debugging）永远筛不全。
+// 只在命中词表 tag 时回规范 slug，都不命中回空串：空串在聚合层的口径是「该源未标注分类」，
+// 按「无分类不过滤」保留，不会把未知伪装成某个分类。
+const TRUSTTOOLS_TAG_TO_CATEGORY = (() => {
+  const map = new Map();
+  for (const slug of Object.keys(TRUSTTOOLS_CATEGORY_TAGS)) {
+    for (const tag of TRUSTTOOLS_CATEGORY_TAGS[slug]) {
+      if (!map.has(tag)) map.set(tag, slug);
+    }
+  }
+  return map;
+})();
+
+/** 行内 tags → 规范分类 slug（第一个命中的表内 tag 决定；都不命中回空串）。 */
+export function trusttoolsCategoryOfTags(tags) {
+  if (!Array.isArray(tags)) return "";
+  for (const raw of tags) {
+    const hit = TRUSTTOOLS_TAG_TO_CATEGORY.get(String(raw || "").trim().toLowerCase());
+    if (hit) return hit;
+  }
+  return "";
+}
+
+export async function searchTrustTools({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "",
+  getJson = getJsonEscalating, postJson = postJsonEscalating } = {}) {
   // trusttools ignores `pageSize` and always answers with 10 rows per page, so a page of 24
   // needs three upstream pages stitched together (pages are disjoint, verified).
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
   const perPage = 10;
+  // 分类 facet：上游认的是 tags=（OR 语义），category= 参数实测被忽略（2026-11-23：
+  // 8 个 category 值返回同一批）。表外 slug 直接拒在本地，一次上游都不发——把别处的
+  // 值当本市场分类发出去，拿回来的就是未过滤集合冒充该分类。
+  const facet = String(category || "").trim().toLowerCase();
+  const facetTags = facet ? (trusttoolsTagsForCategory(facet) || []) : [];
+  const facetUsed = facet && facetTags.length ? facet : "";
+  const facetRefused = Boolean(facet) && !facetUsed;
+  const facetTagSet = new Set(facetTags);
   // 上游有隐藏的服务端全盘排序端点 GET /api/skills?sort_by=install_count&direction=desc
   // （实测首条 ui-ux-pro-max≈446,924，跨页全局单调；POST /search 的 sort 参数全部被忽略）。
   // 旧实现是「取 60 页窗口本地排」——对 579,074 条全量属于近似，禁止。
@@ -522,19 +596,23 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
   let total = 0;
   for (let index = 0; index < perBatch; index += 1) {
     const upstreamPage = first + index;
-    const key = `trusttools:${String(query).trim().toLowerCase()}:${upstreamPage}:${sort || ""}`;
+    const key = `trusttools:${String(query).trim().toLowerCase()}:${upstreamPage}:${sort || ""}:${facetUsed}`;
     let data = cache ? await cache.get(key, 10 * 60 * 1000) : undefined;
     if (!data) {
       if (serverSort) {
         // GET 端点固定 10 条/页（实测 pageSize 参数被忽略），排序由服务端对全量做
         const qs = new URLSearchParams({ sort_by: "install_count", direction: "desc", page: String(upstreamPage), pageSize: String(perPage) });
+        // 多 tag 的线路编码没有实测记录（上游 2026-11-24 起不可达），取 URLSearchParams 对
+        // 同名键的既有编码（tags=a&tags=b）。是否真过滤由下方 facetAnswered 用返回数据自证，
+        // 不由编码假设声明——编码猜错时绝不把未过滤集合说成「这就是该分类」。
+        for (const tag of facetTags) qs.append("tags", tag);
         if (String(query || "").trim()) qs.set("search", String(query).trim());
-        data = await getJsonEscalating(`https://ai.trusttools.cn/api/skills?${qs.toString()}`, { timeoutMs: 25000 });
+        data = await getJson(`https://ai.trusttools.cn/api/skills?${qs.toString()}`, { timeoutMs: 25000 });
       } else {
-        data = await postJsonEscalating(
+        data = await postJson(
           "https://ai.trusttools.cn/api/skills/search",
           // 上游参数名是 search（不是 q）：传 q 会被忽略，永远返回默认列表。实测 search 才生效。
-          { search: query, page: upstreamPage, pageSize: perPage },
+          { search: query, page: upstreamPage, pageSize: perPage, ...(facetTags.length ? { tags: facetTags } : {}) },
           { timeoutMs: 25000 },
         );
       }
@@ -561,6 +639,14 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     : sortMode
       ? rows.slice((p - 1) * size, p * size)
       : rows.slice(0, size);
+  // facet 自证：发了 tags 之后，取回本页的每一行都必须命中其中一个 tag 才算上游真过滤。
+  // 空页不证明任何事（既不能声称过滤生效，也不能声称被忽略），因此 serverFacet 只在有行且
+  // 全部命中时为真；否则退回聚合层的本地兜底过滤，由它如实说明「仅当前页」。
+  let facetAnswered = false;
+  if (facetUsed && rows.length) {
+    facetAnswered = rows.every((raw) => (Array.isArray(raw.tags) ? raw.tags : [])
+      .some((tag) => facetTagSet.has(String(tag || "").trim().toLowerCase())));
+  }
   const items = pageRows.map((raw) => {
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
     const path = String(raw.repo_path || "").replace(/\/SKILL\.md$/i, "");
@@ -583,7 +669,7 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
       downloads: Number(raw.download_count || 0),
       security: raw.security_level || "",
       tags: Array.isArray(raw.tags) ? raw.tags : [],
-      category: (Array.isArray(raw.tags) && raw.tags[0]) || "",
+      category: trusttoolsCategoryOfTags(raw.tags),
       installable: Boolean(repo && path),
     };
   });
@@ -592,6 +678,13 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     source: "trusttools",
     items,
     total: known,
+    // serverFacet 只有在「数据自证过滤成立」时才真：上游忽略参数或编码猜错都不谎报。
+    serverFacet: facetAnswered,
+    ...(facetRefused ? { hint: `trusttools 词表里没有「${facet}」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页` } : {}),
+    // 只在「真取回了行且自证失败」时说这句话：空页里没有任何行，说「返回行里有不含
+    // 该分类标签的条目」本身就是假陈述。空页时 serverFacet 已经是 false，聚合层会
+    // 按它自己的规则说明本页没有可用分类信息，这里不再编造原因。
+    ...(facetUsed && rows.length > 0 && !facetAnswered ? { hint: `trusttools 未按分类「${facetUsed}」过滤（返回行里有不含该分类标签的条目），已退回面板本地筛选这一页` } : {}),
     hasMore: known ? p * size < known : items.length >= size,
   };
 }

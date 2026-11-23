@@ -29,7 +29,8 @@ import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCach
 import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js";
 // 技能市场分类词表（skillsmp /zh/categories 实测抓取）只随 settings.get 走：读缓存 + 后台补取，
 // 面板首屏的 RPC 不等外网抓取。
-import { readSkillsMpCategoryVocabulary, skillsmpCategoryVocabulary, readClawhubCategoryVocabulary, clawhubCategoryVocabulary } from "./src/extra-sources.js";
+import { readSkillsMpCategoryVocabulary, skillsmpCategoryVocabulary, readClawhubCategoryVocabulary, clawhubCategoryVocabulary,
+  trusttoolsCategoryVocabulary } from "./src/extra-sources.js";
 import { evaluation as skillhubEvaluation } from "./src/skillhub.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
@@ -1169,6 +1170,9 @@ function needsConfirmFor(patch, current) {
         let categoryVocabulary = null;
         let smpVocab = null;
         let clawVocab = null;
+        // trusttools 没有可抓的词表端点（上游 2026-11-24 起超时）：静态表随包发，
+        // 直接同步取，不经缓存也不经网络。
+        const ttVocab = trusttoolsCategoryVocabulary();
         try {
           [smpVocab, clawVocab] = await Promise.all([
             readSkillsMpCategoryVocabulary({ cache: marketCache }),
@@ -1181,6 +1185,8 @@ function needsConfirmFor(patch, current) {
         if (smpVocab || clawVocab) {
           categoryVocabulary = { skillsmp: smpVocab || undefined, clawhub: clawVocab || undefined };
         }
+        if (categoryVocabulary) categoryVocabulary.trusttools = ttVocab;
+        else categoryVocabulary = { trusttools: ttVocab };
         if (!smpVocab) {
           void skillsmpCategoryVocabulary({ cache: marketCache }).catch(() => {});
         }
