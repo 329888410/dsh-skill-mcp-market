@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.150
+
+- 面板降级缺陷（一个 op 抛错不得让整页空白）：0.5.148 的缺 import 让 settings.get 每次必抛，client 的 settings 停在 null，而「路径」tab 的渲染写成 `tab === 'settings' && settings ? … : null` —— 于是目录草稿（本来就来自本地 state，一个字段都不依赖 settings）与「会话日志体检」（同样不依赖）跟着一起消失，用户截图原文就是「路径面板异常空白」。新增纯函数 pathsView(settings, skillDraftText, mcpDraftText) 放在组件外的可测岛上（与 mergeCategoryVocab/CAT_CHIP_FOLD 同一口径，测试用 new Function 执行真实函数体而不是正则命中），返回 {loaded, showPathsSection, showSessionSection, skillRows, mcpRows, configPath, providerLabel, clientLabel, degradedNote}：路径区与体检区恒为 true；草稿取自本地 state；只有真正依赖 settings 的三个字段在缺失时给如实文案「未知（settings.get 未返回）」，绝不谎报成「未挂载」（那是假陈述）；degradedNote 点名是哪个 op 失败、并说明哪些功能仍可用。渲染侧去掉整页 gate，改读 pv.*。
+- 判别证据（监测方 12:52 提出的「一处缺 import 是否拖垮其它 op」，实测回答）：对运行中的宿主逐 op 真发 RPC —— settings.get 26ms ok=false（就是那句 ReferenceError），而 skills.search q=agent 4257ms ok=true items=12、skills.search q=pdf 12022ms ok=true items=167、skills.list 692ms ok=true、mcp.list 29ms ok=true items=3、mcp.status 4ms ok=true、mcp.tools.get 2ms ok=true、mcp.probe 1ms ok=true、sessions.scan 11ms ok=true items=40。⇒ 服务端 op 分发没有被级联打断：index.js 的 handler 对每次请求各自 try/catch（:1856-1871），一个 op 抛错只影响那一次响应。真正的级联发生在面板侧（settings 为 null 时整块渲染被 gate 掉），所以修的是面板降级，不是给分发再加一层兜底（那会掩盖真错误）。
+- 新增回归 test/test-manage-states.mjs Test 5（12 项判据，跑真实函数体）：settings 缺失时函数可执行不抛 / 路径区仍渲染 / 体检区仍渲染 / 草稿仍可编辑（不被失败 op 清空）/ 未知项给如实文案 / 降级提示点名 settings.get；settings 在手时给真实配置路径与 provider、MCP 客户端真实路径、不再显示降级提示；provider 未挂载时不得谎报已挂载；空目录草稿给空数组（保存由服务端把关，面板不造数）；外加一条否定锁 `渲染不再把整个 tab gate 在 settings 上`（只看 gate 形态，不看文案）。RED 真值：23 passed, 2 failed —— 首条 `settings 缺失时函数可执行（不抛）  [{"err":"未取到函数体 pathsView"}]`，第二条就是旧 gate 字面量被逮住。GREEN 36 passed, 0 failed。
+- 两处机制缺陷在量 RED 时暴露并修掉（都会让判据失真，不是产品问题）：①套件的 bodyOf 按 \n 切 CRLF 文件，每行结尾带 \r，「整行正好是 }」永远不成立 ⇒ 函数体永远取不到，那是判据失效而不是实现有问题（0.5.148 那轮同类坑重犯），改为先归一 CRLF→LF 再切；②我写在 client.js 注释里的旧 gate 字面量，被自己的否定锁当成「gate 还在」命中 —— 注释不得复述被否定的代码字面量（与 M5 的「锁了文案没锁行为」同一类假锁），注释改述形态、判据只看代码。
+- 反向破坏证伪 5 向（client.js 基线 shaNorm16 3b1955ed4edab187 / bytes 206482 / CRLF 3368 / loneLF 0，每轮 node --check + 逐字节还原全 true）：把 && settings 加回渲染 → 35/1 FAIL「渲染不再把整个 tab gate 在 settings 上」；草稿改回从 settings 取（失败即清空）→ 35/1 FAIL「settings 缺失时草稿仍可编辑」（详情原文 [["C:/typed/skill"]/[]]）；未知态谎报成「未挂载」→ 35/1 FAIL「未知项给如实文案而非空白」；降级提示置空 → 35/1 FAIL「降级提示说明是哪个 op 失败」；体检区改成 showSessionSection: loaded（回到旧行为）→ 35/1 FAIL「settings 缺失时会话体检区仍要渲染」。五向各杀一条、无一等价。
+- 门禁：发布前 61/62 suites green（唯一红 test-profile-sync＝工作树已改、profile 未装新版的预期中间态），total 见 gate150-pre.txt；发布后应回到 62/62。
+
 ## 0.5.149
 
 - 热修线上崩溃（0.5.148 回归，用户实测「现在插件全是BUG，已经无法使用了」）：index.js 的 case "settings.get" 调用 readSkillsMpCategoryVocabulary 与 skillsmpCategoryVocabulary，却没有 ./src/extra-sources.js 的 import ⇒ 每次 settings.get 必抛 ReferenceError，面板四个 tab 顶部一律红字 `skillsmpCategoryVocabulary is not defined`，路径 tab 整页空白（用户截图原文）。补 import 一行即修（index.js:32）。live 复现证据：对运行中的宿主真发 POST /api/dsh-market/rpc {op:"settings.get"} → 200 `{"ok":false,"error":"skillsmpCategoryVocabulary is not defined"}`，profile 侧 index.js 实测无该 import（false），仓库侧 true。

@@ -178,6 +178,26 @@ function categoryLabelLite(chip) {
   const n = Number(chip && chip.totalAll) || 0;
   return n > 0 ? label + ' ' + n.toLocaleString() : label;
 }
+// 路径 tab 的降级模型：settings.get 失败（0.5.148 实测：缺 import 时每次必抛）只该让
+// 「依赖它的那几个字段」变成未知，不该让整页消失——目录草稿本来就来自本地 state，
+// 会话日志体检更是一个字段都不依赖 settings。旧写法把整个 tab gate 在 settings 上，
+// 于是三者一起消失，用户看到的就是「路径面板异常空白」。
+function pathsView(settings, skillDraftText, mcpDraftText) {
+  const rows = (text) => String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const loaded = Boolean(settings && settings.settings);
+  const unknown = '未知（settings.get 未返回）';
+  return {
+    loaded,
+    showPathsSection: true,
+    showSessionSection: true,
+    skillRows: rows(skillDraftText),
+    mcpRows: rows(mcpDraftText),
+    configPath: (loaded && String(settings.settings.settingsPath || '')) || unknown,
+    providerLabel: !loaded ? unknown : (settings.skillProvider && settings.skillProvider.mounted ? '已挂载' : '未挂载'),
+    clientLabel: loaded && settings.shipped && settings.shipped.mcpClient ? String(settings.shipped.mcpClient) : unknown,
+    degradedNote: loaded ? '' : 'settings.get 这次没取到数据（原因见上方红字）。目录草稿与会话日志体检仍可用；配置文件路径、provider 与 MCP 客户端状态要等它恢复后才显示。',
+  };
+}
     // 市场卡片分批：与工具浮窗同一口径（首批 CARD_BATCH 张，点「继续显示」再放一批）。
     // 每页最多 48 条，一次提交整页卡片意味着输入一个字符就重建几十个节点。
     const shownCards = (list, batch) => list.slice(0, Math.max(1, Math.trunc(batch) || 1) * CARD_BATCH);
@@ -1900,6 +1920,7 @@ function categoryLabelLite(chip) {
       const skillFilterText = manageSkillFilter.trim().toLowerCase();
       const mcpFilterText = manageMcpFilter.trim().toLowerCase();
       const homeDir = (settings && settings.settings && settings.settings.homeDir) || '';
+      const pv = pathsView(settings, skillDraft, mcpDraft);
       // 停用的真实状态 = 面板级 disabledSkills ∪ 文件级 disable-model-invocation。
       // 只看前者会把「文件级已停用」的技能显示成启用中，并对用户假陈述（0.5.117 前既有缺陷）。
       const skillStateOff = (item) => disabledSet.has(String(item.slug || '').toLowerCase()) || item.disableModelInvocation === true;
@@ -3048,17 +3069,17 @@ function categoryLabelLite(chip) {
                 : (mcpTrashList ? h('div', { style: S.status }, 'MCP 回收站是空的。') : null),
               ) : null,
             ) : null,
-            tab === 'settings' && settings
+            tab === 'settings'
               ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+                  pv.degradedNote ? h('div', { style: S.status }, pv.degradedNote) : null,
                   h('div', { style: S.status }, '每行一个目录；技能列表的第一个目录是安装目标。保存后立即重挂，无需重启。'),
                   setPathRows('技能目录', skillDraft, setSkillDraft),
                   setPathRows('MCP 目录', mcpDraft, setMcpDraft),
                   h('div', { style: S.row },
                     h('button', { style: S.btn('primary'), disabled: busy === 'settings.set', onClick: savePaths }, '保存路径'),
-                    h('span', { style: S.status }, `配置文件：${settings.settings.settingsPath}`)),
-                  h('div', { style: S.status },
-                    `技能 provider：${settings.skillProvider && settings.skillProvider.mounted ? '已挂载' : '未挂载'}`),
-                  h('div', { style: S.status }, `MCP 客户端：${settings.shipped && settings.shipped.mcpClient}`),
+                    h('span', { style: S.status }, `配置文件：${pv.configPath}`)),
+                  h('div', { style: S.status }, `技能 provider：${pv.providerLabel}`),
+                  h('div', { style: S.status }, `MCP 客户端：${pv.clientLabel}`),
                   h('div', { style: { ...S.title, marginTop: 14 } }, '会话日志体检'),
                   h('div', { style: S.status }, '检测并修复「空 tool-call」导致的会话永久损坏：只截断损坏点、保留其前全部事件，原文件自动备份。'),
                   h('div', { style: S.row },

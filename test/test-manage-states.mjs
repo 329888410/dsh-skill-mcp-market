@@ -51,7 +51,74 @@ check('RPC 组装 broken 清单', /broken: mcp\.broken\(\)/.test(read('index.js'
 check('面板显示坏定义并给文件名', /无法解析|无法读取/.test(c) && /mcpBroken/.test(c));
 
 console.log('');
-console.log('Test 5: 既有行为不破');
+console.log('Test 5: 路径 tab 的降级（一个 op 抛错不得让整页空白）');
+{
+  // 0.5.148 实测：settings.get 因缺 import 每次必抛 ⇒ client 的 settings 停在 null，
+  // 而旧渲染把整个 tab 写成 `tab === 'settings' && settings ? … : null`，于是「路径」页
+  // 连与会话日志体检（它根本不需要 settings）一起消失 —— 用户截图原文「路径面板异常空白」。
+  // 服务端侧实测过：其它 op 没有被同一异常带崩（skills.search/mcp.list/mcp.status 全 ok:true），
+  // 所以这是面板的降级缺陷，不是 RPC 分发缺陷。判据跑真实函数体，不跑正则。
+  // 必须先归一 CRLF：按 \n 切 CRLF 文件，每行结尾带 \r，bodyOf 找「整行正好是 }」
+  // 就永远找不到 —— 那是判据失效，不是实现有问题（0.5.148 那轮同类坑）。
+  const clientLines = c.split(String.fromCharCode(13, 10)).join(String.fromCharCode(10)).split(String.fromCharCode(10));
+  const bodyOf = (needle) => {
+    const at = clientLines.findIndex((l) => l.indexOf(needle) >= 0);
+    if (at < 0) return null;
+    for (let i = at + 1; i < clientLines.length; i++) if (clientLines[i] === '}') return clientLines.slice(at, i + 1).join(String.fromCharCode(10));
+    return null;
+  };
+  const run = (args) => {
+    const body = bodyOf('function pathsView(');
+    if (body === null) return { err: '未取到函数体 pathsView' };
+    try { return new Function('return (' + body + ')')()(...args); }
+    catch (e) { return { err: String((e && e.message) || e) }; }
+  };
+  const full = {
+    settings: { skillDirs: ['C:/a'], mcpDirs: ['C:/m'], settingsPath: 'C:/Users/x/.dsh/market/settings.json', homeDir: 'C:/Users/x' },
+    skillProvider: { mounted: true, error: '' },
+    shipped: { mcpClient: 'C:/app.asar/dsh/node_modules/@deepseek-ai/dsh-mcp-client' },
+  };
+  const cold = run([null, 'C:/typed/skill', 'C:/typed/mcp']);
+  check('settings 缺失时函数可执行（不抛）', !cold.err, JSON.stringify(cold).slice(0, 120));
+  // 函数体缺失时 cold 没有字段：后面每条都从 cold 取值，必须整段守住，
+  // 否则 TypeError 崩掉套件、连汇总行都没有（0.5.148 那轮同类机制缺陷，已犯过一次）。
+  if (!cold.err) {
+    check('settings 缺失时路径区仍要渲染', cold.showPathsSection === true, JSON.stringify(cold).slice(0, 160));
+    check('settings 缺失时会话体检区仍要渲染', cold.showSessionSection === true, JSON.stringify(cold).slice(0, 160));
+    check('settings 缺失时草稿仍可编辑（不被失败 op 清空）', (cold.skillRows || []).join('|') === 'C:/typed/skill' && (cold.mcpRows || []).join('|') === 'C:/typed/mcp', JSON.stringify(cold.skillRows) + '/' + JSON.stringify(cold.mcpRows));
+    check('未知项给如实文案而非空白', /未知/.test(cold.configPath || '') && /未知/.test(cold.providerLabel || '') && /未知/.test(cold.clientLabel || ''), [cold.configPath, cold.providerLabel, cold.clientLabel].join(' | '));
+    check('降级提示说明是哪个 op 失败', /settings\.get/.test(cold.degradedNote || ''), JSON.stringify(cold.degradedNote));
+  }
+  const warm = run([
+    {
+      settings: { skillDirs: ['C:/a'], mcpDirs: ['C:/m'], settingsPath: 'C:/Users/x/.dsh/market/settings.json', homeDir: 'C:/Users/x' },
+      skillProvider: { mounted: true, error: '' },
+      shipped: { mcpClient: 'C:/app.asar/dsh/node_modules/@deepseek-ai/dsh-mcp-client' },
+    },
+    'C:/a',
+    'C:/m',
+  ]);
+  if (!warm.err) {
+    check('settings 在手时给真实配置路径', warm.loaded === true && warm.configPath === 'C:/Users/x/.dsh/market/settings.json', JSON.stringify(warm).slice(0, 160));
+    check('settings 在手时 provider 如实挂载态', warm.providerLabel === '已挂载', warm.providerLabel);
+    check('settings 在手时 MCP 客户端给真实路径', warm.clientLabel === 'C:/app.asar/dsh/node_modules/@deepseek-ai/dsh-mcp-client', warm.clientLabel);
+    check('settings 在手时不再显示降级提示', !warm.degradedNote, JSON.stringify(warm.degradedNote));
+  }
+  const broken = run([
+    { settings: { skillDirs: [], mcpDirs: [], settingsPath: 'p' }, skillProvider: { mounted: false, error: 'ctx.skills unavailable' }, shipped: { mcpClient: 'NOT FOUND' } },
+    '',
+    '',
+  ]);
+  if (!broken.err) {
+    check('provider 未挂载时不得谎报已挂载', broken.providerLabel === '未挂载', broken.providerLabel);
+    check('空目录草稿给空数组（保存由服务端把关，面板不造数）', Array.isArray(broken.skillRows) && broken.skillRows.length === 0, JSON.stringify(broken.skillRows));
+  }
+  // 反向：旧写法把整个 tab gate 在 settings 上（`tab === 'settings' && settings`），
+  // 这条否定锁保证它不会回来 —— 判据只看这一处 gate 形态，不看文案。
+  check('渲染不再把整个 tab gate 在 settings 上', !/tab === 'settings' && settings/.test(c), c.split(String.fromCharCode(10)).filter((l) => /tab === 'settings' && settings/.test(l)).join(' ~ '));
+}
+console.log('');
+console.log('Test 6: 既有行为不破');
 check('list() 仍返回数组（test-mcp-trash 契约）', /return \[\.\.\.defs\.values\(\)\]\.map/.test(mj));
 check('技能段仍在 MCP 段之前', si > 0 && si < mi);
 // 0.5.130 起渲染源改为 renderedTools（visibleTools 的分批切片）。单一数据源仍是 visibleTools：
@@ -64,7 +131,7 @@ check('回收站折叠锁仍在', c.includes('回收站（'));
 check('上传门控锁仍在', /uploadOpen \? h\('div'/.test(c));
 
 console.log('');
-console.log('Test 6: 语法');
+console.log('Test 7: 语法');
 const { execSync } = await import('node:child_process');
 for (const f of ['client.js', 'src/mcp.js']) {
   let ok = true;
