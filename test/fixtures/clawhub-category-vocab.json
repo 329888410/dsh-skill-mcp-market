@@ -1,0 +1,149 @@
+{
+  "capturedAt": "2026-11-23T08:59:43.329Z",
+  "source": "https://clawhub.ai/api/v1/skills/-/categories",
+  "note": "2026-11-23 经插件生产通路 getJsonEscalating 实测抓取。categories 端点无条数字段（文档明写「这是公开词表，不是可用技能计数」），所以 chip 只显示标签不显示条数。",
+  "categories": [
+    {
+      "slug": "integrations",
+      "label": "Integrations",
+      "description": "Connect services, fetch data, reconcile records, and operate APIs.",
+      "icon": "plug"
+    },
+    {
+      "slug": "automation",
+      "label": "Automation",
+      "description": "Build repeatable processes, scheduled jobs, pipelines, and orchestration.",
+      "icon": "zap"
+    },
+    {
+      "slug": "research",
+      "label": "Research",
+      "description": "Search, browse, scrape, summarize, monitor, and extract web information.",
+      "icon": "search"
+    },
+    {
+      "slug": "development",
+      "label": "Development",
+      "description": "Inspect, edit, test, build, debug, and operate codebases.",
+      "icon": "wrench"
+    },
+    {
+      "slug": "productivity",
+      "label": "Productivity",
+      "description": "Manage tasks, calendars, email, meetings, projects, and business work.",
+      "icon": "list-todo"
+    },
+    {
+      "slug": "communication",
+      "label": "Communication",
+      "description": "Message, publish, and operate social or communication services.",
+      "icon": "message-circle"
+    },
+    {
+      "slug": "creative",
+      "label": "Creative",
+      "description": "Create and edit images, video, audio, music, design, and writing.",
+      "icon": "palette"
+    },
+    {
+      "slug": "knowledge",
+      "label": "Knowledge",
+      "description": "Work with documents, notes, knowledge bases, teaching, and learning.",
+      "icon": "book-open"
+    },
+    {
+      "slug": "agents",
+      "label": "Agents",
+      "description": "Change how an agent plans, reflects, learns, remembers, or collaborates.",
+      "icon": "brain"
+    },
+    {
+      "slug": "operations",
+      "label": "Operations",
+      "description": "Inspect, monitor, deploy, and operate local systems or infrastructure.",
+      "icon": "settings-2"
+    },
+    {
+      "slug": "security",
+      "label": "Security",
+      "description": "Audit, scan, authenticate, and protect systems or data.",
+      "icon": "shield"
+    },
+    {
+      "slug": "finance",
+      "label": "Finance",
+      "description": "Work with payments, budgets, banking, shopping, markets, and commerce.",
+      "icon": "wallet-cards"
+    },
+    {
+      "slug": "lifestyle",
+      "label": "Lifestyle",
+      "description": "Travel, health, fitness, cooking, sports, home, and daily-life utilities.",
+      "icon": "shapes"
+    },
+    {
+      "slug": "other",
+      "label": "Other",
+      "description": "Skills that do not yet fit another browse category.",
+      "icon": "package"
+    }
+  ],
+  "browseSample": {
+    "url": "/api/v1/skills?limit=5&category=security&sort=downloads",
+    "items": [
+      {
+        "slug": "skill-vetter",
+        "ownerHandle": "spclaudehome",
+        "categories": [
+          "security"
+        ],
+        "topics": [
+          "GitHub",
+          "Permission"
+        ],
+        "stats": {
+          "comments": 0,
+          "downloads": 284055,
+          "installs": 12281,
+          "stars": 1317,
+          "versions": 1
+        }
+      },
+      {
+        "slug": "skillscan",
+        "ownerHandle": "tokauthai",
+        "categories": [
+          "security"
+        ],
+        "topics": [],
+        "stats": {
+          "comments": 0,
+          "downloads": 183917,
+          "installs": 5963,
+          "stars": 41,
+          "versions": 2
+        }
+      },
+      {
+        "slug": "multi-search-engine",
+        "ownerHandle": "gpyangyoujun",
+        "categories": [
+          "security",
+          "integrations"
+        ],
+        "topics": [
+          "Privacy"
+        ],
+        "stats": {
+          "comments": 6,
+          "downloads": 166368,
+          "installs": 5543,
+          "stars": 771,
+          "versions": 7
+        }
+      }
+    ]
+  },
+  "invalidSlugOnList": "HTTP 400（实测 category=zzz-not-real）",
+  "invalidSlugOnSearch": "HTTP 200 + 空 results（实测，与 list 端点不同形）"
+}

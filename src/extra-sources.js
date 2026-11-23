@@ -70,6 +70,71 @@ async function getJsonClawHub(url, attempt = 0) {
   }
 }
 
+// clawhub 规范分类词表（GET /api/v1/skills/-/categories）。实测 2026-11-23：14 条、含 other、
+// 顺序即站点目录显示顺序；每条只有 slug/label/description/icon 四个键——**上游不报条数**
+// （文档原文「This is the public taxonomy, not a count of available skills」），所以面板的
+// clawhub chip 只能显示标签，显示条数就是编数据。
+const CLAWHUB_CATEGORIES_URL = "https://clawhub.ai/api/v1/skills/-/categories";
+const CLAWHUB_VOCAB_KEY = "clawhub_categories_v1";
+const CLAWHUB_VOCAB_TTL = 7 * 24 * 3600 * 1000;
+
+/** payload → [{slug,label,description,icon}]。0 列纯函数；脏数据只留合法条目并去重。 */
+export function parseClawhubCategories(payload) {
+  const rows = (payload && Array.isArray(payload.categories)) ? payload.categories : [];
+  const out = [];
+  const seen = new Set();
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const slug = String(row.slug || "").trim().toLowerCase();
+    if (!/^[a-z][a-z0-9-]*$/.test(slug) || seen.has(slug)) continue;
+    seen.add(slug);
+    out.push({
+      slug,
+      label: String(row.label || "").trim() || slug,
+      description: String(row.description || ""),
+      icon: String(row.icon || ""),
+    });
+  }
+  return out;
+}
+
+/** 抓取 + 7 天 TTL。命中回同一引用；抓取失败或解析为空一律 null 且绝不落空快照。 */
+export async function clawhubCategoryVocabulary({ cache, getJson = getJsonClawHub, now = Date.now } = {}) {
+  if (!cache) return null;
+  const at = Number(typeof now === "function" ? now() : now) || Date.now();
+  try {
+    const hit = await cache.get(CLAWHUB_VOCAB_KEY, CLAWHUB_VOCAB_TTL);
+    if (hit && Array.isArray(hit.categories) && hit.categories.length && at - Number(hit.capturedAt) < CLAWHUB_VOCAB_TTL) return hit;
+  } catch {
+    /* 缓存读失败只意味着这次要重取 */
+  }
+  let payload = null;
+  try {
+    payload = await getJson(CLAWHUB_CATEGORIES_URL);
+  } catch {
+    return null;
+  }
+  const categories = parseClawhubCategories(payload);
+  // 0 条 = 上游改版，不是「clawhub 没有分类」：落空快照会把面板已有的派生 chip 一起关掉。
+  if (!categories.length) return null;
+  const value = { capturedAt: at, source: CLAWHUB_CATEGORIES_URL, categories };
+  try { await cache.put(CLAWHUB_VOCAB_KEY, value); } catch {}
+  return value;
+}
+
+/** 只读缓存：settings.get 用它，绝不在此处等网络。没有/过期都回 null。 */
+export async function readClawhubCategoryVocabulary({ cache, now = Date.now } = {}) {
+  if (!cache) return null;
+  const at = Number(typeof now === "function" ? now() : now) || Date.now();
+  try {
+    const hit = await cache.get(CLAWHUB_VOCAB_KEY, CLAWHUB_VOCAB_TTL);
+    if (hit && Array.isArray(hit.categories) && hit.categories.length && at - Number(hit.capturedAt) < CLAWHUB_VOCAB_TTL) return hit;
+  } catch {
+    /* 读失败按「没有词表」处理 */
+  }
+  return null;
+}
+
 // clawhubCategoryOf —— 分类载体的实测顺序：raw.category → raw.categories[0] → raw.topics[0]。
 // 2026-11-22 复测（getJsonEscalating 直打真实端点，各 50 行样本）：/api/v1/search 行上
 // categories 非空 50/50（如 ["knowledge"]）、topics 键 0/50、category 键 0/50；
@@ -187,8 +252,10 @@ const CLAWHUB_CATALOG_TTL = 6 * 3600 * 1000;
 
 // 浏览端点每屏 50 条并带 nextCursor（JSON 字符串），顺着它累积成本地目录再按页切片：
 // 这样第 2 页、第 20 页拿到的都是真正的新条目，而不是上游的第一屏。
-async function extendClawHubCatalog(cache, need, sortBy = "") {
-  const catKey = sortBy ? `${CLAWHUB_CATALOG_KEY}:${sortBy}` : CLAWHUB_CATALOG_KEY;
+async function extendClawHubCatalog(cache, need, sortBy = "", category = "", fetchJson = getJsonClawHub) {
+  // 缓存键必须含 category：否则「按分类浏览」会读到上一次全库浏览攒下的目录，
+  // 那份目录里混着别的分类的条目，筛过的说法就是假话。
+  const catKey = `clawhub_catalog_v1${sortBy ? ":" + sortBy : ""}${category ? ":cat:" + category : ""}`;
   let state = cache ? await cache.get(catKey, CLAWHUB_CATALOG_TTL) : undefined;
   if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false };
   const seen = new Set(state.rows.map((raw) => clawhubIdOf(raw)));
@@ -196,7 +263,7 @@ async function extendClawHubCatalog(cache, need, sortBy = "") {
   while (!state.done && state.rows.length < need) {
     guard += 1;
     const cursor = state.cursor ? `&cursor=${encodeURIComponent(state.cursor)}` : "";
-    const data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=50${sortBy ? `&sort=${encodeURIComponent(sortBy)}` : ""}${cursor}`);
+    const data = await fetchJson(`https://clawhub.ai/api/v1/skills?limit=50${sortBy ? `&sort=${encodeURIComponent(sortBy)}` : ""}${category ? `&category=${encodeURIComponent(category)}` : ""}${cursor}`);
     const rows = Array.isArray(data.items) ? data.items : Array.isArray(data.results) ? data.results : [];
     for (const raw of rows) {
       const key = clawhubIdOf(raw);
@@ -212,12 +279,25 @@ async function extendClawHubCatalog(cache, need, sortBy = "") {
   return state;
 }
 
-export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache, sort = "", fetchJson = getJsonClawHub }) {
+export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "", fetchJson = getJsonClawHub }) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
   const q = String(query || "").trim();
-  // 同一 (query,page,size) 5 分钟内复用：clawhub 单次搜索取整个上游窗口再本地翻页。
-  const cKey = `clawhub:search:${q.toLowerCase()}:${p}:${size}:${sort || ""}`;
+  // 分类 facet：上游 list 与 search 两个端点都认 category（2026-11-23 实测），
+  // 所以这里发的是**服务端过滤**，不是「取回当前页再本地筛」。
+  const facet = String(category || "").trim().toLowerCase();
+  // 同一 (query,page,size,sort,category) 5 分钟内复用：clawhub 单次搜索取整个上游窗口再本地翻页。
+  const cKey = `clawhub:search:${q.toLowerCase()}:${p}:${size}:${sort || ""}:${facet}`;
+  // 词表能校验时先校验：上游 list 端点对无效 slug 回 400（能兜），但 search 端点回
+  // 200 + 空 results（实测）——只看状态码分不开「这个分类里没匹配」与「上游根本没这个
+  // 分类」，后者会被说成前者。词表在手时直接拒在本地，一次上游都不发。
+  let facetRefused = false;
+  let facetUsed = facet;
+  const vocab = facet ? await readClawhubCategoryVocabulary({ cache }) : null;
+  if (facet && vocab && !vocab.categories.some((c) => c.slug === facet)) {
+    facetRefused = true;
+    facetUsed = "";
+  }
   if (cache) {
     const hit = await cache.get(cKey, 5 * 60 * 1000);
     if (hit && Array.isArray(hit.items) && hit.items.length) return { ...hit, source: "clawhub" };
@@ -230,7 +310,7 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
     // 假分页请求再拼窗口，实测 total 在页码之间跳（page1=11、page2=10）、page≥2 全空。
     const WINDOW_CAP = 100;
     const wanted = Math.min(60, size * p);
-    const searchUrl = `https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&limit=${WINDOW_CAP}`;
+    const searchUrl = `https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&limit=${WINDOW_CAP}${facetUsed ? `&category=${encodeURIComponent(facetUsed)}` : ""}`;
     let searchSettled = null;
     let searchFailure = null;
     try {
@@ -290,6 +370,8 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
     out.hasMore = capped ? p * size < WINDOW_CAP : p * size < merged.length;
     out.totalPages = capped ? undefined : Math.max(1, Math.ceil(merged.length / size));
     if (capped) out.hint = `clawhub 搜索上游单次最多回 ${WINDOW_CAP} 条且不报总数，再往后的结果需要换关键词继续找`;
+    out.serverFacet = facetUsed !== "";
+    if (facetRefused) out.hint = `clawhub 词表里没有「${facet}」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页`;
     if (cache && out.items && out.items.length) await cache.put(cKey, out);
     // total/hasMore/totalPages/hint 全部在 cache.put 之前赋值（旧写法把
     // totalPages 排在 put 之后，缓存副本因此少一个字段）。
@@ -308,7 +390,17 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
           : sort === "trending" ? "trending"
             : sort === "name" ? "name" : "";
   const need = Math.min(2000, size * (p + 2));
-  const state = await extendClawHubCatalog(cache, need, browseSort);
+  let state;
+  try {
+    state = await extendClawHubCatalog(cache, need, browseSort, facetUsed, fetchJson);
+  } catch (err) {
+    // list 端点对无效 slug 回 400（实测）。词表没落缓存时无法预知，所以被拒后去掉
+    // category 重发一次：宁可给全库首页并说明，也不许整源进 degraded。
+    if (!facetUsed || !/400/.test(String((err && err.message) || err))) throw err;
+    facetRefused = true;
+    facetUsed = "";
+    state = await extendClawHubCatalog(cache, need, browseSort, "", fetchJson);
+  }
   const rows = state.rows;
   const matched = rows.slice((p - 1) * size, p * size);
   const out = mapClawHubRows(matched, q, "browse", matched.length);
@@ -323,6 +415,8 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
       out.totalPages = undefined;
     }
   out.hasMore = p * size < rows.length || (!state.done && rows.length >= p * size);
+  out.serverFacet = facetUsed !== "";
+  if (facetRefused) out.hint = `clawhub 不接受分类「${facet}」（上游回 400），已按全部分类返回这一页`;
   if (cache && out.items && out.items.length) await cache.put(cKey, out);
   return out;
 }

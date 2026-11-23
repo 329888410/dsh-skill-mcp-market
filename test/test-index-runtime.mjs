@@ -115,7 +115,8 @@ check('settings.get 带 sortCapabilities 三键', Boolean(d.sortCapabilities && 
 //   删掉 categoryVocabulary 字段 / 删掉读取调用 / 键名不一致 都会让这条 FAIL。）
   const cv = d.categoryVocabulary;
   const cvDetail = '实际=' + String(cv && Array.isArray(cv.categories) ? cv.categories.length : JSON.stringify(cv === undefined ? '(字段缺失)' : cv)).slice(0, 90);
-  check('词表通道带回 63 条分类', Boolean(cv && Array.isArray(cv.categories) && cv.categories.length === 63), cvDetail);
+  // 0.5.153 起 categoryVocabulary 是按源分组（{skillsmp, clawhub}），播种只给了 skillsmp。
+  check('词表通道按源分组带回 63 条分类', Boolean(cv && cv.skillsmp && Array.isArray(cv.skillsmp.categories) && cv.skillsmp.categories.length === 63), cvDetail);
 check('settings.get 带 shipped 段', Boolean(d.shipped));
 
 console.log('');

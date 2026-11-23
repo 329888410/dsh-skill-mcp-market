@@ -29,7 +29,7 @@ import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCach
 import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js";
 // 技能市场分类词表（skillsmp /zh/categories 实测抓取）只随 settings.get 走：读缓存 + 后台补取，
 // 面板首屏的 RPC 不等外网抓取。
-import { readSkillsMpCategoryVocabulary, skillsmpCategoryVocabulary } from "./src/extra-sources.js";
+import { readSkillsMpCategoryVocabulary, skillsmpCategoryVocabulary, readClawhubCategoryVocabulary, clawhubCategoryVocabulary } from "./src/extra-sources.js";
 import { evaluation as skillhubEvaluation } from "./src/skillhub.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
@@ -1164,14 +1164,28 @@ function needsConfirmFor(patch, current) {
       case "settings.get": {
         // 分类词表：只读缓存（readSkillsMpCategoryVocabulary），冷缓存或过期拿 null 时
         // void 触发一次后台抓取，下一次切 tab 就能带上。这里不做任何网络等待。
+        // 按源分组的词表集合：每个市场只拿自己那份（面板 categoryChipsForSource 按 source 取）。
+        // 两个都只读缓存、不打网络；冷的那份各自 void 后台补取，下一次切 tab 就带上。
         let categoryVocabulary = null;
+        let smpVocab = null;
+        let clawVocab = null;
         try {
-          categoryVocabulary = await readSkillsMpCategoryVocabulary({ cache: marketCache });
+          [smpVocab, clawVocab] = await Promise.all([
+            readSkillsMpCategoryVocabulary({ cache: marketCache }),
+            readClawhubCategoryVocabulary({ cache: marketCache }),
+          ]);
         } catch {
-          categoryVocabulary = null;
+          smpVocab = null;
+          clawVocab = null;
         }
-        if (!categoryVocabulary) {
+        if (smpVocab || clawVocab) {
+          categoryVocabulary = { skillsmp: smpVocab || undefined, clawhub: clawVocab || undefined };
+        }
+        if (!smpVocab) {
           void skillsmpCategoryVocabulary({ cache: marketCache }).catch(() => {});
+        }
+        if (!clawVocab) {
+          void clawhubCategoryVocabulary({ cache: marketCache }).catch(() => {});
         }
         return {
           settings: {

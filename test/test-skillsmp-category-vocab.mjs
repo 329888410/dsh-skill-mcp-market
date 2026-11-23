@@ -352,10 +352,11 @@ const scoped = (args) => {
   try { return new Function(inner + String.fromCharCode(10) + outer + String.fromCharCode(10) + 'return categoryChipsForSource;')()(...args); }
   catch (e) { return { err: String((e && e.message) || e) }; }
 };
-const smp = scoped(['skillsmp', ['weird-derived-slug'], { capturedAt: 1, categories: vocab }]);
+// 0.5.153 起词表按源分组下发（{ skillsmp: {...}, clawhub: {...} }），这里传同一形状。
+const smp = scoped(['skillsmp', ['weird-derived-slug'], { skillsmp: { capturedAt: 1, source: 'https://skillsmp.com/zh/categories', categories: vocab } }]);
 check('skillsmp 下词表 chip 照常生效', Array.isArray(smp) && smp.length === vocab.length + 1 && smp[0].fixed === true, JSON.stringify(smp && smp.err ? smp : (smp || []).slice(0, 2)));
 for (const other of ['clawhub', 'skills.sh', 'browse.sh', 'lobehub', 'skillhub', 'modelscope', 'trusttools', 'all', '', undefined]) {
-  const got = scoped([other, ['weird-derived-slug'], { capturedAt: 1, categories: vocab }]);
+  const got = scoped([other, ['weird-derived-slug'], { skillsmp: { capturedAt: 1, source: 'https://skillsmp.com/zh/categories', categories: vocab } }]);
   check('非 skillsmp（' + String(other) + '）不得出现词表 chip',
       Array.isArray(got) && got.length === 1 && got[0].value === 'weird-derived-slug' && got[0].fixed === false,
       JSON.stringify(got && got.err ? got : got));
@@ -364,9 +365,9 @@ check('派生 chip 在任意源都保留（关掉入口不是兜底）', (() => 
 // 词表自带来源字段：那不是 skillsmp 的页面时，即使当前源是 skillsmp 也不接受。
 // 没有这条判据时，删掉 stated 检查（把别处喂进来的词表也当 skillsmp 的）行为不变地通过，
 // 属于「写了分支没锁行为」——同 M5 那类假锁，这里当轮补上。
-const foreign = scoped(['skillsmp', ['weird-derived-slug'], { capturedAt: 1, source: 'https://other-market.example/categories', categories: vocab }]);
+const foreign = scoped(['skillsmp', ['weird-derived-slug'], { skillsmp: { capturedAt: 1, source: 'https://other-market.example/categories', categories: vocab } }]);
 check('词表来源不是 skillsmp 页面时即使当前源是 skillsmp 也不接受', Array.isArray(foreign) && foreign.length === 1 && foreign[0].fixed === false, JSON.stringify(foreign && foreign.err ? foreign : foreign));
-const noSource = scoped(['skillsmp', ['weird-derived-slug'], { capturedAt: 1, categories: vocab }]);
+const noSource = scoped(['skillsmp', ['weird-derived-slug'], { skillsmp: { capturedAt: 1, categories: vocab } }]);
 check('词表未声明来源时按 skillsmp 词表接受（旧快照不落 source 也要能用）', Array.isArray(noSource) && noSource.length === vocab.length + 1, JSON.stringify(noSource && noSource.err ? noSource : noSource.length));
 // 接线：面板必须把当前源传进去，而不是无条件合并词表。
 

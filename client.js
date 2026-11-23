@@ -157,7 +157,8 @@ function mergeCategoryVocab(derived, vocab) {
     const v = String((r && r.slug) || '').trim();
     if (!v || seen.has(v)) continue;
     seen.add(v);
-    out.push({ value: v, label: String((r && r.name) || v), totalAll: Number(r && r.totalAll) || 0, fixed: true });
+    // name（skillsmp 中文标签）优先，label（clawhub 词表字段）次之，都没有才回落 slug。
+    out.push({ value: v, label: String((r && (r.name || r.label)) || v), totalAll: Number(r && r.totalAll) || 0, fixed: true });
   }
   for (const d of (Array.isArray(derived) ? derived : [])) {
     const v = String(d || '').trim();
@@ -178,11 +179,21 @@ function categoryChipLabel(value, vocab) {
 // 「所选来源不提供分类信息，已忽略分类筛选」或退成本地过滤当前页——那是把别家的分类
 // 冒充本市场的，属于假陈述（用户 0.5.150 实测点名）。词表若自带来源字段且不是 skillsmp
 // 的页面，即使当前源是 skillsmp 也不接受（防未来别处喂进来的词表串味）。
-function categoryChipsForSource(source, derived, vocab) {
+// 词表按市场归属：bySource 是 { skillsmp: {...}, clawhub: {...} }（settings.get 下发的分组形状）。
+// 每个市场的词表只能来自它自己的页面，且只能显示在它自己的市场下——上游 slug 只有那一家认，
+// 串到别处就是假分类（用户 0.5.151 点名）。词表自带 source 字段时必须与本市场前缀一致；
+// 旧快照没落 source 时按可用处理（兼容 0.5.148/0.5.152 已写入的缓存）。
+// 归属映射写在函数体内：这座岛的可测约定是「函数体能被 new Function 单独执行」，
+// 提到模块级常量会让两份真实函数体的拼接执行拿不到它（本轮实测 CATEGORY_VOCAB_ORIGIN is not defined）。
+function categoryChipsForSource(source, derived, bySource) {
+  const ORIGIN = { skillsmp: 'https://skillsmp.com/', clawhub: 'https://clawhub.ai/' };
+  const key = String(source || '');
+  const expected = ORIGIN[key];
+  if (!expected || !bySource || typeof bySource !== 'object') return mergeCategoryVocab(derived, null);
+  const vocab = bySource[key];
   const rows = (vocab && Array.isArray(vocab.categories)) ? vocab.categories : [];
   if (!rows.length) return mergeCategoryVocab(derived, null);
-  const stated = vocab.source == null || String(vocab.source).indexOf('https://skillsmp.com/') === 0;
-  if (String(source || '') !== 'skillsmp' || !stated) return mergeCategoryVocab(derived, null);
+  if (vocab.source != null && String(vocab.source).indexOf(expected) !== 0) return mergeCategoryVocab(derived, null);
   return mergeCategoryVocab(derived, vocab);
 }
 function categoryLabelLite(chip) {
