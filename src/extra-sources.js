@@ -560,6 +560,28 @@ export function trusttoolsCategoryOfTags(tags) {
   return "";
 }
 
+// 单页请求的唯一出口：分类请求与「不带 tags 的参照请求」必须除 tags 之外逐字段相同，
+// 否则比较两个 pagination.total 就是拿两次不同的查询比大小。
+async function fetchTrustToolsPage({ getJson, postJson, serverSort, query, upstreamPage, perPage, tags }) {
+  if (serverSort) {
+    // GET 端点固定 10 条/页（实测 pageSize 参数被忽略），排序由服务端对全量做
+    const qs = new URLSearchParams({ sort_by: "install_count", direction: "desc", page: String(upstreamPage), pageSize: String(perPage) });
+    // 多 tag 的线路编码 2026-11-24 实测：重复同名 tags=a&tags=b 只有最后一个生效
+    // （security&testing → 3712 = testing 单独的值），逗号单键 tags=a,b 才是并集
+    // （security,testing → 7270，两单值和 8084，确有重叠）。旧写法对多 tag 分类是错筛。
+    if (tags.length) qs.set("tags", tags.join(","));
+    if (String(query || "").trim()) qs.set("search", String(query).trim());
+    return getJson(`https://ai.trusttools.cn/api/skills?${qs.toString()}`, { timeoutMs: 25000 });
+  }
+  return postJson(
+    "https://ai.trusttools.cn/api/skills/search",
+    // 上游参数名是 search（不是 q）：传 q 会被忽略，永远返回默认列表。实测 search 才生效。
+    // POST 的 tags 为 JSON 数组且实测真并集：search=pdf 下 docs,code-review=117，单值 116/5。
+    { search: query, page: upstreamPage, pageSize: perPage, ...(tags.length ? { tags } : {}) },
+    { timeoutMs: 25000 },
+  );
+}
+
 export async function searchTrustTools({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "",
   getJson = getJsonEscalating, postJson = postJsonEscalating } = {}) {
   // trusttools ignores `pageSize` and always answers with 10 rows per page, so a page of 24
@@ -594,32 +616,23 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
   const rows = [];
   const seen = new Set();
   let total = 0;
+  // facetTotal：带 tags 请求的 pagination.total；refTotal：同一 query 不带 tags 的参照值。
+  // 两者的差就是「上游真按 tags 过滤」的证据（实测 579,074 → security 4,372）。
+  let facetTotal = 0;
+  let refTotal = 0;
   for (let index = 0; index < perBatch; index += 1) {
     const upstreamPage = first + index;
     const key = `trusttools:${String(query).trim().toLowerCase()}:${upstreamPage}:${sort || ""}:${facetUsed}`;
     let data = cache ? await cache.get(key, 10 * 60 * 1000) : undefined;
     if (!data) {
-      if (serverSort) {
-        // GET 端点固定 10 条/页（实测 pageSize 参数被忽略），排序由服务端对全量做
-        const qs = new URLSearchParams({ sort_by: "install_count", direction: "desc", page: String(upstreamPage), pageSize: String(perPage) });
-        // 多 tag 的线路编码没有实测记录（上游 2026-11-24 起不可达），取 URLSearchParams 对
-        // 同名键的既有编码（tags=a&tags=b）。是否真过滤由下方 facetAnswered 用返回数据自证，
-        // 不由编码假设声明——编码猜错时绝不把未过滤集合说成「这就是该分类」。
-        for (const tag of facetTags) qs.append("tags", tag);
-        if (String(query || "").trim()) qs.set("search", String(query).trim());
-        data = await getJson(`https://ai.trusttools.cn/api/skills?${qs.toString()}`, { timeoutMs: 25000 });
-      } else {
-        data = await postJson(
-          "https://ai.trusttools.cn/api/skills/search",
-          // 上游参数名是 search（不是 q）：传 q 会被忽略，永远返回默认列表。实测 search 才生效。
-          { search: query, page: upstreamPage, pageSize: perPage, ...(facetTags.length ? { tags: facetTags } : {}) },
-          { timeoutMs: 25000 },
-        );
-      }
+      data = await fetchTrustToolsPage({ getJson, postJson, serverSort, query, upstreamPage, perPage, tags: facetTags });
       if (cache) await cache.put(key, data);
     }
     const batch = Array.isArray(data.data) ? data.data : [];
-    if (data.pagination && Number(data.pagination.total) > 0) total = Number(data.pagination.total);
+    if (data.pagination && Number(data.pagination.total) > 0) {
+      total = Number(data.pagination.total);
+      if (facetUsed) facetTotal = total; else refTotal = total;
+    }
     let added = 0;
     for (const raw of batch) {
       const id = String(raw.id ?? raw.slug ?? raw.name ?? "");
@@ -639,13 +652,27 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     : sortMode
       ? rows.slice((p - 1) * size, p * size)
       : rows.slice(0, size);
-  // facet 自证：发了 tags 之后，取回本页的每一行都必须命中其中一个 tag 才算上游真过滤。
-  // 空页不证明任何事（既不能声称过滤生效，也不能声称被忽略），因此 serverFacet 只在有行且
-  // 全部命中时为真；否则退回聚合层的本地兜底过滤，由它如实说明「仅当前页」。
+  // facet 自证（0.5.159 换口径）：2026-11-24 实测上游列表端点返回的行内 tags 恒为 []，
+  // 「每行命中所请求 tag」在真上游永假——旧口径把真在过滤的请求误判成被忽略，面板随之
+  // 显示「所选来源不提供分类信息，已忽略分类筛选」，chip 等于白点。
+  // 新口径用上游自己的计数：带 tags 的 pagination.total 必须小于同一 query 不带 tags 的参照
+  // total 才算真过滤；行级命中保留为正向附加信号（上游哪天回填 tags 也算证明）。
   let facetAnswered = false;
   if (facetUsed && rows.length) {
-    facetAnswered = rows.every((raw) => (Array.isArray(raw.tags) ? raw.tags : [])
-      .some((tag) => facetTagSet.has(String(tag || "").trim().toLowerCase())));
+    // 参照请求：端点、页号、query 与分类请求逐字段相同，唯一区别是不带 tags。
+    const refKey = `trusttools:facetref:${String(query).trim().toLowerCase()}:${first}:${sort || ""}`;
+    let ref = cache ? await cache.get(refKey, 10 * 60 * 1000) : undefined;
+    if (!ref) {
+      ref = await fetchTrustToolsPage({ getJson, postJson, serverSort, query, upstreamPage: first, perPage, tags: [] });
+      if (cache && ref) await cache.put(refKey, ref);
+    }
+    if (ref && ref.pagination && Number(ref.pagination.total) > 0) refTotal = Number(ref.pagination.total);
+    // 上游自己的计数变小才算真过滤；facetTotal 为 0（该分类没有条目）时不比对。
+    facetAnswered = facetTotal > 0 && refTotal > 0 && facetTotal < refTotal;
+    if (!facetAnswered) {
+      facetAnswered = rows.every((raw) => (Array.isArray(raw.tags) ? raw.tags : [])
+        .some((tag) => facetTagSet.has(String(tag || "").trim().toLowerCase())));
+    }
   }
   const items = pageRows.map((raw) => {
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
@@ -673,7 +700,8 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
       installable: Boolean(repo && path),
     };
   });
-  const known = total || 0;
+  // 分类页的 total 必须是该分类的集合大小（facetTotal），不是无分类参照值。
+  const known = facetTotal || refTotal || total || 0;
   return {
     source: "trusttools",
     items,
@@ -681,10 +709,8 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     // serverFacet 只有在「数据自证过滤成立」时才真：上游忽略参数或编码猜错都不谎报。
     serverFacet: facetAnswered,
     ...(facetRefused ? { hint: `trusttools 词表里没有「${facet}」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页` } : {}),
-    // 只在「真取回了行且自证失败」时说这句话：空页里没有任何行，说「返回行里有不含
-    // 该分类标签的条目」本身就是假陈述。空页时 serverFacet 已经是 false，聚合层会
-    // 按它自己的规则说明本页没有可用分类信息，这里不再编造原因。
-    ...(facetUsed && rows.length > 0 && !facetAnswered ? { hint: `trusttools 未按分类「${facetUsed}」过滤（返回行里有不含该分类标签的条目），已退回面板本地筛选这一页` } : {}),
+    // 只在「真取回了行且自证失败」时说这句话：空页里没有任何行，任何归因都是假陈述。
+    ...(facetUsed && rows.length > 0 && !facetAnswered ? { hint: `trusttools 的分类过滤未通过自证（带分类与不带分类的总数相同，且返回行里没有所请求的标签），已退回面板本地筛选这一页` } : {}),
     hasMore: known ? p * size < known : items.length >= size,
   };
 }

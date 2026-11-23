@@ -76,11 +76,11 @@ const row = (i, tags) => ({
 });
 const sink = () => ({ urls: [], qs: [], bodies: [] });
 // 假上游：形状照 searchTrustTools 真正读取的字段（data[] / pagination.total / 行内 tags）。
-const mkGet = (rowsFor, s) => async (url) => {
+const mkGet = (rowsFor, s, totalOf) => async (url) => {
     const u = new URL(url);
     s.urls.push(url);
     s.qs.push(u.searchParams);
-    return { data: rowsFor(Number(u.searchParams.get('page')) || 1), pagination: { total: 100 } };
+    return { data: rowsFor(Number(u.searchParams.get('page')) || 1), pagination: { total: totalOf === undefined ? 100 : Number(totalOf) } };
 };
 // 看门狗：修复前的 searchTrustTools 没有注入点，会直接打真上游（2026-11-24 实测每次
 // 超时 25s+，且还会 curl/python 逐级降级）。判据不能靠等它失败来拿红，所以给每次调用
@@ -101,10 +101,24 @@ const ttCall = async (args) => {
     return r.val;
 };
 
-const mkPost = (rowsFor, s) => async (url, body) => {
+const mkPost = (rowsFor, s, totalOf) => async (url, body) => {
     s.urls.push(url);
     s.bodies.push(body);
-    return { data: rowsFor(Number(body.page) || 1), pagination: { total: 100 } };
+    return { data: rowsFor(Number(body.page) || 1), pagination: { total: totalOf === undefined ? 100 : Number(totalOf) } };
+};
+// total 感知假上游（0.5.159 的取证形状）：带 tags 的请求回 filteredTotal，不带的回 refTotal。
+// 这就是上游真按 tags 过滤时 pagination.total 的样子（实测 579,074 → security 4,372）。
+// 行内 tags 一律置 []，照抄 2026-11-24 实测：列表端点的 tags 字段恒为空数组。
+const mkTotals = (rowsFor, s, filteredTotal, refTotal) => async (url, opts) => {
+    const u = new URL(url);
+    // 第二参在 GET 通路上是 { timeoutMs } 选项对象，只有 POST 才带 search/page 请求体。
+    const isPost = Boolean(opts) && typeof opts === 'object' && (typeof opts.search === 'string' || opts.page !== undefined);
+    const tags = isPost ? (Array.isArray(opts.tags) ? opts.tags : []) : u.searchParams.getAll('tags');
+    s.urls.push(url);
+    if (isPost) s.bodies.push(opts); else s.qs.push(u.searchParams);
+    const pg = Number(isPost ? opts.page : u.searchParams.get('page')) || 1;
+    const rows = rowsFor(pg).map((r) => Object.assign({}, r, { tags: [] }));
+    return { data: rows, pagination: { total: tags.length ? filteredTotal : refTotal } };
 };
 
 console.log('');
@@ -211,8 +225,11 @@ console.log('Test 4: 发出去的请求带 tags（GET 与 POST 两条通路都�
     try {
         const r = await ttCall({ query: '', page: 1, pageSize: 10, cache: null, sort: 'installCount', category: 'security', getJson: mkGet(okRows, g), postJson: mkPost(okRows, g) });
         const tagSets = g.qs.map((q) => q.getAll('tags').join(','));
+        check('GET 多 tag 用单键逗号形式（tags=a&tags=b 实测只有最后一个生效，属错筛）',
+            g.qs.every((q) => q.getAll('tags').length <= 1) && g.qs.some((q) => q.getAll('tags')[0] === EVIDENCE.security.join(',')),
+            safe(g.qs.map((q) => JSON.stringify(q.getAll('tags'))).join(' | ')));
         check('服务端排序通路每请求都带上该类的全部 tags（OR 语义）',
-            g.urls.length > 0 && tagSets.length > 0 && tagSets.every((t) => t === EVIDENCE.security.join(',')),
+            g.qs.length >= 2 && g.qs.filter((q) => q.getAll('tags').length > 0).every((q) => q.getAll('tags').join(',') === EVIDENCE.security.join(',')),
             safe(g.urls.length + ' 次: ' + tagSets.join(' | ')));
         check('不再发 category= 参数（实测被忽略，发了就是假过滤）',
             g.qs.every((q) => q.get('category') === null),
@@ -232,7 +249,7 @@ console.log('Test 4: 发出去的请求带 tags（GET 与 POST 两条通路都�
         await ttCall({ query: 'pdf', page: 1, pageSize: 10, cache: null, category: 'data', getJson: mkGet(postRows, b), postJson: mkPost(postRows, b) });
         const bodyTags = b.bodies.map((x) => (Array.isArray(x.tags) ? x.tags.join(',') : String(x.tags)));
         check('搜索通路走 POST 且 body 带该类 tags',
-            b.bodies.length > 0 && bodyTags.every((t) => t === EVIDENCE.data.join(',')),
+            b.bodies.length >= 2 && b.bodies.filter((x) => Array.isArray(x.tags)).every((t) => t.tags.join(',') === EVIDENCE.data.join(',')),
             safe(bodyTags.join(' | ')));
         check('POST body 仍带 search（旧行为不回退）',
             b.bodies.every((x) => x.search === 'pdf'), safe(JSON.stringify(b.bodies[0])));
@@ -300,6 +317,62 @@ console.log('Test 6: facet 自证——编码猜错或上游忽略时绝不声�
     }
 }
 
+console.log('');
+console.log('Test 6.1: facet 自证换 total 口径（真上游行内 tags 恒空）');
+{
+    const ttRows = (page) => [row(page * 10 + 1), row(page * 10 + 2), row(page * 10 + 3)];
+    const s1 = sink();
+    let r1 = null;
+    try {
+        r1 = await ttCall({ query: '', page: 1, pageSize: 10, cache: null, sort: 'installCount', category: 'security', getJson: mkTotals(ttRows, s1, 4372, 579074), postJson: mkTotals(ttRows, s1, 4372, 579074) });
+    } catch (e) { r1 = { err: String((e && e.message) || e) }; }
+    if (r1 && r1.err) { check('total 口径段可运行', false, safe(r1.err)); }
+    else {
+        check('行内 tags 恒空但带分类的 total 变小 → serverFacet=true（0.5.158 旧口径在这里必然误判）',
+            r1.serverFacet === true, safe(JSON.stringify(r1.serverFacet)));
+        check('serverFacet 为真时必须确实发过不带 tags 的参照请求（不是拿同一发数字自说自话）',
+            s1.qs.length >= 2 && s1.qs.some((q) => q.getAll('tags').length === 0),
+            safe('请求 ' + s1.qs.length + ' 次: ' + s1.qs.map((q) => JSON.stringify(q.getAll('tags'))).join(' | ')));
+        check('分类页 total 上报该分类的集合大小而不是全量（面板据此算页数）', r1.total === 4372, safe(r1.total));
+        check('真过滤时不发退回本地筛选提示', !/未按分类|未通过自证|已退回/.test(String(r1.hint || '')), safe(String(r1.hint).slice(0, 130)));
+    }
+    const s2 = sink();
+    let r2 = null;
+    try {
+        r2 = await ttCall({ query: '', page: 1, pageSize: 10, cache: null, sort: 'installCount', category: 'security', getJson: mkTotals(ttRows, s2, 579074, 579074), postJson: mkTotals(ttRows, s2, 579074, 579074) });
+    } catch (e) { r2 = { err: String((e && e.message) || e) }; }
+    if (r2 && r2.err) { check('total 相同段可运行', false, safe(r2.err)); }
+    else {
+        check('带分类与不带分类 total 相同 → serverFacet=false（上游忽略 tags 时绝不谎报）',
+            r2.serverFacet === false, safe(JSON.stringify(r2.serverFacet)));
+        check('自证失败时如实说明退回本地筛选', /未通过自证|已退回/.test(String(r2.hint || '')), safe(String(r2.hint).slice(0, 130)));
+    }
+    const s3 = sink();
+    let r3 = null;
+    try {
+        r3 = await ttCall({ query: '', page: 1, pageSize: 10, cache: null, sort: 'installCount', category: 'security', getJson: mkTotals(ttRows, s3, 4372, 0), postJson: mkTotals(ttRows, s3, 4372, 0) });
+    } catch (e) { r3 = { err: String((e && e.message) || e) }; }
+    if (r3 && r3.err) { check('参照缺失段可运行', false, safe(r3.err)); }
+    else {
+        check('参照 total 拿不到（0 或缺失）→ serverFacet=false，不许拿 0 比 4372 凑证据',
+            r3.serverFacet === false, safe(JSON.stringify(r3.serverFacet)));
+        check('参照缺失时也必须真的发过那一发不带 tags 的请求',
+            s3.qs.some((q) => q.getAll('tags').length === 0), safe(s3.qs.map((q) => JSON.stringify(q.getAll('tags'))).join(' | ')));
+    }
+    const s4 = sink();
+    let r4 = null;
+    try {
+        r4 = await ttCall({ query: 'pdf', page: 1, pageSize: 10, cache: null, category: 'security', getJson: mkTotals(ttRows, s4, 14, 6865), postJson: mkTotals(ttRows, s4, 14, 6865) });
+    } catch (e) { r4 = { err: String((e && e.message) || e) }; }
+    if (r4 && r4.err) { check('POST 段可运行', false, safe(r4.err)); }
+    else {
+        check('POST 通路同样按 total 对照自证（实测 search=pdf 14 对 6,865）',
+            r4.serverFacet === true && r4.total === 14, safe(JSON.stringify([r4.serverFacet, r4.total])));
+        check('POST 参照请求 body 里 tags 必须缺席且参照真的发过（空数组也算带筛选条件）',
+            s4.bodies.length >= 2 && s4.bodies.every((x) => x.search === 'pdf') && s4.bodies.some((x) => !x.tags || !x.tags.length),
+            safe(JSON.stringify(s4.bodies.map((x) => (x && x.tags) || null))));
+    }
+}
 console.log('');
 console.log('Test 7: 缓存键带 facet 维度（换分类不得复用上一分类的页）');
 {
@@ -404,8 +477,8 @@ console.log('Test 9: 接线（import / settings.get 下发 / 面板归属 / 套�
     check('行内分类字段不再取 tags[0]（0.5.151 那类泄漏的源头）',
         /category: trusttoolsCategoryOfTags\(raw\.tags\)/.test(ttBody) && !/raw\.tags\[0\]/.test(ttBody),
         safe((ttBody.match(/ {6}category: [^\n]*/) || ['(未找到)'])[0]));
-    check('tags 编码来源写明是未证实（注释里不许出现「上游支持重复参数」这种断言）',
-        /线路编码没有实测记录/.test(es) && !/上游支持重复参数/.test(es),
+    check('tags 编码注释写明 2026-11-24 实测结论，且不得保留已被否证的「没有实测记录」旧口径',
+        /2026-11-24 实测/.test(es) && !/线路编码没有实测记录/.test(es) && !/上游支持重复参数/.test(es),
         safe((es.match(/[^\n]*线路编码[^\n]*/) || ['(注释缺失)'])[0]));
     const client = readLf('client.js');
     const originLine = lineOf(client, once(client, 'const ORIGIN = {', '面板归属映射'));

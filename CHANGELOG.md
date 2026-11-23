@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.159
+
+- trusttools facet 自证口径从「行级命中」换成「pagination.total 对照」（src/extra-sources.js searchTrustTools），并修 GET 多 tag 线路编码。
+- 根因：2026-11-24 实测上游列表端点返回的行内 tags 恒为 []。旧 facetAnswered 要求「每行 tags 命中所请求 tag」，在真上游永假 ⇒ serverFacet 恒 false ⇒ 面板显示「所选来源不提供分类信息，已忽略分类筛选」，chip 等于白点（0.5.157 遗留的证据缺口在 0.5.158 取证更正里已点名，本轮闭合）。
+- 同时纠正一个会静默错筛的线路编码 bug：旧 GET 用 qs.append 逐个发 tags=a&tags=b&tags=c。实测重复同名参数上游只认最后一个（security&testing→3712=testing 单独的值），即对多 tag 分类只筛了最后一个 tag——这是错筛而不是忽略。逗号单键 tags=a,b 才是并集（security,testing=7270，两单值和 8084 确有重叠）。GET 现改 qs.set("tags", tags.join(","))。POST body 的 JSON 数组本就是真并集（search=pdf 下 docs,code-review=117 对单值 116/5），保持不变。
+- 新自证口径：带 tags 的分类请求 pagination.total（facetTotal）与同一 query 不带 tags 的参照请求 pagination.total（refTotal）对照，facetTotal < refTotal 才算真过滤（实测 579,074 → security 4,372）。参照请求端点/页号/query 与分类请求逐字段相同，唯一区别是不带 tags，否则比较两次 total 就是拿两次不同查询比大小。
+- 边界：facetTotal=0（该分类无匹配）或 refTotal 拿不到（0/缺失）都不许据「0 比 N」判为真过滤；行级命中保留为正向附加信号（上游哪天回填 tags 也算证明）。分类页 total 上报 facetTotal 而不是全量，面板据此算页数。
+- hint 措辞换成可证真陈述：自证失败时说「带分类与不带分类的总数相同，且返回行里没有所请求的标签」，不再断言已被实测否证的行级理由。
+- live 亲验（真上游 ai.trusttools.cn，单次 wall≈85s 含上游 10s+ TLS 间歇超时，重试即通）：category=security 单查 facetTotal=9293（=security,testing,debugging 三 tag 并集，与逗号编码语义吻合）serverFacet=true、无 hint；不带分类 facetTotal=579,074。修复前同一查询 serverFacet 恒 false。
+- 判据 test/test-trusttools-category-vocab.mjs 73→84（新增 total 口径段：tags 恒空但 total 变小→serverFacet=true、必须真发过不带 tags 的参照请求、分类页 total 上报 facetTotal、total 相同/参照缺失→false 且如实退回本地、POST 通路同口径；Test 4 补 GET 单键逗号编码锁）。
+- 变异 5 向全杀（还原后 src sha16=e3fa3b01f909e144）：M1 退回 qs.append 逐 tag → 83/1（GET 多 tag 逗号锁红）；M2 关掉 total 对照只留行级 → 81/3（tags 恒空段假陈述被抓）；M3 facetTotal!==refTotal 代替 < → 83/1（参照缺失段「0 比 4372」被凑成真，判据红）；M4 known 优先取 refTotal → 82/2（分类页 total 上报 579074）；M5 参照请求带上 tags → 78/6。
+- 回归绿：index-runtime 26/0、search-fanout-latency 196/0、suite-inventory 11/0、clawhub-category 62/0、skillsmp-category 65/0；test-sources 真网络冒烟 exit=0。清理 0.5.159 驱动遗落的 test/test-trusttools-category-vocab.mjs.p159t 副本。
+- 本轮属「不改变可见结果」以外的修正：它改变了 trusttools 分类请求实际发出的 tags 编码与 facetTotal 上报，属于修 bug，需要独立版本，不与 0.5.158 合并。
+
 ## 0.5.158
 
 - 每源预算差异化中「不改变可见结果」的那一半落地（口径：改变可见条目数的那半留待用户决策，不改变可见结果的那半自行 TDD 并单独发版）。src/sources.js 把写死的 12000ms 拆成 `DEFAULT_BUDGET_MS` + 空表 `SOURCE_BUDGET_OVERRIDES` + `budgetFor(name, budgetMs, overrides)` / `budgetKey(names, budgetMs, overrides)`，`fanOutSources` / `fanOnce` / `searchSkills` 新增 `budgetOverrides` 入参，settle 守卫的 setTimeout 与两条降级文案都按源取预算。默认可配置表是**空表** ⇒ 每个源拿到的预算与 `DEFAULT_BUDGET_MS` 逐毫秒相同，items/total/文案秒数一律不动；表里没写这个源、或写的值不是正数，一律等同没写。
