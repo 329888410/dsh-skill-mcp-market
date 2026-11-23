@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.152
+
+- test-full-sort 的 live 网络抖动固化成判据，不再靠人肉复跑收口（监测方 15:52 点名）。根因实测：Test 6 的守卫只看「两侧皆空」，而真实抖动形态是**单边降级**——一侧正常回条目、另一侧超时回 0 条 + degraded 非空，于是走进比较分支，把「这台机器此刻取不到 skillsmp」报成本仓库回归（门内原文 `FAIL plain == fresh（未被 name 排序污染）`，事后单独连跑两次 31/0、32/0 全绿）。Test 5 在 0.5.149 已改成「任一侧 degraded 即 SKIP」，Test 6 却仍各写一套——同一件事两套口径，所以还会再撞。修法：把判定抽成模块级纯函数 compareVerdict(a, b)，返回 {mode: skip|fail|compare, detail}，Test 5 与 Test 6 共用；skip 的 detail 必须带出是哪侧哪个源、什么错误文案（只说「跳过了」等于下一轮重新猜一遍）。
+- 新增 Test 8（11 项判据，注入对象、零网络、确定性）：先用 oldShape 逐字复刻 0.5.151 之前 Test 6 的判据形状，锁住「单边降级时它确实会去比较」——这条是假红本体的存在性证明，不是靠叙述；再锁新判定五种形状：单边降级 → skip、降级在另一侧同样 skip（对称）、两侧皆空且无 degraded → fail、两侧都有数据且无降级 → compare、单边空但无降级 → compare（真回归仍由比较自己红）；SKIP 详情必须同时含降级源名与错误文案。接线两条按 Test 区块分别取段计数，不接受整份文件计数——第一版我写成 (self.match(/compareVerdict\(/g) || []).length >= 4，结果 RED 阶段它就绿了：Test 8 自己的注入调用把计数喂饱，这是「锁了文案没锁行为」的又一实例（与 M5、provenance 同族），改成 segOf('Test 5'→'Test 6') / segOf('Test 6'→'Test 8') 两个区块各自必须出现 compareVerdict(a, b) / compareVerdict(plain, fresh)，并否定区块内再出现 .degraded && .length 私有判据。
+- RED 真值（改动前跑）：33 passed, 7 failed, 1 skipped，首条 FAIL 原文 `新判定：单边降级 → SKIP（不再进比较）  [{"mode":"ERR","detail":"compareVerdict is not defined"}]`，另有 `Test 6 不再自带「两侧皆空」旧形状` 一条直接点名旧形状还在。GREEN 42 passed, 0 failed, 1 skipped（那 1 个 skip 是 trusttools 上游此刻真不可达，SKIP 明细如实打出）。
+- 反向破坏证伪 4 向（test-full-sort.mjs 基线 shaNorm16 2faadd6d7f52c34d / bytes 26125 / CRLF 315，每轮 node --check + 逐字节还原全 true）：W1 判定退化成只看 a 侧（不对称）→ 41/2，FAIL「单边降级 → SKIP」详情原文 {"mode":"compare","detail":""}；W2 两侧皆空改成 compare（放回空转绿灯）→ 39/1 FAIL「两侧皆空且无 degraded → FAIL」；W3 SKIP 不带降级名单 → 42/1 FAIL「SKIP 详情带上降级源与错误文案」；W4 Test 6 退回旧的「两侧皆空」形状 → 38/2，两条接线判据同时红（`区块 4958B 无调用` 与「口径唯一」）。第一版 W4 我构造成了语法错误（check=1、套件崩溃），那不算杀，重写成语法合法的真实退化后才拿到 38/2。
+- 本版另含 0.5.151 的验证口径补注（见该段末）：面板半段已 live 逐源验过，服务端半段（撤掉 skillsmp 窗口说明）此刻 live 上仍未生效，依赖下次宿主重启——已用 pageSize=20/30 的缓存键必 miss 判别排除缓存因素，profile 落盘 src 与仓库归一 sha 相同（16429ce53073940d）而进程内响应仍含旧文案。
+
 ## 0.5.151
 
 - 撤掉那条已失效的 skillsmp 窗口说明（用户点名「这句话已经过时、失效，不要再显示了」）。先取证再动手：真发上游实测 browse 态仍回 `{total:1200,totalIsExact:false,isCapped:true,maxResults:1200}`、facet 态 `{total:480,totalAll:532411,maxResults:480}`、search 未翻完 `{total:25,totalIsExact:false}` ⇒ 数字 1200 不是编的，失效的是它给的出路——「更早/更晚的条目需要换关键词继续找」写于面板还没有分类入口的时候，而现在有 63 个 chip（各自带上游 totalAll 真实条数），继续往里走早就不止换关键词一条路。所以删掉 window>0 那一支的说明（extra-sources.js），window===0（上游连窗口多大都没自报）时仍保留 SKILLSMP_UNBOUNDED_NOTE。撤说明不等于放弃口径：total/totalPages 必须继续留未知——新增判据 `去掉说明后总数仍不得冒充目录规模`（r.total===undefined && r.totalPages===undefined）与 `maxResults=777 时同样不显示窗口说明`，并把聚合层那条从「hints 里必须有 1200」改成「hints 必须为空且不得冒出 1200」。RED 真值 70 passed, 3 failed，三条 FAIL 的详情原文就是那句被点名的话；GREEN 73 passed, 0 failed。
@@ -7,7 +15,10 @@
 - 判据 test/test-skillsmp-category-vocab.mjs +16 项（46 → 62）：`skillsmp 下词表 chip 照常生效`、九个非 skillsmp 源（含 'all'、''、undefined）逐个锁 `不得出现词表 chip`、`派生 chip 在任意源都保留`、`面板按当前源决定词表 chip（接线可执行）`、`面板不再无条件合并词表`，外加两条来源核验：`词表来源不是 skillsmp 页面时即使当前源是 skillsmp 也不接受`、`词表未声明来源时按 skillsmp 词表接受`。RED 真值 46 passed, 14 failed（12 条「未取到函数体 categoryChipsForSource」+ 2 条接线）。GREEN 62 passed, 0 failed。
 - 本轮自己抓到并补掉的三处机制缺陷（都是「判据没跑起来」而不是「实现有问题」）：①新判据块插在了 lineIf 定义之前 → `ReferenceError: Cannot access 'lineIf' before initialization`（TDZ，套件连汇总行都没有），把接线两条挪到定义之后；②harness 用 new Function 单独执行 categoryChipsForSource 的函数体时，它委托的 mergeCategoryVocab 不在作用域里 → `mergeCategoryVocab is not defined`，改为把两份真实函数体一起放进同一个 new Function 作用域（还原模块作用域的依赖关系，跑的仍是真代码而不是重写一遍）；③我写的来源核验分支（stated）起初没有任何判据覆盖——把 `stated` 改成恒真时全套仍 62/0，正是 M5 那类「写了分支没锁行为」的假锁，当轮补两条判据后才 61/1。
 - 反向破坏证伪：窗口说明侧 3 向（extra-sources.js 基线 shaNorm16 16429ce53073940d）——把删掉的说明分支原样放回 → 70/3（详情原文就是那句被点名的话）；窗口>0 时也发「不给数字」那句 → 70/3；撤说明顺手把窗口报成总数（total = window）→ 套件直接崩（那是判据抓到口径倒退，不是实现细节），三条 FAIL 里含 `browse 不报 1200 这种窗口总数`。chip 归属侧 4 向（client.js 基线 shaNorm16 00905df8e55f6053）——词表对所有源都合并（缺陷本体）→ 51/11；只判源、丢掉来源核验 → 61/1；源名比较写错（'skillsmpX'）→ 60/2；非 skillsmp 时连派生 chip 一起关掉 → 51/11。每轮 node --check 通过、按 sha16 逐字节还原全 true。
-- 门禁：发布前 60/62，两条红都判过——test-profile-sync（工作树已改、profile 未装新版的预期中间态）与 test-full-sort 的一条 live 网络判据 `plain == fresh（未被 name 排序污染）`（69s 那一轮撞上上游波动；单独连跑两次 31/0 与 32/0 均绿，属真网络抖动而非本轮改动，如实记录不掩盖）。
+- 本版两半的验证口径必须分开写，不许混成「已 live 验证」：
+  · **已 live 验证的是面板半段**（client.js 热更新即生效）：真开 live 面板逐源实测——clawhub 下 chip 行是本市场真实分类（douyin/ai-tools/tiktok/database/kuaishou/json），skillsmp 下才是带条数的词表（调试工具 532,411 / 销售与营销 407,969 / 系统管理 210,265 / 代码质量 203,368 / Git 工作流 182,885…），skills.sh 下不再出现任何分类入口，且「所选来源不提供分类信息」提示也不再出现。
+  · **未经 live 验证的是服务端半段**（撤掉那句窗口说明改的是 src/extra-sources.js）。宿主 14:13:50 重启时加载的是 0.5.150，0.5.151 的 src 改动此刻不在进程里：真发 live RPC `skills.search source=skillsmp` 仍回 `["skillsmp：skillsmp 上游把结果窗口截在约 1200 条…更早/更晚的条目需要换关键词继续找"]`，即**那句失效文案现在 live 上仍然显示着**。判别不是靠猜：profile 落盘的 src/extra-sources.js 与仓库归一化 sha 相同（16429ce53073940d）且已不含该句，而进程内响应仍含该句 ⇒ 差异只在「进程加载的是旧模块」。已另做判别排除缓存因素：把 pageSize 换成 20/30（缓存键必 miss）仍出旧文案。这一半要等下次宿主重启才在 live 上生效，属部署时机，不是代码缺陷。
+- 门禁：发布前 60/62，两条红都判过——test-profile-sync（工作树已改、profile 未装新版的预期中间态）与 test-full-sort 的一条 live 网络判据 `plain == fresh（未被 name 排序污染）`（69s 那一轮撞上上游波动；单独连跑两次 31/0 与 32/0 均绿，属真网络抖动而非本轮改动，如实记录不掩盖）。那条抖动已在 0.5.152 固化成判据（Test 8 + compareVerdict 单一口径），不再靠人肉复跑收口。
 
 ## 0.5.150
 

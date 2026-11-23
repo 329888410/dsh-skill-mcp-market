@@ -26,6 +26,21 @@ const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); }
 const skip = (n) => { skipped++; console.log('  SKIP ' + n); };
 const W = path.resolve(import.meta.dirname, '..');
 
+// 两个 skillsmp 比较（Test 5 / Test 6）共用同一套降级判定。此前各写一套：Test 5 在
+// 0.5.149 改成「任一侧 degraded 即 SKIP」，Test 6 仍只看「两侧皆空」，于是 0.5.151 门内
+// 又出一条假红 `FAIL plain == fresh（未被 name 排序污染）`（单边降级进了比较）。
+// 纯函数、零网络，形状由 Test 8 用注入对象逐条锁死。
+const compareVerdict = (a, b) => {
+  const dg = (r) => ((r && r.degraded) || []).map((d) => d.source + ':' + String(d.error || '')).join(',');
+  if (((a && a.degraded) || []).length || ((b && b.degraded) || []).length) {
+    return { mode: 'skip', detail: 'sort 侧 [' + dg(a) + '] / 基线侧 [' + dg(b) + ']' };
+  }
+  if (!(a && a.items && a.items.length) && !(b && b.items && b.items.length)) {
+    return { mode: 'fail', detail: 'items=0 且 degraded=[]' };
+  }
+  return { mode: 'compare', detail: '' };
+};
+
 // ── 静态断言：缓存键必须含 sort（跨排序污染 bug 的锁） ──
 console.log('');
 console.log('Test 0: 所有 handler 的结果缓存键必须包含 sort');
@@ -174,10 +189,10 @@ console.log('Test 5: skillsmp 按安装数必须被诚实拒绝（保持上游�
     // 报成本仓库回归 —— 门内原文 FAIL installCount 被降级为不排序 a= | b=skillsmp:morluto…，
     // 以及 FAIL a 与基线条目集合一致 a=0 b=12）。降级是上游侧状态、不是排序语义，
     // 所以任一侧 degraded 非空即 SKIP 并如实打出名单；单边空但没降级仍是真回归。
-    const dg = (r) => (r.degraded || []).map((d) => d.source + ':' + String(d.error || '')).join(',');
-    if ((a.degraded && a.degraded.length) || (b.degraded && b.degraded.length)) {
-      skip('skillsmp 取数降级（sort 侧 [' + dg(a) + '] / 基线侧 [' + dg(b) + ']），降级比较无从判定');
-    } else if (!a.items.length && !b.items.length) {
+    const v5 = compareVerdict(a, b);
+    if (v5.mode === 'skip') {
+      skip('skillsmp 取数降级（' + v5.detail + '），降级比较无从判定');
+    } else if (v5.mode === 'fail') {
       // 两侧皆空且都没降级：这是 handler 回归，绝不能落到 '' === '' 的比较上。
       check('skillsmp 返回空且无 degraded（handler 回归）', false, 'items=0 且 degraded=[]');
     } else if (smpKey(b) !== smpKey(b2)) {
@@ -203,9 +218,11 @@ console.log('Test 6: 缓存中毒回归——同 cache 先 name 后默认，默�
     const plain = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: c2, sort: '' });
     const fresh = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: sz, cache: makeCache(path.join(safeTempDir(), 'dsh-fs3-' + Date.now())), sort: '' });
     // 同上：三侧都为空的空转绿灯会掩盖污染回归。
-    if (!plain.items.length && !fresh.items.length) {
-      if (plain.degraded && plain.degraded.length) skip('skillsmp 不可达（degraded 非空），缓存污染比较无从判定');
-      else check('skillsmp 返回空且无 degraded（handler 回归）', false, 'items=0 且 degraded=[]');
+    const v6 = compareVerdict(plain, fresh);
+    if (v6.mode === 'skip') {
+      skip('skillsmp 取数降级（' + v6.detail + '），缓存污染比较无从判定');
+    } else if (v6.mode === 'fail') {
+      check('skillsmp 返回空且无 degraded（handler 回归）', false, v6.detail);
     } else {
       check('plain == fresh（未被 name 排序污染）', plain.items.map((i) => i.id).join('|') === fresh.items.map((i) => i.id).join('|'));
     }
@@ -270,6 +287,49 @@ console.log('Test 7: 聚合模式（source=all）的排序不得被能力降级�
     check('aggregation live page monotonic over nonzero', liveData.every((x, k, arr) => k === 0 || arr[k - 1] >= x), liveData.slice(0, 6).join(','));
   }
 }
+console.log('');
+console.log('Test 8: 降级判定必须是单一口径（注入对象，零网络）');
+{
+  // 0.5.151 门内实测假红：Test 6 原文 `FAIL plain == fresh（未被 name 排序污染）`，
+  // 事后单独连跑两次 31/0、32/0 全绿 —— 那是单边降级（一侧正常回条目、另一侧超时回
+  // 0 条 + degraded 非空）走进了比较分支。Test 5 在 0.5.149 已改成「任一侧 degraded 即
+  // SKIP」，Test 6 却仍只看「两侧皆空」，同一件事两套口径，所以还会再撞。
+  // 这里把判定抽成一个纯函数，两个 Test 共用，并用注入对象把四种形状各锁一次。
+  const ok12 = { items: Array.from({ length: 12 }, (_, k) => ({ id: 'x' + k })), degraded: [] };
+  const emptyClean = { items: [], degraded: [] };
+  const degradedSide = { items: [], degraded: [{ source: 'skillsmp', error: '来源响应超时（预算 12s），已跳过' }] };
+  const oldShape = (a, b) => {
+    // 逐字照抄 0.5.151 之前 Test 6 的判据形状，用来证明它会去比较（假红的来源）。
+    if (!a.items.length && !b.items.length) return (a.degraded && a.degraded.length) ? 'skip' : 'fail';
+    return 'compare';
+  };
+  check('旧形状在单边降级时确实会去比较（这就是假红本体）', oldShape(ok12, degradedSide) === 'compare' && oldShape(degradedSide, ok12) === 'compare', oldShape(ok12, degradedSide));
+  let verdict = null;
+  try { verdict = compareVerdict(ok12, degradedSide); } catch (e) { verdict = { mode: 'ERR', detail: String((e && e.message) || e) }; }
+  check('新判定：单边降级 → SKIP（不再进比较）', verdict.mode === 'skip', JSON.stringify(verdict));
+  try { verdict = compareVerdict(degradedSide, ok12); } catch (e) { verdict = { mode: 'ERR', detail: String((e && e.message) || e) }; }
+  check('新判定：降级在另一侧同样 SKIP（对称）', verdict.mode === 'skip', JSON.stringify(verdict));
+  try { verdict = compareVerdict(emptyClean, emptyClean); } catch (e) { verdict = { mode: 'ERR' }; }
+  check('新判定：两侧皆空且无 degraded → FAIL（handler 回归不许放过）', verdict.mode === 'fail', JSON.stringify(verdict));
+  try { verdict = compareVerdict(ok12, { items: Array.from({ length: 12 }, (_, k) => ({ id: 'x' + k })), degraded: [] }); } catch (e) { verdict = { mode: 'ERR' }; }
+  check('新判定：两侧都有数据且无降级 → COMPARE', verdict.mode === 'compare', JSON.stringify(verdict));
+  try { verdict = compareVerdict({ items: [], degraded: [] }, ok12); } catch (e) { verdict = { mode: 'ERR' }; }
+  check('新判定：单边空但无降级 → COMPARE（真回归由比较自己红）', verdict.mode === 'compare', JSON.stringify(verdict));
+  // 名单必须打出来：SKIP 而不说清是哪侧哪个源降级，下一轮还得重新猜一遍。
+  try { verdict = compareVerdict(ok12, degradedSide); } catch (e) { verdict = { mode: 'ERR', detail: '' }; }
+  check('SKIP 详情带上降级源与错误文案', /skillsmp/.test(String(verdict.detail || '')) && /超时/.test(String(verdict.detail || '')), JSON.stringify(verdict.detail));
+  // 接线：两个 Test 必须真的用同一个判定，而不是各写一套。
+  const self = fs.readFileSync(path.join(W, 'test', 'test-full-sort.mjs'), 'utf8');
+  // 这条必须按区块数：整份文件计数会被 Test 8 自己的注入调用满足（假锁，同 M5 那类）。
+  const segOf = (from, to) => { const a = self.indexOf(from), b = self.indexOf(to); return a >= 0 && b > a ? self.slice(a, b) : ''; };
+  const t5 = segOf("console.log('Test 5:", "console.log('Test 6:");
+  const t6 = segOf("console.log('Test 6:", "console.log('Test 8:");
+  check('Test 5 区块真的调用 compareVerdict', /compareVerdict\(a, b\)/.test(t5), t5.length ? '区块 ' + t5.length + 'B 无调用' : '未取到 Test 5 区块');
+  check('Test 6 区块真的调用 compareVerdict', /compareVerdict\(plain, fresh\)/.test(t6), t6.length ? '区块 ' + t6.length + 'B 无调用' : '未取到 Test 6 区块');
+  check('Test 5/6 区块都不再自带 degraded 长度判据（口径唯一）', !/\.degraded && .*\.length/.test(t5) && !/\.degraded && .*\.length/.test(t6), '');
+  check('Test 6 不再自带「两侧皆空」旧形状', !/if \(!plain\.items\.length && !fresh\.items\.length\)/.test(self), '');
+}
+
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed, ' + skipped + ' skipped');
 process.exit(failed ? 1 : 0);
