@@ -313,20 +313,38 @@ console.log('Test 8: 面板按源取词表（clawhub 词表不得串到别的市
     const got = run(['clawhub', ['page-derived-slug'], bySource]);
     if (got && got.err) skip('按源取词表可执行', got.err);
     else {
-        check('clawhub 下拿到 clawhub 词表 14 条', got.length === 15 && got[0].value === 'integrations' && got[0].fixed === true, 'n=' + got.length + ' first=' + JSON.stringify(got[0]));
+        // 0.5.155 契约：有词表时 chip 只来自词表（派生自由标签不得混入，见 skillsmp 套件同条）。
+        check('clawhub 下拿到 clawhub 词表 14 条（不含派生）', got.length === 14 && got[0].value === 'integrations' && got[0].fixed === true, 'n=' + got.length + ' first=' + JSON.stringify(got[0]));
         check('clawhub 词表 chip 不带条数（上游没给条数就不许显示）', got.every((c) => !/\d{3,}/.test(String(c.label))), JSON.stringify(got.slice(0, 2).map((c) => c.label)));
-        check('派生 chip 仍排在词表之后', got[got.length - 1].value === 'page-derived-slug' && got[got.length - 1].fixed === false, JSON.stringify(got[got.length - 1]));
+        check('词表在手时不产出派生 chip', !got.some((c) => c.fixed === false), JSON.stringify(got.filter((c) => c.fixed === false).map((c) => c.value)));
     }
     const other = run(['browse.sh', ['page-derived-slug'], bySource]);
-    check('browse.sh 下两套词表都不出现', Array.isArray(other) && other.length === 1 && other[0].value === 'page-derived-slug', JSON.stringify(other && other.err ? other : other));
+    // 词表「抓取失败」的真实形状有两层，两层都必须留下派生入口（否则上游改版就整排 chip 消失）：
+    //   ①settings.get 冷缓存/过期/抓取失败 → 该源字段是 null（index.js 的 readXxxCategoryVocabulary 回 null）
+    //   ②词表对象在但 categories 为空数组（解析不出任何分类，服务端按「不许落空快照」返回 null，这里注入防御）
+    // 注入这两层，断言派生值照旧出现——这就是「抓取失败时分类入口仍在」的实证，不是注释承诺。
+    const failNull = run(['clawhub', ['douyin', 'json'], { clawhub: null, skillsmp: smpVocab }]);
+    check('词表抓取失败（该源字段为 null）时派生入口仍可用',
+        Array.isArray(failNull) && failNull.length === 2 && failNull.every((c) => c.fixed === false),
+        JSON.stringify(failNull && failNull.err ? failNull : failNull));
+    const failEmpty = run(['clawhub', ['douyin'], { clawhub: { capturedAt: 1, source: 'https://clawhub.ai/api/v1/skills/-/categories', categories: [] } }]);
+    check('词表解析为空（categories=[]）时派生入口仍可用',
+        Array.isArray(failEmpty) && failEmpty.length === 1 && failEmpty[0].value === 'douyin' && failEmpty[0].fixed === false,
+        JSON.stringify(failEmpty && failEmpty.err ? failEmpty : failEmpty));
+    const failAbsent = run(['clawhub', ['douyin'], { skillsmp: smpVocab }]);
+    check('该源在分组里缺键时派生入口仍可用',
+        Array.isArray(failAbsent) && failAbsent.length === 1 && failAbsent[0].fixed === false,
+        JSON.stringify(failAbsent && failAbsent.err ? failAbsent : failAbsent));
+    // browse.sh 没有词表 ⇒ 派生 chip 仍保留（不关入口）。这条锁「无词表市场用派生」。
+    check('browse.sh 无词表时派生 chip 保留', Array.isArray(other) && other.length === 1 && other[0].value === 'page-derived-slug', JSON.stringify(other && other.err ? other : other));
     const smp = run(['skillsmp', ['page-derived-slug'], bySource]);
-    check('skillsmp 下仍是自己的词表（0.5.151 行为不回退）', Array.isArray(smp) && smp.length === 2 && smp[0].value === 'debugging' && smp[0].totalAll === 532411, JSON.stringify(smp && smp.err ? smp : smp));
+    check('skillsmp 下仍是自己的词表（0.5.151 行为不回退，且不含派生）', Array.isArray(smp) && smp.length === 1 && smp[0].value === 'debugging' && smp[0].totalAll === 532411, JSON.stringify(smp && smp.err ? smp : smp));
     // Y3 盲区：把 legacy 判据写成「没有 skillsmp 键就算旧形状」时，
     // 「分组但某一路还没缓存」这种真实状态（冷 skillsmp、热 clawhub）会整排丢 chip。
     const partial = run(['clawhub', ['page-derived-slug'], { skillsmp: null, clawhub: chVocab }]);
-    check('分组形状里另一路尚未缓存时仍取本市场词表', Array.isArray(partial) && partial.length === 15 && partial[0].value === 'integrations', JSON.stringify(partial && partial.err ? partial : { n: partial.length }));
+    check('分组形状里另一路尚未缓存时仍取本市场词表', Array.isArray(partial) && partial.length === 14 && partial[0].value === 'integrations', JSON.stringify(partial && partial.err ? partial : { n: partial.length }));
     const partial2 = run(['clawhub', ['page-derived-slug'], { clawhub: chVocab }]);
-    check('分组形状缺 skillsmp 键也不得当成旧形状', Array.isArray(partial2) && partial2.length === 15, JSON.stringify(partial2 && partial2.err ? partial2 : { n: partial2.length }));
+    check('分组形状缺 skillsmp 键也不得当成旧形状', Array.isArray(partial2) && partial2.length === 14, JSON.stringify(partial2 && partial2.err ? partial2 : { n: partial2.length }));
     const crossed = run(['clawhub', ['page-derived-slug'], { clawhub: smpVocab, skillsmp: smpVocab }]);
     check('词表串味（clawhub 位上放 skillsmp 的词表）时按来源拒绝', Array.isArray(crossed) && crossed.length === 1, JSON.stringify(crossed && crossed.err ? crossed : crossed));
     const wire = lines.find((l) => l.includes('const vocabChips = categoryChipsForSource('));

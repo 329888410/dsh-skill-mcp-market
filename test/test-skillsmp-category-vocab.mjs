@@ -310,8 +310,12 @@ const vocab = (expectedVocab || []).map((c) => ({ slug: c.slug, name: c.name, to
 const merged = runClientFn('mergeCategoryVocab', [['weird-derived-slug'], { capturedAt: 1, categories: vocab }]);
 if (merged && merged.err) skip('词表合并可执行', merged.err);
 if (Array.isArray(merged)) {
-  check('词表行与页内派生 chip 合并、词表按条数降序在前',
-      merged.length === vocab.length + 1 && merged[0].value === 'debugging' && merged[0].fixed === true,
+  // 0.5.155 契约修正：有词表时 chip 只来自词表。旧契约把页内派生值一律追加在词表之后，
+  // 而 clawhub 的派生值来自 clawhubCategoryOf 的 topics[0] 兜底（作者自由标签），
+  // 于是 douyin/抖音/tiktok/kuaishou/json/ai-tools/database 混进分类行——既与 14 类不可比、
+  // 自身重复（douyin 与 抖音 同义），点上去上游还回 400。词表缺失时才用派生（不关入口）。
+  check('有词表时 chip 只来自词表（派生自由标签不得混入）',
+      merged.length === vocab.length && merged[0].value === 'debugging' && merged[0].fixed === true,
       'n=' + merged.length + ' first=' + JSON.stringify(merged[0]));
   // 面板只展示前 CAT_CHIP_FOLD 个 chip，所以只验第一条是不是最大不够：上游页面顺序里排第 26 位的
   // code-quality（203,368 条）会被挤到窗口外，窗口里留下的却是 domain-utilities（17,113 条）。
@@ -328,10 +332,14 @@ if (Array.isArray(merged)) {
   check('chip 的 value 恒是 slug（面板发上游的只能是 slug，不能是显示名）',
       merged.every((c) => /^[a-z0-9][a-z0-9-]*$/.test(String(c.value))),
       JSON.stringify(merged.filter((c) => !/^[a-z0-9][a-z0-9-]*$/.test(String(c.value))).map((c) => c.value)));
-  check('页内派生 chip 保留 fixed=false 且排在词表之后',
-      merged.some((c) => c.fixed === false && c.value === 'weird-derived-slug')
-      && merged[merged.length - 1].value === 'weird-derived-slug',
+  check('词表在手时不产出 fixed=false 的派生 chip',
+      !merged.some((c) => c.fixed === false),
       JSON.stringify(merged.filter((c) => c.fixed === false).map((c) => c.value)));
+  // 派生值若本身就在词表里，去重后不能出现第二条同值 chip（防把过滤写成追加）。
+  const dupIn = runClientFn('mergeCategoryVocab', [['debugging'], { capturedAt: 1, categories: vocab }]);
+  check('派生值恰为词表内 slug 时不产生重复 chip',
+      Array.isArray(dupIn) && dupIn.length === vocab.length && dupIn.filter((c) => c.value === 'debugging').length === 1,
+      'n=' + (Array.isArray(dupIn) ? dupIn.length : JSON.stringify(dupIn)));
   check('词表为空时退回页内派生（不返回空 chip 集合）',
       (() => { const m = runClientFn('mergeCategoryVocab', [['backend'], null]); return Array.isArray(m) && m.length === 1 && m[0].value === 'backend'; })(),
       JSON.stringify(runClientFn('mergeCategoryVocab', [['backend'], null])));
@@ -354,7 +362,7 @@ const scoped = (args) => {
 };
 // 0.5.153 起词表按源分组下发（{ skillsmp: {...}, clawhub: {...} }），这里传同一形状。
 const smp = scoped(['skillsmp', ['weird-derived-slug'], { skillsmp: { capturedAt: 1, source: 'https://skillsmp.com/zh/categories', categories: vocab } }]);
-check('skillsmp 下词表 chip 照常生效', Array.isArray(smp) && smp.length === vocab.length + 1 && smp[0].fixed === true, JSON.stringify(smp && smp.err ? smp : (smp || []).slice(0, 2)));
+check('skillsmp 下词表 chip 照常生效（且不含派生自由标签）', Array.isArray(smp) && smp.length === vocab.length && smp[0].fixed === true, JSON.stringify(smp && smp.err ? smp : (smp || []).slice(0, 2)));
 for (const other of ['clawhub', 'skills.sh', 'browse.sh', 'lobehub', 'skillhub', 'modelscope', 'trusttools', 'all', '', undefined]) {
   const got = scoped([other, ['weird-derived-slug'], { skillsmp: { capturedAt: 1, source: 'https://skillsmp.com/zh/categories', categories: vocab } }]);
   check('非 skillsmp（' + String(other) + '）不得出现词表 chip',
@@ -368,14 +376,14 @@ check('派生 chip 在任意源都保留（关掉入口不是兜底）', (() => 
 const foreign = scoped(['skillsmp', ['weird-derived-slug'], { skillsmp: { capturedAt: 1, source: 'https://other-market.example/categories', categories: vocab } }]);
 check('词表来源不是 skillsmp 页面时即使当前源是 skillsmp 也不接受', Array.isArray(foreign) && foreign.length === 1 && foreign[0].fixed === false, JSON.stringify(foreign && foreign.err ? foreign : foreign));
 const noSource = scoped(['skillsmp', ['weird-derived-slug'], { skillsmp: { capturedAt: 1, categories: vocab } }]);
-check('词表未声明来源时按 skillsmp 词表接受（旧快照不落 source 也要能用）', Array.isArray(noSource) && noSource.length === vocab.length + 1, JSON.stringify(noSource && noSource.err ? noSource : noSource.length));
+check('词表未声明来源时按 skillsmp 词表接受（旧快照不落 source 也要能用）', Array.isArray(noSource) && noSource.length === vocab.length, JSON.stringify(noSource && noSource.err ? noSource : noSource.length));
 // live 判别（0.5.153 装完后实测）：面板 client.js 会热更新，而宿主进程内的 index.js
 // 要等重启——于是出现「新面板 + 旧服务端」的组合：旧服务端下发的是未分组的单一词表对象
 // {capturedAt,source,categories}。当时实测 skillsmp 那排带条数 chip 整排消失（只剩派生），
 // 这是我引入的向后不兼容：面板改吃分组形状却没兼容旧形状。判据锁住旧形状仍可用。
 const legacy = scoped(['skillsmp', ['weird-derived-slug'], { capturedAt: 1, source: 'https://skillsmp.com/zh/categories', categories: vocab }]);
 check('旧服务端下发的未分组单一词表对象仍要生效（新面板+旧服务端不得丢 chip）',
-    Array.isArray(legacy) && legacy.length === vocab.length + 1 && legacy[0].fixed === true,
+    Array.isArray(legacy) && legacy.length === vocab.length && legacy[0].fixed === true,
     JSON.stringify(legacy && legacy.err ? legacy : { n: legacy.length }));
 const legacyOther = scoped(['clawhub', ['weird-derived-slug'], { capturedAt: 1, source: 'https://skillsmp.com/zh/categories', categories: vocab }]);
 check('旧形状同样不得串到别的市场', Array.isArray(legacyOther) && legacyOther.length === 1, JSON.stringify(legacyOther && legacyOther.err ? legacyOther : legacyOther));

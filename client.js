@@ -160,11 +160,19 @@ function mergeCategoryVocab(derived, vocab) {
     // name（skillsmp 中文标签）优先，label（clawhub 词表字段）次之，都没有才回落 slug。
     out.push({ value: v, label: String((r && (r.name || r.label)) || v), totalAll: Number(r && r.totalAll) || 0, fixed: true });
   }
-  for (const d of (Array.isArray(derived) ? derived : [])) {
-    const v = String(d || '').trim();
-    if (!v || seen.has(v)) continue;
-    seen.add(v);
-    out.push({ value: v, label: v, totalAll: 0, fixed: false });
+  // 0.5.155 契约修正：词表取到了就只用词表，一个派生值都不追加。
+  // 派生值来自 clawhubCategoryOf 的 topics[0] 兜底（作者自由填写的关键词），实测混进分类行的有
+  // douyin、抖音、tiktok、kuaishou、json、ai-tools、database —— 与规范 14 类不是一个维度（平台名/
+  // 文件格式/数据主题 vs「这技能干什么用」），douyin 与 抖音 还是同一事物的两种写法；且上游只认
+  // 规范 slug，点这些 chip 实测回 HTTP 400，面板兜底后显示「已忽略分类筛选」，等于点了没用。
+  // 只有词表一条都没取到（上游改版/抓取失败）才退回派生：那时分类入口仍要能用，不能关掉。
+  if (rows.length === 0) {
+    for (const d of (Array.isArray(derived) ? derived : [])) {
+      const v = String(d || '').trim();
+      if (!v || seen.has(v)) continue;
+      seen.add(v);
+      out.push({ value: v, label: v, totalAll: 0, fixed: false });
+    }
   }
   return out;
 }
