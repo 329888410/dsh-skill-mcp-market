@@ -131,7 +131,10 @@ console.log('Test 4: 面板 UI（浮窗 checkbox + 保存）');
   const foot = fi > 0 ? c.slice(Math.max(0, fi - 1600), fi + 200) : '';
   check('浮窗底部切片可取', foot.length > 800, 'foot=' + foot.length);
   check('浮窗自带全选/全不选（不是技能批量条那个）', /全选/.test(foot) && /全不选/.test(foot), foot.replace(/\s+/g, ' ').slice(0, 120));
-  check('全选只作用搜索可见项（与技能批量条同口径）', /只作用于当前搜索可见/.test(foot) || /visibleTools/.test(foot), '');
+  // 口径必须由「按钮实际改哪个集合」证明，不是由标题文案证明：M5 反向破坏把
+  // names 换成 mcpTools.toolDetails（全量清单）时，标题里的 visibleTools 仍在、旧判据照样绿。
+  check('全选集合取自已显示的 renderedTools', /const names = renderedTools\.map/.test(foot) && !/const names = mcpTools\.toolDetails\.map/.test(foot), foot.replace(/\s+/g, ' ').slice(0, 140));
+  check('全选按钮文案同口径（按 renderedTools 判定态）', /renderedTools\.length && renderedTools\.every[\s\S]{0,80}\? '全不选' : '全选'/.test(foot), '');
   check('分批未显示完时全选口径写明只算已显示', /已显示/.test(foot) || /还有.*未显示/.test(c), '');
 }
 
