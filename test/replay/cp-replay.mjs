@@ -11,6 +11,7 @@
 // 注入的 ENGINE_URL 动态 import；`node:child_process` 是内置说明符，静态 import 可行
 // （hooks.resolve 对 parentURL===CP_STUB 一律放行，不会自截成环）。
 import * as realCp from "node:child_process";
+import { existsSync } from "node:fs";
 
 const engine = await import(ENGINE_URL);
 
@@ -23,9 +24,34 @@ function splitArgs(args) {
   return { file, argv, opts, cb };
 }
 
+// 套件自带假 npx 夹具（PATH 首位目录里 npx.cmd 与 cli.cjs 同生）时，这条 npx 根本不碰网络：
+// 被档案截走会让「CLI 真收到 --category」这类读 argv 落盘文件的判据拿到 argv=null
+// （02:05 全门回放实测 lobehub 9 红）。认这对孪生文件，不认套件名——档案通道对真网络照旧生效。
+function fixtureShimActive() {
+  const p = String(process.env.PATH || "");
+  for (const dir of p.split(";")) {
+    if (!dir) continue;
+    const d = dir.replace(/^"|"$/g, "").replace(/[\\/]+$/, "");
+    if (!d) continue;
+    const hasNpx = existsSync(d + "\\npx.cmd") || existsSync(d + "/npx.cmd");
+    if (!hasNpx) continue;
+    if (existsSync(d + "\\cli.cjs") || existsSync(d + "/cli.cjs")) return true;
+    return false; // PATH 里第一个 npx 不是夹具形态：交给档案判定
+  }
+  return false;
+}
+
 export function execFile(...args) {
   const { file, argv, opts, cb } = splitArgs(args);
-  if (engine.mode() === "off" || !cb || !engine.isNetworkCli(file, argv)) {
+  // DSH_REPLAY_CLI=off：整条 CLI 通道放行（逃生阀，代价是真的 npx 会打网络——
+  // 02:08 实测那 10 个慢套件从 11s 涨回 213s，所以默认不开，靠上面的夹具识别）。
+  if (
+    engine.mode() === "off" ||
+    String(process.env.DSH_REPLAY_CLI || "") === "off" ||
+    fixtureShimActive() ||
+    !cb ||
+    !engine.isNetworkCli(file, argv)
+  ) {
     return realCp.execFile(file, argv, opts, cb);
   }
   let done = false;

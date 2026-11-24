@@ -256,6 +256,55 @@ console.log("\nTest 12: 编排器参数不许静默忽略（01:13 我传 --suite
   check("redDetail 抓到红套件行", r.some((l) => /test-x\.mjs FAIL/.test(l)), JSON.stringify(r));
 }
 
+console.log("\nTest 13: 假 npx 夹具在回放态必须放行回真（CLI 档案通道不得截走零网络的 shim）");
+{
+  // 02:05 全门回放实测：lobehub 套件自带假 npx（PATH 首位目录放 npx.cmd+cli.cjs，argv 落盘自证），
+  // 这条 npx 根本不碰网络，却被 cp-replay 当成网络动作从档案取答案 ⇒ 「CLI 真收到 --category」
+  // 读到 argv=null，9 条判据全红。修法=认这对孪生夹具文件，命中就放行回真 execFile。
+  // ⚠️ 判据必须从生产模块打进去：hooks 只把 CP_PARENTS 白名单（extra-sources/sources/
+  // lobehub-market/cli-install）的 node:child_process 换成替身，`node -e` 直接 import
+  // child_process 走的是真模块——首版这么写，关掉 fixtureShimActive 的变异照样绿（空判据）。
+  if (process.platform !== "win32") {
+    skip("假 npx 夹具仅在 win32 有意义", "process.platform=" + process.platform);
+  } else {
+    // 夹具目录放 worktree（纯 ASCII）而非 safeTempDir：这台机器的临时目录含中文用户名，
+    // npx.cmd 里写的是 UTF-8 路径、cmd.exe 按 OEM 码页读批处理 ⇒ 子 node 报
+    // ERR_MODULE_NOT_FOUND（02:47 实测，与夹具识别逻辑无关）。本判据要测的是
+    // 「夹具态 execFile 是否放行回真」，不该被路径编码绑住。真实套件自己写自己读、
+    // 同进程同码页，所以它在 safeTempDir 下能跑通。
+    const shimDir = join(W, "test", ".t13-shim-" + process.pid);
+    mkdirSync(shimDir, { recursive: true });
+    const argvOut = join(shimDir, "argv.json");
+    const nodeBin = process.execPath;
+    writeFileSync(join(shimDir, "cli.cjs"),
+      'const fs=require("fs");fs.writeFileSync(process.env.LH_ARGV_OUT,JSON.stringify(process.argv.slice(2)));process.stdout.write("{\\"categories\\":[]}")', "utf8");
+    writeFileSync(join(shimDir, "npx.cmd"), '@echo off' + "\r\n" + '"' + nodeBin + '" "' + join(shimDir, "cli.cjs") + '" %*' + "\r\n", "utf8");
+    // 从生产入口 searchLobeHubMarket（其 runCli 的 execFile 会被 hooks 重定向到 cp-replay）打进：
+    // 空档案 + 夹具在 PATH ⇒ 放行回真则 argv.json 落盘；替身若截走则 REPLAY-MISS、argv.json 不生成。
+    const script = `
+      import { searchLobeHubMarket } from "./src/lobehub-market.js";
+      import { makeCache } from "./src/sources.js";
+      try {
+        const r = await searchLobeHubMarket({ query: "agent", cache: makeCache(process.env.LH_CACHE) });
+        console.log("RES=" + JSON.stringify(r && r.items ? r.items.length : r).slice(0, 60));
+      } catch (e) { console.log("ERR=" + JSON.stringify({ code: e && e.code, msg: String(e && e.message).slice(0, 700) })); }
+    `;
+    const rep = await run(script, {
+      DSH_REPLAY: "1",
+      PATH: shimDir + ";" + process.env.PATH,
+      LH_ARGV_OUT: argvOut,
+      LH_CACHE: join(safeTempDir(), "dsh-lh-cache-" + process.pid),
+    });
+    const wrote = existsSync(argvOut) ? readFileSync(argvOut, "utf8") : "";
+    check("夹具态生产 CLI 调用放行回真（argv 落盘含 --q agent）", wrote.includes("--q") && wrote.includes("agent"),
+      "argv.json=" + (wrote ? wrote.slice(0, 120) : "(无)") + " stdout=" + String(rep.stdout || "").trim().slice(0, 700) + " err=" + String(rep.stderr || "").slice(0, 200));
+    const missed = /REPLAY-MISS|REPLAY_MISS/.test(String(rep.stdout || "") + String(rep.stderr || ""));
+    check("夹具态没有 REPLAY-MISS 逃逸（不该被档案截）", !missed, String(rep.stdout || rep.stderr || "").slice(0, 120));
+    server.__hits.length = 0;
+    try { rmSync(shimDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 server.close();
 try { rmSync(storeDir, { recursive: true, force: true }); } catch {}
 
