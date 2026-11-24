@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.167
+- 一句话验收入口落进仓库（监测方 07:21 需求）：node test/live-verify.mjs 一条命令同时回答「服务端已换代 + 五项红转绿」。端口自发现（Get-NetTCPConnection，回退 netstat）、不写死 60027；退出码 0=PASS / 1=LIVE-FAIL / 3=NOT-RUN（没找到 RPC 端点，显式声明「不写 PASS/FAIL」）/ 4=STALE-SERVER（进程内仍是旧码，该结论先于一切行结论）。
+- 版本指纹只认 hint 措辞（05:23 误判的根因固化成判据）：git show 逐字核对 ⇒ v0.5.164 写「分类在可达的」，v0.5.165 起正常态写「分类在已取回的」、中断态写「分类取数中断」；「可达集合外的分类会漏」两版都有 ⇒ 不是指纹。fingerprintOf 先判 NEW_MARKS（含"分类在已取回的""取数中断"）再判 OLD_MARKS（"分类在可达的"），判据家另加两条 git 源码互证（tag 历史缺失时显式 SKIP）。
+- 六项判据（14 行读数）：①版本指纹 ②无 query 浏览态基线 + 2 硬类（市场推广/开发工具）+ 4 软类 ③分类过滤真生效（开发工具 vs 科研工具 total 不同，缓存命中也算真生效）④lobehub 246 类窗口/窗外自洽复算（win=32 333,426 / out=214 743 / sum=334,169，与面板文案逐位吻合）⑤冷词空结果不造数 + __cat_other 信息项 ⑥硬类浏览态墙钟 < 88s（0.5.164 的 90s abort 前沿）。
+- 「监控」不可当硬判据（监测方踩过两次的坑，已落成口径）：词表里有 slug、同词浏览态 query=监控 total=1,512 有货，但 query=pdf + 监控 分类态 items=0 total=0 degraded=[] categoryNote=""——这不是谎报，是可达集合外覆盖缺口（45,000 行可达 vs 目录 88,993 条）。判据 B 只把已证有货的两类当硬判据，其余软报为 GAP；GAP 绝不判红，也绝不与「失败」混写：「没有匹配 / 覆盖缺口 / 失败 / 未测成」四态分开。
+- 词表读取与出参字段形状锁：settings.get 的词表必须读 .categories（读 .rows 恒 0 ⇒ 会把「渲染正常」误判成「词表缺失」）；skills.search 的提示在出参 hints（数组）不是 hint（读 .hint 得 undefined ⇒ 误判「没接线」）。pickHint 按「源名＋全角冒号：」前缀取 modelscope 那条。五源 categories 条目形状各不相同（skillsmp totalAll / clawhub 无计数 / lobehub count+totalAll / trusttools tags / modelscope 仅 slug+label）⇒ 无法从 modelscope 词表预挑「有货」分类，硬判据只能是已实测的两类。
+- 判据自身形状锁 + 六向变异：M1 NEW_MARKS 放宽成「可达」⇒ 3 红（正是 05:23 那次自伤的形状）；M2 hints→hint ⇒ 1；M3 summarize 把 GAP 计入硬判据 ⇒ 1；M4 vocabOf 读 rows ⇒ 1；M5 摘掉 STALE-SERVER 优先 ⇒ 1；M6 墙钟上限改 Infinity ⇒ 2；逐向还原后文件与原版逐字节一致。test-live-verify.mjs 55/0，已登记进 test:chain（68→69 段），version 0.5.166→0.5.167。
+- 现网实跑（进程内仍 0.5.164，未重启）⇒ 判据真红且红因是真状态：RESULT: STALE-SERVER exit=4，LIVE-FAIL=1（版本指纹 old）、GAP=2（监控类 0 条、__cat_other 服务端残留旧入口），其余 11 行 PASS。⇒ 用户点『重启应用与 Host』后同一条命令应无 LIVE-FAIL 转绿。
+- 一键命令自身的第一个缺陷（现网实跑 --json 才暴露，离线判据全绿时看不见）：--json 分支先打 JSON 再打 RESULT 行，消费者 JSON.parse 直接在 position 2637 炸。修法=asJson 分支自己打单份对象（result/port/fingerprint/byClass/rows）并在分支内退出，文本模式不变；判据家补 5 条锁（分支存在且在 RESULT 行之前退出、分支内自己 exit、打的是含 verdict 的单份对象、JSON 打印在 exit 之前、exit 不得恒退 0）。变式：M7 分支改打 RESULT + 恒退 0 ⇒ 1 红；M8 整段删除分支 ⇒ 3 红；M9 退出码收敛为 0 ⇒ 1 红。教训：「机器消费的输出」必须真跑一次消费者（JSON.parse）才算验收，只看人类可读的文本模式会把这类缺陷全部盖住。test-live-verify 55→61 passed
+- __cat_other 的判读降级（口径更正）：0.5.165 修的是客户端下发（不再把合成入口发给上游，已 DOM 复验），服务端旧入口仍在 ⇒「上游不可达」那句谎文案对 __cat_other 仍会出现。live-verify 把它列为 GAP 信息项而非回归判据，并写明理由：面板路径已无该下发，服务端残留旧入口不构成回归。
+- 门提速（PR #1）档案重录已兑现：监测方 07:21 整门真网络录制 69/69 total 1076s ⇒ 冷缓存回放串行 69/69 78s、parallel=4 墙钟 36s、未命中 0；档案 271 条/11.7MB 双份（scratch + test/replay/store-full2/，.gitignore store/ 改成 store*/）。全门 replay 凭据已贴 PR #1（issuecomment-7147220741）。口径固化：所有回放判据必须冷缓存跑（热缓存会假 miss，06:20 热轮 1 条/冷轮 0 条）；定向补录必须带 --import=…/test/replay/preload.mjs，只设 DSH_REPLAY=record 不注 preload 时请求真成功但一条不落档，看着像「补录无效」。
+
 ## 0.5.166
 - 修「browse→search 形态切换不复位 sort」（0.5.164 就入库的 RED 判据 test/test-sort-form-switch.mjs 本批转绿 20/0）：用户在 clawhub 浏览态选了「热门」，再输入关键词，请求仍带着该形态不支持的 trending——UI 下拉里已经没有这个选项，请求却还在发，正是 0.5.101 起反复判死的「选了没反应」的排序变体
 - 修法：client.js 新增纯函数 keepSortForForm(sortKey, entry, hasQuery)（:26-31，内部复用 capsFor，Test 3 单一口径成立），reqSort 兜底从裸 sort state 改走它；能力表经 liveRef 快照读（sortCaps 进 liveRef.current），searchSkills 的 useCallback deps 保持 [sort, liveRef, source, size] 不变——deps 里放 sortCaps 会让能力表一到就换函数，tab effect 把整页列表再搜一次
