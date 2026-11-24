@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.161
+
+- 收 S1「空结果与取数失败不可区分」：查询词非空时任何源的失败都被「没有找到匹配的技能。」吞掉。根因在 src/sources.js 的 sourceErrors 判据 `items.length > 0 || String(query || "").trim()` —— 它只在**空查询**时才披露 degraded，而面板 client.js 在拿不到任何 reason 时兜底成「没有找到匹配的技能。」，用户看到的是一句谎话。现在只要 items 为空且有 degraded，就逐源点名披露（`源名：原因` 用「；」连接），查询词是否非空不再影响诚实性（三态判据：非空 query+degraded 点名 / 非空 query 无 degraded 仍说没找到 / 空 query+degraded 保持 0.5.160 行为不回归）。
+- 失败形态分类取代一刀切截断：classifyFailure 对已知形态各出诚实文案——超时（原样转述该源预算秒数）、HTTP 状态码（「上游返回 HTTP N（该来源拒绝或找不到这次请求）」）、取数脚本异常（「该来源的取数脚本异常，未取到数据」，clawhub 的 python traceback 不再把多行原文喷进面板）、网络连接失败（「网络连接失败，该来源不可达（≤56 字原因）」）、响应形态不符；未知形态兜底 onelineFailure 折叠换行+单行 80 字截断。截断只是兜底，不是归类手段。
+- 面板缓存命中路径同步诚实：searchSkills 的 400ms 缓存结果现在携带 sourceErrors，命中缓存时复述上一轮的失败原因，不再被无条件 setNotice("") 抹掉（client.js 缓存对象与命中分支两处）。
+- 判据：test-search-latency-recovery Test 9 真 import searchSkills + 注入 handler 出 RED（首跑 72 passed, 9 failed；断言的是返回值三态与分类文案，不是源码文本），改后 83/0（+16 条，含行长度兜底与逐源点名）；test-search-fanout-latency 新增 Test 20 直接执行 client.js 的 searchSkills 函数体（+7 条：面板逐源披露、缓存进结果、缓存复述、无异常被 catch 吞掉）——反向用 HEAD 版 client.js 实测 201/2，两条 FAIL 正是缓存判据，证明判据真咬人。变异六向 M1–M6 全杀（src/sources.js：还原旧判据/超时文案改死/去 80 字兜底/取数脚本正则改死/describeFailure 用原始 error；M3 首跑存活属等价变异，补行长度判据后 82/1 抓住），逐向还原 sha 一致（base 18172bd2e360bf84）。
+- test-suite-inventory 新增残渣判据（+1 条，12/0）：仓库根不得出现字面环境变量目录（%…%、$… 开头）或 GUID 式缓存树。根因取证：shell 子进程环境缺 SYSTEMDRIVE 时，Windows shell 把字面量 `%SystemDrive%` 当相对路径在 cwd 下重建整棵浏览缓存（5 个 .db、990504B），仓库里任何脚本都不含该字符串——此前两轮 grep 排查猜错的原因。RED/GREEN 实测：造目录 10/2、删除 12/0；且把该目录写进 .gitignore 使 git status 失明后新判据仍 11/1 抓住（磁盘扫描与 git-status 判据不等价）。仓库根与工作区根两份既有残渣已逐一取证删除。
+- 门禁：本轮首跑 62/64 —— test-sort-honesty TIMEOUT 是并发窗口内上游网络抖动（单跑 6.8s 12/0 绿，附日志），test-profile-sync 报 profile:client.js/profile:src\sources.js stale 是发布前中间态（0.5.160 段已有同类先例记录，装本版后转绿）。发布后在干净 HEAD 重跑全量门并附原文。
+- 效率项口径不变：「每源预算差异化」中改变可见条目数的那半仍待用户决策；本轮全部改动不改变任何成功路径的可见条目集合。
+
 ## 0.5.160
 
 - 收 0.5.159 的 CI 红灯：产品代码逐字节不动，只修一个被正常重构打断的**假红判据**（`test/test-func-fixes.mjs` Test 1）。

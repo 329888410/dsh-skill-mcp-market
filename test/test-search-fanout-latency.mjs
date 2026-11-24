@@ -959,6 +959,85 @@ console.log('Test 19: SkillHub evaluation 接入详情弹层（打开才请求�
   check('不可达时显式降级告知', cli.includes('暂不可达'), '');
   check('降级文案不伪造分数', cli.includes('暂不可达'), '');
 }
+console.log('');
+console.log('Test 20: 面板空列表必须复述逐源失败（S1 展示侧；真跑 client.js 的 searchSkills 函数体）');
+{
+  const fs20 = await import('node:fs');
+  const path20 = await import('node:path');
+  const Wroot = path20.resolve(import.meta.dirname, '..');
+  const c = fs20.readFileSync(path20.join(Wroot, 'client.js'), 'utf8');
+  const bodyStart = 'const searchSkills = useCallback(async (text, options) => {';
+  const bodyEnd = '}, [sort, liveRef, source, size]);';
+  const bgn = c.indexOf(bodyStart);
+  const edn = c.indexOf(bodyEnd, bgn);
+  if (bgn < 0 || edn < bgn) throw new Error('Test 20 无法定位 searchSkills 函数体');
+  const body = c.slice(bgn + bodyStart.length, edn);
+  // 注入的自由变量里必须含 trustedTotal/totalBaseRef：Test 14 没注入它们，于是那条
+  // 路径其实是被 catch 吞掉的 ReferenceError —— 面板 notice 判据要真的跑到底就得补齐。
+  const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
+    '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage,' +
+    '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setError, setBusy,' +
+    '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight, trustedTotal, totalBaseRef } = deps;' +
+    String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
+  const mkEnv = (payload, key, seed) => {
+    const notices = [];
+    const env = {
+      liveRef: { current: { source: 'trusttools', category: 'all' } },
+      resultCacheRef: { current: seed ? { [key]: seed } : {} },
+      reqSeqRef: { current: 0 },
+      totalBaseRef: { current: {} },
+      size: 24,
+      sort: '',
+      skillCacheKey: () => key,
+      inflightRef: { current: new Set() },
+      shouldSkipInflight: () => false,
+      resolvePageSize: (o, s) => (o && o.size) || s,
+      trustedTotal: (t) => t,
+      setSkills: () => {}, setSkillsPage: () => {}, setSkillsTotalPages: () => {}, setSkillsTotal: () => {},
+      setSkillsHasMore: () => {}, setServerFacet: () => {}, setError: (e) => { if (String(e === null || e === undefined ? '' : e) !== '') notices.push('ERR:' + e); }, setBusy: () => {},
+      setNotice: (t) => notices.push(t),
+      call: async () => payload,
+    };
+    return { env, notices, run: mk(env) };
+  };
+  const failing = {
+    items: [], pages: 0, total: 0, hasMore: false, hints: [],
+    degraded: [{ source: 'trusttools', error: '来源响应超时（预算 12s），已跳过' }],
+    sourceErrors: ['trusttools：响应超时（预算 12s），已跳过'],
+  };
+  const t1 = mkEnv(failing, 'se-key-1');
+  await t1.run('pdf', { source: 'trusttools', page: 1 });
+  const seen = t1.notices[t1.notices.length - 1] || '';
+  check('空列表 + 逐源失败：面板说的是那次失败，不是「没有找到匹配的技能」',
+    /trusttools/.test(seen) && /超时/.test(seen) && !/没有找到匹配的技能/.test(seen), JSON.stringify(t1.notices));
+  check('失败披露不再走「部分来源不可用」这种不含原因的老句式', !/部分来源不可用/.test(seen), seen);
+  check('面板侧没有任何异常被 catch 吞掉', !t1.notices.some((x) => String(x).startsWith('ERR:')), JSON.stringify(t1.notices));
+
+  const trulyEmpty = { items: [], pages: 1, total: 0, hasMore: false, hints: [], degraded: [], sourceErrors: ['没有找到匹配的技能。'] };
+  const t2 = mkEnv(trulyEmpty, 'se-key-2');
+  await t2.run('zzxqq', { source: 'trusttools', page: 1 });
+  const seen2 = t2.notices[t2.notices.length - 1] || '';
+  check('全源正常空：面板仍说没有匹配（不许反过来谎报故障）',
+    /没有/.test(seen2) && !/不可达|超时|部分来源/.test(seen2), JSON.stringify(t2.notices));
+
+  const t3 = mkEnv(failing, 'se-key-3');
+  await t3.run('pdf', { source: 'trusttools', page: 1 });
+  const stored = t3.env.resultCacheRef.current['se-key-3'];
+  check('失败披露随结果一起进缓存（否则第二次同条件命中缓存时无从复述）',
+    Boolean(stored) && Array.isArray(stored.sourceErrors) && stored.sourceErrors.length === 1,
+    JSON.stringify(stored && stored.sourceErrors));
+
+  const t4 = mkEnv({ ...failing, sourceErrors: [], degraded: [] }, 'se-key-4', {
+    items: [], pages: 0, total: 0, hasMore: false, hints: [], degraded: failing.degraded,
+    sourceErrors: failing.sourceErrors,
+  });
+  await t4.run('pdf', { source: 'trusttools', page: 1 });
+  const hitNotice = t4.notices[0] || '';
+  check('缓存命中也要复述上一轮的失败原因（不能被空 notice 抹掉）',
+    /trusttools/.test(hitNotice) && /超时/.test(hitNotice), JSON.stringify(t4.notices));
+
+  check('函数体读的是 RPC 的 sourceErrors（不是面板自己另造一套口径）', body.indexOf('d.sourceErrors') >= 0, '');
+}
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
 

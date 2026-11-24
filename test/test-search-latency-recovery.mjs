@@ -269,5 +269,53 @@ console.log('Test 8: 每源预算可配置，但默认表为空 ⇒ 可见结果
   check('合并键的预算段走 budgetKey（空表时逐字符等于旧的 String(budgetMs)）', /budgetKey\(picked, budgetMs, budgetOverrides\)/.test(code6) && /return same \? String\(budgetMs\)/.test(code6), '');
 }
 
+console.log('');
+console.log('Test 9: 空结果与取数失败必须可区分（非空 query 不再吞掉失败披露，S1）');
+{
+  // 真实形态取自 0.5.161 逐源 sweep（C:/Users/Public/dsh-scratch/probe161-sweep.log）：
+  //   trusttools/lobehub 撞满预算、skillhub HTTP 400、clawhub python traceback、browse.sh fetch failed。
+  // 判据是 searchSkills 的返回值，不是文案正则：同一批 handler、只差 query 是否为空。
+  const shapes = {
+    tmo: async () => { await sleep(400); return { items: [], total: 0 }; },
+    http: async () => { throw new Error('SkillHub HTTP 400'); },
+    script: async () => { throw new Error('python 取数失败：Traceback (most recent call last):' + String.fromCharCode(10) + '  File ' + String.fromCharCode(34) + '<string>' + String.fromCharCode(34) + ', line 4, in <module>' + String.fromCharCode(10) + '    with urllib.request.urlopen(req) as r:'); },
+    net: async () => { throw new Error('fetch failed'); },
+    okEmpty: async () => ({ items: [], total: 0, totalPages: 1 }),
+  };
+  const seOf = (r) => (r.sourceErrors || []).join(' | ');
+  const byName = (r, n) => (r.sourceErrors || []).find((x) => x.startsWith(n + '：')) || '';
+  const psFail = { query: 'pdf', source: 'all', page: 1, pageSize: 24, handlers: shapes, cache: freshCache(), budgetMs: 120 };
+  const rA = await searchSkills(psFail);
+  check('(a) 非空 query + 四个源取数失败：sourceErrors 必须逐源点名', (rA.sourceErrors || []).length === 4, JSON.stringify(rA.sourceErrors) + ' degraded=' + dgOf(rA));
+  check('(a) 不许把上游失败说成「没有找到匹配的技能」', !/没有找到匹配的技能/.test(seOf(rA)), seOf(rA));
+  check('(a) 撞满预算的源说「响应超时」并带该源预算秒数', /响应超时/.test(byName(rA, 'tmo')), byName(rA, 'tmo'));
+  check('(a) 上游回 4xx 的源报出状态码（不是笼统不可达）', /HTTP 400/.test(byName(rA, 'http')), byName(rA, 'http'));
+  check('(a) 取数脚本异常只说脚本异常，不把 traceback 喷进面板', /取数脚本异常/.test(byName(rA, 'script')) && !/Traceback/.test(byName(rA, 'script')), byName(rA, 'script'));
+  check('(a) 网络连接失败如实说不可达', /网络连接失败|不可达/.test(byName(rA, 'net')), byName(rA, 'net'));
+  check('(a) 披露文案单行且不超过 80 字（截断只作兜底）', (rA.sourceErrors || []).every((x) => x.length <= 80 && !/[\r\n\t]/.test(x)), JSON.stringify((rA.sourceErrors || []).map((x) => x.length)));
+  check('(a) 成功但空的源不得混进失败披露', !/okEmpty/.test(seOf(rA)), seOf(rA));
+  const allOk = { query: 'pdf', source: 'all', page: 1, pageSize: 24, handlers: { okEmpty: shapes.okEmpty }, cache: freshCache(), budgetMs: 120 };
+  const rB = await searchSkills(allOk);
+  check('(b) 全部成功、确实没匹配：仍要说没有匹配', /没有/.test(seOf(rB)) && (rB.sourceErrors || []).length === 1, JSON.stringify(rB.sourceErrors));
+  check('(b) 不许谎报上游不可达（没有任何源失败）', !/不可达|超时|HTTP|脚本/.test(seOf(rB)), seOf(rB));
+  const psBlank = { ...psFail, query: '', cache: freshCache() };
+  const rC = await searchSkills(psBlank);
+  check('(c) 空 query + 取数失败：点名失败源的老行为不回归', (rC.sourceErrors || []).length === 4 && /tmo：/.test(seOf(rC)), JSON.stringify(rC.sourceErrors));
+  const rD = await searchSkills({ ...allOk, query: '', cache: freshCache() });
+  check('(d) 空 query + 全源正常空：仍是「暂时没有取到数据」口径', /暂时没有取到数据/.test(seOf(rD)), seOf(rD));
+  // (e) 上游原文超长时（真实 clawhub traceback / 长 timeout 文案都能到几百字），单条披露必须被
+  // 压回一行 80 字以内，而且截断不许吞掉真实原因——这锁的是 describeFailure 的最后兜底。
+  const huge = '来源响应超时（预算 12s），已跳过 ' + '详'.repeat(200);
+  const rE = await searchSkills({ query: 'pdf', source: 'all', page: 1, pageSize: 24, handlers: { huge: async () => { throw new Error(huge); } }, cache: freshCache(), budgetMs: 120 });
+  check('(e) 上游原文再长，单条披露也压回 80 字以内且不含换行', (rE.sourceErrors || []).length === 1 && (rE.sourceErrors[0] || '').length <= 80 && !/[\r\n]/.test(rE.sourceErrors[0] || ''), JSON.stringify((rE.sourceErrors || []).map((x) => x.length)));
+  check('(e) 截断不许吞掉真实原因（超时仍写成超时）', /响应超时/.test(seOf(rE)), seOf(rE).slice(0, 90));
+  const fs9 = await import('node:fs');
+  const path9 = await import('node:path');
+  const src9 = fs9.readFileSync(path9.resolve(import.meta.dirname, '..', 'src/sources.js'), 'utf8').replace(/\r\n/g, String.fromCharCode(10));
+  const code9 = src9.split(String.fromCharCode(10)).filter((l) => { const t = l.trimStart(); return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*'); }).join(String.fromCharCode(10));
+  check('源码锁：查询词非空不再是屏蔽失败披露的条件（旧判据整行消失）', !/items\.length > 0 \|\| String\(query/.test(code9), '');
+  check('源码锁：失败披露走逐源分类函数（不是一个 slice 截断了事）', (code9.match(/describeFailure\(entry\.source, entry\.error\)/g) || []).length === 1, String((code9.match(/describeFailure/g) || []).length));
+}
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

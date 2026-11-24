@@ -683,6 +683,39 @@ async function fanOnce({ query, source, cache, sort, category, handlers, budgetM
   }
 }
 
+// ── 空结果与取数失败必须区分开（逐源实测的 S1 缺陷）──────────────────────────
+// 旧判据把「查询词非空」当成用户在搜索，于是一次上游超时会被面板说成「没有找到匹配的
+// 技能」。真实失败有四种形态（0.5.161 逐源 sweep 取证）：撞满预算的超时、上游 HTTP 4xx、
+// 取数脚本异常（python traceback）、纯网络连接失败。它们必须各说一句实话，且绝不把多行
+// 原始输出原样塞进面板：先折叠成一行，再按已知形态归类，截断只是兜底、不是归类手段。
+const FAILURE_DETAIL_CAP = 56;
+const FAILURE_LINE_CAP = 80;
+const onelineFailure = (text) => String(text == null ? "" : text)
+  .replace(/[\r\n\t]+/g, " ")
+  .replace(/ {2,}/g, " ")
+  .trim();
+
+// 单个来源的失败归类。超时文案由 fanOutSources 写好（「来源响应超时（预算 Ns），已跳过」，
+// 秒数是该源自己那份预算），这里原样转述、绝不改写数字；其余形态各归各的原因。
+const classifyFailure = (errorText) => {
+  const msg = onelineFailure(errorText);
+  if (/响应超时/.test(msg)) return msg.replace(/^来源/, "");
+  const http = msg.match(/HTTP\s+(\d{3})/i);
+  if (http) return "上游返回 HTTP " + http[1] + "（该来源拒绝或找不到这次请求）";
+  if (/取数脚本|Traceback|urlopen|urllib/.test(msg)) return "该来源的取数脚本异常，未取到数据";
+  if (/fetch failed|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|UND_ERR|getaddrinfo|network/i.test(msg)) {
+    return "网络连接失败，该来源不可达（" + (msg.length > FAILURE_DETAIL_CAP ? msg.slice(0, FAILURE_DETAIL_CAP) : msg) + "）";
+  }
+  if (/非 JSON|形态不符|SyntaxError|Unexpected token/.test(msg)) return "上游响应形态不符（不是可解析的数据）";
+  return msg ? (msg.length > FAILURE_DETAIL_CAP ? msg.slice(0, FAILURE_DETAIL_CAP) : msg) : "本轮未取到数据（上游未给出原因）";
+};
+
+// 一条完整披露 = 源名 + 归类后的原因；整行再兜一次上限，保证面板单行可读。
+const describeFailure = (sourceName, errorText) => {
+  const line = sourceName + "：" + classifyFailure(errorText);
+  return line.length > FAILURE_LINE_CAP ? line.slice(0, FAILURE_LINE_CAP) : line;
+};
+
 export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "", category = "", handlers = null, budgetMs = DEFAULT_BUDGET_MS, budgetOverrides = null }) {
   // 注入 handlers 时（测试态）"all" 展开为注入的源集合：否则 fake handler 会被 8 个真实
   // 源淹没，测试照样打真实网络 —— 那测的就不是并发语义，而是上游当时的心情。
@@ -775,14 +808,19 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   // An empty browsing page is almost never "no matches" — it is an upstream that timed out
   // or refused us. Say so instead of showing a blank market, and name the sources that
   // failed so the user can tell "nothing here" from "could not reach it".
+  // 空列表 + 有源失败 = 上游问题，必须逐源点名。这一条与查询词是否为空无关：旧写法把
+  // 「查询词非空」排除在外，于是「搜 pdf 而 trusttools 撞满预算」被面板说成「没有找到匹配
+  // 的技能」——那是把网络故障谎报成内容不存在。全源正常返回空才是真的没有匹配。
   const sourceErrors =
-    items.length > 0 || String(query || "").trim()
+    items.length > 0
       ? []
       : degraded.length
-        ? degraded.map((entry) => `${entry.source} 不可达：${entry.error}`.slice(0, 200))
+        ? degraded.map((entry) => describeFailure(entry.source, entry.error))
         : hints.length
-          ? hints
-          : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
+          ? hints.map((entry) => onelineFailure(entry))
+          : String(query || "").trim()
+            ? ["没有找到匹配的技能。"]
+            : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
   // 反推兜底只在「本页确实有货、上游却没报总数」时成立。items=0 时补 (p-1)*size
   // 会凭空造数：trusttools 每页超时（items=0、total=0）时 total 竟随页码涨成 12/24 ——
   // 一个条目都没有却报「共 24 个」，属于计数与真实集合不符的口径缺陷。

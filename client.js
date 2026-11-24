@@ -903,7 +903,19 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
           if (pageNo <= 1) totalBaseRef.current[skKeyCached] = Number(cached.total) || 0;
           setSkillsHasMore(Boolean(cached.hasMore));
           setServerFacet(Boolean(cached.serverFacet));
-          if ((cached.items || []).length) setNotice('（缓存，正在刷新…）');
+          // 缓存命中先恢复旧结果；失败披露必须跟着它解释的那份结果一起复述，否则「缓存一
+          // 跳、披露就消失」——上一轮空列表的诚实文案会被这里无条件 setNotice("") 抹掉。
+          const cachedSe = cached.sourceErrors || [];
+          const cachedHints = (cached.hints || []).filter(Boolean);
+          if ((cached.items || []).length) {
+            setNotice('（缓存，正在刷新…）');
+          } else if (cachedSe.length) {
+            setNotice(cachedSe.join('；'));
+          } else if (cachedHints.length) {
+            setNotice(cachedHints.join('；'));
+          } else {
+            setNotice('');
+          }
         } else if (!append) {
           setBusy('skills.search');
         }
@@ -929,6 +941,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
               hasMore: d.hasMore,
               serverFacet: Boolean(d.serverFacet),
               hints: d.hints || [],
+              sourceErrors: d.sourceErrors || [],
               degraded: d.degraded || [],
             };
           }

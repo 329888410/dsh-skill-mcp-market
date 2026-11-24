@@ -80,9 +80,23 @@ console.log('Test 4: 仓库根不得有核验临时件（.gate.txt/.msg.txt 事�
     if (line.trimStart().startsWith('??')) {
       const p = line.slice(3).trim();
       if (p.startsWith('.')) stray.push(p);
+      // 字面环境变量目录（%SystemDrive%\ProgramData\…）＝某条命令把没展开的变量名
+      // 当成路径传给了 Windows shell，于是仓库根长出一棵真的 Windows 缓存树。它不以点开头，
+      // 点文件判据抓不到；git check-ignore 对它也无输出，只能显式点名。
+      if (/%[^%/]+%/.test(p) || p.charAt(0) === "$") stray.push(p);
     }
   }
   check('工作树无未跟踪的临时点文件', stray.length === 0, stray.join(', '));
+  // 只看 git status 不够：垃圾树一旦被 .gitignore 兜住，工作树判据永远沉默，
+  // 而磁盘上那几 MB 缓存还在原地。这里直接扫仓库根的目录名。
+  const junk = [];
+  for (const ent of fs.readdirSync(W, { withFileTypes: true })) {
+    if (!ent.isDirectory()) continue;
+    const nm = ent.name;
+    if (/%[^%]+%/.test(nm) || nm.charAt(0) === '$') junk.push(nm);
+    else if (/\{?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}?/.test(nm)) junk.push(nm);
+  }
+  check('仓库根不含字面环境变量或 GUID 式垃圾目录', junk.length === 0, junk.join(', '));
   const tracked = run(['ls-files']).split(/\r?\n/).filter(Boolean);
   const bad = tracked.filter((x) => {
     if (x.indexOf('/') >= 0) return false;
