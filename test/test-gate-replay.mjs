@@ -14,7 +14,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import http from "node:http";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { safeTempDir } from "../src/home.js";
 import * as engine from "./replay/engine.mjs";
@@ -329,6 +329,39 @@ console.log("\nTest 11: 账本可被外层编排者读取（run-gate 不得把�
   check("外层账本有内容（未命中真的记了账）", logs.length > 0, "账本空=" + logs.length);
   server.__hits.length = 0;
   try { rmSync(missRoot, { recursive: true, force: true }); } catch {}
+}
+
+console.log("\nTest 14: 显式传 env 的子进程调用必须带 ...process.env（否则 NODE_OPTIONS 在孙进程里丢，回放注入静默失效）");
+{
+  // 注入链是这样传的：门给子进程塞 NODE_OPTIONS=--import=preload，子进程再 spawn npx/curl/python。
+  // 只要生产里有一处 env 不带 ...process.env，这一层就断在那儿 ⇒ 那个孙进程走真网络，
+  // 而档案以为它被截住了（01:32 全门那轮的「假零网络」风险正是同一形状）。
+  // 03:29 扫过 src/*.js + index.js：五处显式 env 全部合规
+  // （cli-install.js:40、http.js:172/:202/:277、lobehub-market.js:61），这条锁的是「以后别改坏」。
+  const files = [];
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(join(d, e.name));
+      else if (e.name.endsWith(".js")) files.push(join(d, e.name));
+    }
+  };
+  walk(join(W, "src"));
+  files.push(join(W, "index.js"));
+  const offenders = [];
+  const compliant = [];
+  for (const f of files) {
+    const lines = readFileSync(f, "utf8").split(/\r?\n/);
+    lines.forEach((line, i) => {
+      if (!/env\s*:\s*\{/.test(line)) return;
+      const window = lines.slice(Math.max(0, i - 12), i + 1).join(" ");
+      if (!/execFile\(|spawn\(|spawnSync\(|fork\(|exec\(/.test(window)) return;
+      if (/\.\.\.process\.env/.test(line)) compliant.push(relative(W, f) + ":" + (i + 1));
+      else offenders.push(relative(W, f) + ":" + (i + 1) + " " + line.trim().slice(0, 90));
+    });
+  }
+  check("零处显式 env 丢 process.env", offenders.length === 0, offenders.join(" | "));
+  // 扫描本身要有效：现在必须真扫到那几处（扫到 0 处 = 判据是空的，02:38 的教训）。
+  check("扫描确实命中显式 env 调用点（非空判据）", compliant.length >= 5, "命中=" + compliant.length + " [" + compliant.join(", ") + "]");
 }
 
 console.log("\n" + passed + " passed, " + failed + " failed, " + skipped + " skipped");
