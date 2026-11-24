@@ -174,9 +174,14 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
   生产侧 http.js 不会被替换 ⇒ 请求真打但**不落档**（07:00 实测：不带跑出 `OK cats= 246`、
   档案里搜不到该 URL；带上同键立刻落档 13,375 B）。这条坑比边界⑧本身更容易让人误判「补录无效」。
   ⚠️**live 一键验证（0.5.167 的 `test/live-verify.mjs`）必须不带 DSH_REPLAY 跑**：fetch-patch 截一切
-  `http(s)` 含 `http://127.0.0.1` 的调用 ⇒ 带 replay 跑它会把真 RPC 判据变成档案判据或 REPLAY-MISS
-  （重启后词表/hint 会变，录进档案等于把旧进程的回答冻住）。链内入口只有离线纯函数套件
-  `test-live-verify.mjs`（零网络，`git show` 被 isNetworkCli 放行回真），这条边界把两层隔开。
+  `http(s)` 含 `http://127.0.0.1` 的调用。07:38 主树实测两种姿势：不带 ⇒ `exit=4 / RESULT: STALE-SERVER /
+  rows=14 LIVE-FAIL=1 GAP=2`（真问进程，判据成立）；带上我的 store-full2 ⇒ **`exit=1 / wall=0s /
+  TypeError: Cannot read properties of undefined (reading 'slice')`，账本 12 条未命中**。⇒ 回放态不是
+  「判据变档案」而是**硬崩**：rpc() 吞掉 MissError 后返回 json=null ⇒ `zz.categoryNote=undefined` ⇒
+  `JSON.stringify(undefined)` 得 undefined（不是字符串）⇒ `.slice` 炸（`live-verify.mjs:214`，同形写法
+  `:219` 有 `|| []` 守卫所以没事）。崩了就没有 verdict，绕过了它自己钉的「未测成绝不写 PASS」。
+  链内入口只有离线纯函数套件 `test-live-verify.mjs`（07:37 回放态实测 **55 passed/0 failed/0 skipped、
+  未命中 0 条**，`git show` 被 isNetworkCli 放行回真），两层互不干扰。
 - **全门回放终态（02:52，68 套件、夹具识别与 Test 13 都落码后）：**
   · 串行 `DSH_REPLAY=1` ⇒ `[GATE] 68/68 suites green` / `total 45s`，墙钟 45s，外层账本 0 条未命中。
   · `DSH_GATE_PARALLEL=4` ⇒ `[GATE] 68/68 suites green` / `total 53s`，**墙钟 25s**（exit=0、账本 0 条）。
