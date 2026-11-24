@@ -51,6 +51,13 @@ if (!suites.length) {
 // 420s：本地最慢套件 full-sort≈189s；CI 冷 npx 缓存会让触发 lobehub CLI 的套件（func-fixes、
 // full-sort 的 all 聚合）额外等 30–180s。300s 会把这些「慢但正常」误判成 TIMEOUT。
 const perTimeout = Math.max(30000, Number(process.env.DSH_GATE_TIMEOUT_MS) || 420000);
+// 睡眠判定的宽限（默认 60s 是生产口径；判据家把它降到 0 才能端到端复现）。
+// 刻意不用 `Number(env) || 60000`：那样 0 会被当成没设（0 是 falsy）而回落到默认值，
+// 于是「宽限=0」这个复现姿势永远走不到分支（03:07 端到端实测就是这么漏的）。
+// 生产上宽限必须 >0：正常被杀时 ms = perTimeout + 关流延迟（几十毫秒），宽限 0 会把
+// 每一次真超时都误报成睡眠。
+const graceEnv = process.env.DSH_GATE_SUSPEND_GRACE_MS;
+const suspendGrace = graceEnv === undefined || graceEnv === '' ? 60000 : Math.max(0, Number(graceEnv) || 0);
 // 并发度（方案 C）：不设 DSH_GATE_PARALLEL ⇒ 1 ⇒ 与串行版行为逐字一致（CI 路径不变）。
 const limit = poolLimit(process.env.DSH_GATE_PARALLEL, suites.length);
 
@@ -111,7 +118,10 @@ console.log(`[GATE] ${suites.length} suites, per-suite timeout ${Math.round(perT
 const results = [];
 const report = (r) => {
   // 判定唯一来源：gate-verdict.mjs 的纯函数（test-gate-contract 锁住其全部分支）。
-  const { verdict, summary } = gateVerdict(r);
+  // ms/perTimeout/宽限一起传进去：被杀但墙钟远超超时 ⇒ 判 SUSPEND-SUSPECT（疑似整机睡眠），
+  // 见 gate-verdict.mjs 注释里 08:24 那次 TIMEOUT 1524s 的实测。
+  // DSH_GATE_SUSPEND_GRACE_MS 只为判据家把宽限降到 0 好端到端复现，默认 60s。
+  const { verdict, summary } = gateVerdict({ ...r, perTimeout, suspendGraceMs: suspendGrace });
   results.push({ file: r.file, verdict, summary, ms: r.ms });
   console.log(`[GATE] ${r.file.padEnd(26)} ${verdict.padEnd(9)} ${Math.round(r.ms / 1000)}s  ${summary}`);
   if (verdict !== 'PASS') {
@@ -123,6 +133,10 @@ const report = (r) => {
     // 失败断言也各出一条 annotation，便于在 Checks 页直接看到是哪一项
     for (const l of bad.slice(0, 4)) console.log('::error::[GATE] ' + r.file + ' :: ' + gateEscape(l.trim()).slice(0, 180));
     if (verdict === 'TIMEOUT') console.log('::error::[GATE] ' + r.file + ' 被单套件超时 ' + Math.round(perTimeout / 1000) + 's 杀死（可调 DSH_GATE_TIMEOUT_MS）');
+    if (verdict === 'SUSPEND-SUSPECT') {
+      // 归因单独成行：这一类先复跑，别照着它去改代码（0.5.162 那轮就是这样白跑两版）。
+      console.log('::error::[GATE] ' + r.file + ' 疑似整机睡眠（墙钟 ' + Math.round(r.ms / 1000) + 's >> 超时 ' + Math.round(perTimeout / 1000) + 's）⇒ 先单独复跑本套件确认，再谈机制');
+    }
   }
 };
 if (limit === 1) {

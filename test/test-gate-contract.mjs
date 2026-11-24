@@ -134,5 +134,58 @@ console.log('Test 5: 并发层（方案 C：默认串行、上限 8、归属按�
 }
 
 console.log('');
+console.log('Test 6: SUSPEND-SUSPECT（整机睡眠不得被当成套件真慢）');
+{
+  // 实测事故（2026-11-24 08:24）：test-sort-honesty 记成 TIMEOUT 1524s，perTimeout=420s。
+  // Kernel-Power 08:24:57 睡眠 / 08:50:21 唤醒，窗口正好 1524 秒 —— 睡眠把杀定时器和子进程
+  // 一起冻住，但 Date.now() 照走。那条红当时被当成「套件慢」，据此建了一整套机制理论、
+  // 白跑两版（CHANGELOG 0.5.162 段 L13 留的 TODO 就是这一条）。
+  const KILLED_OUT = 'x\n5 passed, 0 failed\n';
+  check('被杀且墙钟远超超时 → SUSPEND-SUSPECT（不再当 TIMEOUT）',
+    gateVerdict({ code: null, killed: true, out: KILLED_OUT, ms: 1524000, perTimeout: 420000 }).verdict === 'SUSPEND-SUSPECT',
+    JSON.stringify(gateVerdict({ code: null, killed: true, out: KILLED_OUT, ms: 1524000, perTimeout: 420000 })));
+  check('summary 里写明疑似整机睡眠',
+    /疑似整机睡眠/.test(gateVerdict({ code: null, killed: true, out: KILLED_OUT, ms: 1524000, perTimeout: 420000 }).summary || ''), '');
+  check('真超时（ms≈perTimeout）仍判 TIMEOUT',
+    gateVerdict({ code: null, killed: true, out: KILLED_OUT, ms: 420300, perTimeout: 420000 }).verdict === 'TIMEOUT', '');
+  check('宽限内（超出 30s）判 TIMEOUT，不误报睡眠',
+    gateVerdict({ code: null, killed: true, out: KILLED_OUT, ms: 450000, perTimeout: 420000 }).verdict === 'TIMEOUT', '');
+  // 没传 ms/perTimeout（真网络门的旧调用形状）必须退回原行为，不能凭空造睡眠判定。
+  check('未传 ms/perTimeout → 保持 TIMEOUT（默认零参与）',
+    gateVerdict({ code: null, killed: true, out: KILLED_OUT }).verdict === 'TIMEOUT', '');
+  // SUSPEND-SUSPECT 也是红灯：不能替它放行。
+  check('SUSPEND-SUSPECT 不等于 PASS',
+    gateVerdict({ code: 0, killed: true, out: 'x\n9 passed, 0 failed\n', ms: 900000, perTimeout: 420000 }).verdict !== 'PASS', '');
+  const gateSrc = fs.readFileSync(path.join(W, 'test', 'run-gate.mjs'), 'utf8');
+  check('run-gate 把 perTimeout 传进判定', /gateVerdict\(\{[^)]*perTimeout/.test(gateSrc), '判定没拿到超时基准，睡眠分支永不触发');
+  check('run-gate 为睡眠单独出一条归因 annotation', /SUSPEND-SUSPECT/.test(gateSrc) && /疑似整机睡眠/.test(gateSrc), '缺单独归因行');
+  check('宽限可用 DSH_GATE_SUSPEND_GRACE_MS 调（判据家复现用）', /DSH_GATE_SUSPEND_GRACE_MS/.test(gateSrc), '');
+  // 03:07 端到端实测踩到的真 bug：`Number(env) || 60000` 会把 0 当成没设 ⇒
+  // 「宽限=0」的复现姿势永远走不到分支，门里那条判定看起来有开关其实开关失效。
+  check('宽限的 0 不被当成未设置（禁 `|| 60000` 写法）',
+    !/Number\(process\.env\.DSH_GATE_SUSPEND_GRACE_MS\)\s*\|\|/.test(gateSrc), 'run-gate 用 || 回落默认值，0 会失效');
+
+  // 端到端：一个真的被杀且墙钟超出超时的套件，必须被门标成 SUSPEND-SUSPECT 并单独出一条归因。
+  const slow = '.gate-fake-slow.mjs';
+  const slowPath = path.join(W, 'test', slow);
+  try {
+    // 40s 后才打印 summary，配 DSH_GATE_TIMEOUT_MS=30000 ⇒ 一定被杀；
+    // 宽限设 0 ⇒ 被杀即超出 ⇒ 应判睡眠嫌疑（生产默认 60s 时同样的套件判 TIMEOUT，
+    // 因为杀下来只超出几十毫秒，见上面「宽限内」那条）。
+    fs.writeFileSync(slowPath, 'console.log("慢套件开跑");\nsetTimeout(() => { console.log("9 passed, 0 failed"); process.exit(0); }, 40000);\n');
+    const rs = spawnSync(process.execPath, [path.join(W, 'test', 'run-gate.mjs')], {
+      cwd: W, encoding: 'utf8', timeout: 120000,
+      env: { ...process.env, DSH_GATE_ONLY: 'test-tdz-order.mjs', DSH_GATE_EXTRA: slow, DSH_GATE_TIMEOUT_MS: '30000', DSH_GATE_SUSPEND_GRACE_MS: '0' },
+    });
+    const o = String(rs.stdout || '') + String(rs.stderr || '');
+    check('端到端：被杀且超出的套件标成 SUSPEND-SUSPECT', /SUSPEND-SUSPECT/.test(o), o.split('\n').filter((l) => l.includes(slow)).slice(0, 1).join(' '));
+    check('端到端：单独出一条「疑似整机睡眠」归因，含先复跑', /疑似整机睡眠[\s\S]*先单独复跑/.test(o), '');
+    check('端到端：仍然让门变红（不替它放行）', (rs.status || 0) !== 0 && new RegExp('publish blocked').test(o), 'status=' + rs.status);
+  } finally {
+    try { fs.rmSync(slowPath, { force: true }); } catch {}
+  }
+}
+
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
