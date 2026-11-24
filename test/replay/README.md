@@ -176,10 +176,13 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
   ⚠️**live 一键验证（0.5.167 的 `test/live-verify.mjs`）必须不带 DSH_REPLAY 跑**：fetch-patch 截一切
   `http(s)` 含 `http://127.0.0.1` 的调用。07:38 主树实测两种姿势：不带 ⇒ `exit=4 / RESULT: STALE-SERVER /
   rows=14 LIVE-FAIL=1 GAP=2`（真问进程，判据成立）；带上我的 store-full2 ⇒ **`exit=1 / wall=0s /
-  TypeError: Cannot read properties of undefined (reading 'slice')`，账本 12 条未命中**。⇒ 回放态不是
-  「判据变档案」而是**硬崩**：rpc() 吞掉 MissError 后返回 json=null ⇒ `zz.categoryNote=undefined` ⇒
-  `JSON.stringify(undefined)` 得 undefined（不是字符串）⇒ `.slice` 炸（`live-verify.mjs:214`，同形写法
-  `:219` 有 `|| []` 守卫所以没事）。崩了就没有 verdict，绕过了它自己钉的「未测成绝不写 PASS」。
+  TypeError: Cannot read properties of undefined (reading 'slice')`，账本 12 条未命中**。
+  ⚠️**但这条崩不是回放层造成的（07:41 对照实验定案）**：真网络态打一个死端口
+  `node test/live-verify.mjs --port 59999` ⇒ **同样 exit=1 / TypeError … 'slice' 崩在同一行**。
+  真因链在它自己脚本里：`rpc()` 把失败吞成 `json=null` ⇒ `shape()` 出 `categoryNote=undefined` ⇒
+  `:214 JSON.stringify(undefined)` 返回 **undefined（不是字符串）** ⇒ `.slice` 炸。⇒ 只要 RPC 非 200
+  （宿主没起 / 端口变了 / 超时）就没有 verdict，绕过 `:16` 自己声明的「3=NOT-RUN 判据未执行绝不写
+  PASS/FAIL」。同形写法 `:219` 有 `|| []` 守卫所以没事。回放层只是让它更早撞到的一条路径，不是根因。
   链内入口只有离线纯函数套件 `test-live-verify.mjs`（07:37 回放态实测 **55 passed/0 failed/0 skipped、
   未命中 0 条**，`git show` 被 isNetworkCli 放行回真），两层互不干扰。
 - **全门回放终态（02:52，68 套件、夹具识别与 Test 13 都落码后）：**
