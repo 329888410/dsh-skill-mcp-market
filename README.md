@@ -318,6 +318,26 @@ dsh-skill-mcp-market/
 
 改完代码后，`plugin_manager` 无法原地替换模块。用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次，新代码即生效（已在本机验证）。
 
+### 测试纪律
+
+- **迭代期只跑针对性套件**：改哪个源就跑那个源的套件，加 `test-suite-inventory` 与 `test-dead-exports`，合计应在 30s 内。全量门（`npm test`）只在提交前跑一次、装到 profile 后再跑一次。
+- **TDD 先行**：判据先落 RED 原文，再实现转 GREEN。改完必须**复跑套件**——`node --check` 只查语法，查不出运行时 `ReferenceError`（0.5.163/0.5.164 各踩过一次：`readdirSync`、`answers` 未导入/未定义，语法过、跑就崩）。
+- **判据要自证非空**：每条新判据都用变异验证「把它针对的实现改坏，这条必须转红」。0.5.16x 有过一条首版空判据（关掉被测逻辑照样全绿），教训写进 `test/replay/README.md`。
+- **绿不等于做了**：一条被 `try/catch` 降级成 skip 的判据，和没写过它是一样的。
+
+### 门提速：录制/回放层
+
+`test/replay/` 提供零生产改动的网络截断层（详见 `test/replay/README.md`）：
+
+- 录制 `DSH_REPLAY=record`、回放 `DSH_REPLAY=1`；不设该变量时门与改动前逐字一致，**CI 有意走真网络**，live 冒烟层不可被回放替代。
+- 未录到的请求抛 `REPLAY-MISS` 并让门判红，绝不返回空数据。
+- 开发迭代期一遍全门 1371s → 约 30–80s（`DSH_GATE_PARALLEL=4` 再降墙钟）。
+- 档案目录默认 `test/replay/store/`（已 gitignore），实际用 `DSH_REPLAY_DIR` 指到仓库外。
+
+### 子进程必须继承 `process.env`
+
+任何 `execFile`/`spawn` 显式传 `env` 时**必须带 `...process.env` 展开**。回放注入靠 `NODE_OPTIONS=--import=` 逐层继承：门→套件子进程→套件再 spawn 的 `npx`/`curl`/`python`。少一次展开，`NODE_OPTIONS` 就在那一层断掉，孙进程走真网络而档案以为它被截住了。`test-gate-replay.mjs` Test 14 静态锁住这条（并在 03:29 实测：去掉一次展开 ⇒ 3 条判据同时转红）。
+
 冒烟脚本在 `../tools/`：`smoke-market.mjs`（技能安装/卸载、MCP 配置映射）、`smoke-market-fixes.mjs`（注册表搜索、裸 `owner/repo`、skillsmp）、`smoke-sources.mjs`（各源 provider 行为）、`smoke-demo-mcp.mjs`（MCP 协议自检）。
 
 ## 许可
