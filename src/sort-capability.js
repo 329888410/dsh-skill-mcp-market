@@ -70,18 +70,14 @@ export function supportsSort(source, sort) {
 export function sortKeysFor(source, options = {}) {
   const list = CAPABILITIES[String(source || "")];
   let keys = Array.isArray(list) ? list.slice() : ["name"];
-  if (options.hasQuery && String(source || "") === "clawhub") keys = keys.filter((k) => k !== "trending");
+  const srcKey = String(source || "");
+  if (options.hasQuery && srcKey === "clawhub") keys = keys.filter((k) => k !== "trending");
+  // skills.sh 的 browse 路径排的是 sitemap 目录：src/sources.js:148 只存 owner/slug、:124 skillsShCard
+  // 把 installs 写死 0 ⇒ sortSkillsShRows 的 installCount 分支是全 0 比较（实测 browse 空查询下
+  // sort=installCount 与默认序 24 条 slug 逐位相同）=「选了没反应」的假选项。带查询走 search API
+  // 才有真 installs（pdf 236,138 / docx 224,636）⇒ installCount 只属于 search 分支。
+  if (!options.hasQuery && srcKey === "skills.sh") keys = keys.filter((k) => k !== "installCount");
   return keys;
-}
-
-/**
- * 词表通道对某源给出的排序键：与 sortKeysFor 读同一份 CAPABILITIES，但返回**同一个数组引用**
- * （不是 slice 副本）——词表接线要拿它做同源比对，副本会让「两次调用同一引用」判据失去意义。
- * 未知源返回 null：空数组的语义是「有该源但任何排序都不支持」（registry），不能混用。
- */
-export function vocabularySortKeys(source) {
-  const list = CAPABILITIES[String(source || "")];
-  return Array.isArray(list) ? list : null;
 }
 
 /**

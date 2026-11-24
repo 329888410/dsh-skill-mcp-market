@@ -744,6 +744,9 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   // 失败源没有贡献条目，所以不进分母；handler 不提这个字段（六个旧源都是）一律按 false 计。
   let facetAnswered = 0;
   let facetConfirmed = 0;
+  // 分类能力声明位：handler 明说「本行都带分类信息」时置真（见 extra-sources.js 的 categoryInfo）。
+  // 与 facetAnswered 同座，因为两者都是「逐源听声明」，不是「看这一页凑到什么」。
+  let declaredCategoryInfo = false;
   const picked = wanted.filter((name) => Boolean((handlers && handlers[name]) || SOURCE_HANDLERS[name]));
   // handlers 是测试注入点：fake handler 才能在没有网络、没有上游波动的情况下断言
   // 并发与顺序性质。生产路径 handlers 为 null，仍走 SOURCE_HANDLERS。
@@ -771,6 +774,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     if (result && result.hint) hints.push(name + '：' + result.hint);
     facetAnswered++;
     if (result && result.serverFacet === true) facetConfirmed++;
+    if (result && result.categoryInfo === true) declaredCategoryInfo = true;
     const srcItems = result && Array.isArray(result.items) ? result.items : [];
     if (srcItems.length) items.push(...srcItems.map((it) => ({ ...it, installRef: installRefOf(it) })));
     const srcTotal = Number(result && result.total) || 0;
@@ -837,7 +841,11 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   // 重复筛（无害但白算）或把上游回填不一致的条目误删（有害）。所以只在没拿到 facet 确认时
   // 才走下面那段「仅当前页」的本地兜底过滤。
   const serverFacet = catNeedle !== "" && catNeedle !== "all" && facetAnswered > 0 && facetConfirmed === facetAnswered;
-  const catSupported = items.some((item) => item.category);
+  // 「这个源提不提供分类信息」得听 handler 的声明，不能只看这一页凑没凑到分类行：
+  // modelscope 每行都带 L1.ChineseName（categoryInfo=true），但服务端 facet 实测不成立、
+  // 过滤在客户端做，小分类的深页合法地回 0 条 —— 只看页内样本会把「本类实测 0 条」
+  // 谎报成「该源不提供分类信息」（0.5.164 判据：test/test-category-info-declaration.mjs）。
+  const catSupported = items.some((item) => item.category) || (items.length === 0 && declaredCategoryInfo);
   let visible = items;
   let categoryNote = "";
   let filteredOut = 0;

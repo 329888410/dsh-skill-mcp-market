@@ -31,11 +31,8 @@ const skillsmpCategoryVocabulary = typeof esMod.skillsmpCategoryVocabulary === '
 const readSkillsMpCategoryVocabulary = typeof esMod.readSkillsMpCategoryVocabulary === 'function'
     ? esMod.readSkillsMpCategoryVocabulary
     : async () => { throw new Error('readSkillsMpCategoryVocabulary 未导出'); };
-// 兜底必须是「不是函数」而不是「返回 undefined 的函数」：后者会让
-// `typeof === 'function' && !vocabularySortKeys(...)` 这种判据在缺导出时假绿。
-const vocabularySortKeys = typeof capMod.vocabularySortKeys === 'function'
-    ? capMod.vocabularySortKeys
-    : null;
+// vocabularySortKeys 是死导出（生产零调用，唯一引用是被删掉的四条软锁），0.5.164 已清理。
+// 排序键同源一律走真导出的 sortKeysFor。
 
 let passed = 0;
 let failed = 0;
@@ -154,20 +151,6 @@ const smpCaps = capMod.sortKeysFor('skillsmp');
 check('skillsmp 排序键与实测一致（stars/updated/name）',
     Array.isArray(smpCaps) && JSON.stringify(smpCaps) === JSON.stringify(['stars', 'updated', 'name']),
     JSON.stringify(smpCaps));
-const vocabCaps = typeof vocabularySortKeys === 'function' ? vocabularySortKeys('skillsmp') : null;
-check('词表通道给出 skillsmp 的排序键（内容取自同一矩阵）',
-    Array.isArray(vocabCaps) && JSON.stringify(vocabCaps) === JSON.stringify(smpCaps),
-    '返回 ' + JSON.stringify(vocabCaps));
-check('词表通道不是临时拼一份排序键（两次调用同一引用）',
-    typeof vocabularySortKeys === 'function' && vocabularySortKeys('skillsmp') === vocabularySortKeys('skillsmp'),
-    '两次调用返回的不是同一个数组');
-check('词表通道对别的源如实给出该源自己的矩阵（clawhub 含 downloadCount）',
-    typeof vocabularySortKeys === 'function'
-    && JSON.stringify(vocabularySortKeys('clawhub')) === JSON.stringify(capMod.sortKeysFor('clawhub')),
-    JSON.stringify(typeof vocabularySortKeys === 'function' ? vocabularySortKeys('clawhub') : null));
-check('词表通道对未知源不编造排序键',
-    typeof vocabularySortKeys === 'function' && !vocabularySortKeys('not-a-source'),
-    JSON.stringify(typeof vocabularySortKeys === 'function' ? vocabularySortKeys('not-a-source') : 'not-a-function'));
 
 
 // ---------------------------------------------------------------- 服务端 facet 标记

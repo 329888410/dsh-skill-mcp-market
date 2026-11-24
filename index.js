@@ -30,7 +30,7 @@ import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js
 // 技能市场分类词表（skillsmp /zh/categories 实测抓取）只随 settings.get 走：读缓存 + 后台补取，
 // 面板首屏的 RPC 不等外网抓取。
 import { readSkillsMpCategoryVocabulary, skillsmpCategoryVocabulary, readClawhubCategoryVocabulary, clawhubCategoryVocabulary,
-  trusttoolsCategoryVocabulary, readLobeHubSkillCategoryVocabulary, lobeHubSkillCategoryVocabulary } from "./src/extra-sources.js";
+  trusttoolsCategoryVocabulary, readLobeHubSkillCategoryVocabulary, lobeHubSkillCategoryVocabulary, modelscopeCategoryVocabulary } from "./src/extra-sources.js";
 import { evaluation as skillhubEvaluation } from "./src/skillhub.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
@@ -1174,6 +1174,9 @@ function needsConfirmFor(patch, current) {
         // trusttools 没有可抓的词表端点（上游 2026-11-24 起超时）：静态表随包发，
         // 直接同步取，不经缓存也不经网络。
         const ttVocab = trusttoolsCategoryVocabulary();
+        // modelscope 同理：上游没有任何服务端分类 facet（2026-11-24 十二个参数名 × 三姿势
+        // 共 30 组探针实测 rows/total 逐位相同 = IGNORED），词表只能随包静态发，同步取。
+        const msVocab = modelscopeCategoryVocabulary();
         try {
           [smpVocab, clawVocab, lhVocab] = await Promise.all([
             readSkillsMpCategoryVocabulary({ cache: marketCache }),
@@ -1190,6 +1193,8 @@ function needsConfirmFor(patch, current) {
         }
         if (categoryVocabulary) categoryVocabulary.trusttools = ttVocab;
         else categoryVocabulary = { trusttools: ttVocab };
+        if (categoryVocabulary) categoryVocabulary.modelscope = msVocab;
+        else categoryVocabulary = { modelscope: msVocab };
         if (!smpVocab) {
           void skillsmpCategoryVocabulary({ cache: marketCache }).catch(() => {});
         }

@@ -812,11 +812,17 @@ console.log('Test 18: 排序名称 ↔ 能力矩阵键 ↔ 真实字段 三者�
   check('skillhub 同时提供 installCount 与 downloadCount', shKeys.includes('installCount') && shKeys.includes('downloadCount'), shKeys.join(','));
   check('skillhub downloadCount→sortBy=downloads', sh.includes('sort === "downloadCount" ? "downloads"') || sh.includes('? "downloads"'), '');
   check('skillhub 服务端排序仍显式带 order', sh.includes('params.set("order", "desc")'), '');
-  // 名实相符的源保留 installCount：trusttools(sort_by=install_count)、skills.sh(字段 installs)、
-  // browse.sh(字段 installCount)、lobehub(--sort installCount)
-  for (const s of ['trusttools', 'skills.sh', 'browse.sh', 'lobehub']) {
-    check(s + ' 保留 installCount（该源真实存在安装数字段）', mod.sortKeysFor(s).includes('installCount'), mod.sortKeysFor(s).join(','));
+  // 名实相符的源保留 installCount（按 search 分支判，0.5.164 起 skills.sh 的 browse 分支不给）：
+  // trusttools(sort_by=install_count)、skills.sh(search 行 installs)、browse.sh(字段 installCount)、
+  // browse 分支（面板空查询）逐个真断言；skills.sh 的 browse 分支 0.5.164 起不给 installCount
+  // （目录行无 installs 字段，实测 sort=installCount 与默认序逐位相同）⇒ 它只在 search 分支成立。
+  for (const s of ['trusttools', 'browse.sh', 'lobehub']) {
+    check(s + ' browse 保留 installCount（该源真实存在安装数字段）', mod.sortKeysFor(s).includes('installCount'), mod.sortKeysFor(s).join(','));
   }
+  for (const s of ['trusttools', 'skills.sh', 'browse.sh', 'lobehub']) {
+    check(s + ' search 保留 installCount（该源真实存在安装数字段）', mod.sortKeysFor(s, { hasQuery: true }).includes('installCount'), mod.sortKeysFor(s, { hasQuery: true }).join(','));
+  }
+  check('skills.sh browse 不给 installCount（0.5.164 收紧，与 trending 同口径）', mod.sortKeysFor('skills.sh').indexOf('installCount') === -1, mod.sortKeysFor('skills.sh').join(','));
   // 聚合 all：跨源 downloads 字段覆盖率不齐（skills.sh 无该字段），按它排会让缺字段源整体沉底
   // ⇒ 聚合不提供 downloadCount，各源仍各自服务端有序。
   const allKeys = mod.sortKeysFor('all');

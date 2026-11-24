@@ -196,7 +196,7 @@ function categoryChipLabel(value, vocab) {
 function categoryChipsForSource(source, derived, bySource) {
   // trusttools 没有可抓的词表端点（上游超时），词表是服务端随包发的静态表，source 同样指向上游站点，
   // 所以归属核验与前两家走同一条规则，不做特例。
-  const ORIGIN = { skillsmp: 'https://skillsmp.com/', clawhub: 'https://clawhub.ai/', trusttools: 'https://ai.trusttools.cn/', lobehub: 'https://market.lobehub.com/' };
+  const ORIGIN = { skillsmp: 'https://skillsmp.com/', clawhub: 'https://clawhub.ai/', trusttools: 'https://ai.trusttools.cn/', lobehub: 'https://market.lobehub.com/', modelscope: 'https://modelscope.cn/' };
   const key = String(source || '');
   if (!ORIGIN[key] || !bySource || typeof bySource !== 'object') return mergeCategoryVocab(derived, null);
   // 两种下发形状都要吃：分组 { skillsmp, clawhub }（0.5.153 起），以及旧服务端那份未分组
@@ -1848,7 +1848,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       });
       // 派生兜底上限从 10 放开到 60：10 会把用户能点的分类静默截掉（面板每页条数上限本就是 60，见
       // resolvePageSize 的 Math.min(60, …)，同一个可见性口径）。词表在手时 chip 由词表给全，这里
-      // 只是无词表源（skills.sh / skillhub / modelscope）的兜底，可见窗口仍由 CAT_CHIP_FOLD 折叠。
+      // 只是无词表源（skills.sh / skillhub）的兜底，可见窗口仍由 CAT_CHIP_FOLD 折叠。
       const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 60);
       // 固定词表在前（上游条目数降序），当前页派生的串补在后：词表抓不到时入口不关，改版也不丢。
       const vocabChips = categoryChipsForSource(source, categories, categoryVocab);
@@ -1860,7 +1860,12 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         : chipSlugs.slice(0, CAT_CHIP_FOLD + 1);
       // 上游已按分类筛过（serverFacet=true）时不再二次本地过滤：facet 页只有当前窗口的
       // 卡片，再按本地标签筛一遍会把未标注分类的条目无谓筛掉，还与分页器总数对不上。
-      const visibleSkills = orderedSkills.filter((item) => serverFacet || category === 'all' || item.category === category);
+      // 0.5.164：分类态本地过滤必须与聚合层同口径。src/sources.js:848 对「该源未标注分类」的行按
+      // 「无分类不过滤」保留（:874 明写「另有 N 项该源未标注分类…一并保留」），面板此前把这类行直接
+      // 删掉 ⇒ 渲染比聚合层承诺少（实测：聚合 items=3/filteredOut=0，面板只剩 1 条）。少掉的条目不会
+      // 出现在任何文案里，用户看不见这个丢失——正是 0.5.101 起反复判死的静默偷内容。无分类行放行，
+      // 异类行仍严格剔除（判据在 test-category-info-declaration Test 6，真跑本行函数体）。
+      const visibleSkills = orderedSkills.filter((item) => serverFacet || category === 'all' || !item.category || item.category === category);
       const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),

@@ -95,6 +95,14 @@ console.log('Test 7: 能力表服务端语义（直接 import 纯函数）');
   check('lobehub MCP 带查询两键', JSON.stringify(sortKeysForMcp('lobehub', { hasQuery: true })) === '["installCount","ratingAverage"]');
   check('registry MCP 两路径都空', sortKeysForMcp('registry').length === 0 && sortKeysForMcp('registry', { hasQuery: true }).length === 0);
   check('未知源不给假能力', sortKeysFor('nope').length === 1 && sortKeysForMcp('nope').length === 0);
+  // S3（0.5.164）：skills.sh 的 browse 路径排的是 sitemap 目录（src/sources.js:148 只存 owner/slug，
+  // :124 skillsShCard 把 installs 写死 0）⇒ sortSkillsShRows 的 installCount 分支是全 0 比较 = 静默不排。
+  // 实测（宿主 61246，2026-11-24 17:19，flat RPC body）：browse 空查询下 sort=installCount 与默认序
+  // 24 条 slug 序列逐位相同、installs 全 0；带查询走 search API 才真有值（pdf 236,138 / docx 224,636 /
+  // canvas-design 138,809）。与 clawhub trending 同一口径：能力随查询形态变化，browse 分支不给排不动的键。
+  check('skills.sh browse 不含 installCount（目录行无 installs 字段）', sortKeysFor('skills.sh').indexOf('installCount') === -1, sortKeysFor('skills.sh').join(','));
+  check('skills.sh search 仍含 installCount（search API 行带真 installs）', sortKeysFor('skills.sh', { hasQuery: true }).indexOf('installCount') >= 0, sortKeysFor('skills.sh', { hasQuery: true }).join(','));
+  check('skills.sh browse 仍给 name（目录可按名字本地排）', sortKeysFor('skills.sh').indexOf('name') >= 0, sortKeysFor('skills.sh').join(','));
 }
 
 console.log('');

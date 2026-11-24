@@ -1236,6 +1236,92 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
 // PUT https://modelscope.cn/api/v1/dolphin/skills {PageNumber,PageSize,Query?} → Data.SkillList,
 // Data.TotalCount（实测 88k+ 条、页与页不重复）。技能正文挂在 SourceURL 的 GitHub 地址上。
 const MODELSCOPE_SKILLS_URL = "https://modelscope.cn/api/v1/dolphin/skills";
+// ── ModelScope 分类词表（随包静态表）─────────────────────────────────────────
+// 为什么不是动态词表：该上游根本没有分类 facet 端点。12 个候选参数名（Category/L1/
+// CatalogID/Catalog/Categories/Tags/Tag/FirstCategory/Classification/labels/L1List/
+// CatalogIDs）× 三姿势共 30 组探针，rows、total、distinctL1 逐位相同 = 全部 IGNORED
+//（取证 C:/Users/Public/dsh-scratch/vocab164/FINAL.md、APPENDIX.txt、t2_report.md）。
+// 服务端既不过滤也不下发计数，唯一诚实的做法就是随包静态词表 + 可达集合内本地过滤，
+// 因此返回值里绝不出现 serverFacet。
+// 表底稿：ModelScope 官方分类接口的 20 个非空 CatalogID（Parent=0 的 10 个根 + 10 个子项）。
+// slug 与 label 都取 ChineseName 原文，不是 CatalogID：面板（client.js:1863）与聚合层
+//（sources.js:847）都拿行内分类原文做等值比较，行内原文来自 raw.L1.ChineseName（本文件 items
+// map 的 category 字段）；chip 若用 CatalogID，卡片显示退回英文而过滤永远筛不中。
+// 不带条数：上游没有分类级计数字段，写进 chip 就是假数（同 trusttools 口径）。
+// sdk 类不入表：83 个采样 0 命中，未证实（不猜）。英文 Name 只留在注释里，不进 categories。
+const MODELSCOPE_ORIGIN = "https://modelscope.cn/";
+// [CatalogID, ChineseName, 条数(仅注释留档), 是否子项] —— 顺序即 FINAL.md 表序，chip 稳定。
+// developer-tools 开发工具 4070 / ai-media 媒体处理 2526 / code-quality-testing 代码质检 2074
+// cloud-devops 云效工具 1393 / marketing-seo 市场推广 1087 / frontend-development 前端开发 1060
+// other 其他 565 / skill-management Skills管理 279 / scientific-tool 科研工具 216 / mobile-development 移动开发 207
+// ai-automation AI 自动化 168 / content-strategy 内容策略 21 / doc-processing 文档处理 (PDF/PPTX/DOCX) 6
+// analytics 分析追踪 6 / ui-ux-design UI/UX 设计 5 / cost-optimization 成本优化 5 / monitoring 监控 2
+// skill-creation 技能创建 2 / api-design API 设计 2 / general-tools 通用工具 1
+const MODELSCOPE_CATEGORY_ROWS = [
+    ["developer-tools", "开发工具", 4070, 0],
+    ["ai-media", "媒体处理", 2526, 0],
+    ["code-quality-testing", "代码质检", 2074, 0],
+    ["cloud-devops", "云效工具", 1393, 0],
+    ["marketing-seo", "市场推广", 1087, 0],
+    ["frontend-development", "前端开发", 1060, 0],
+    ["other", "其他", 565, 0],
+    ["skill-management", "Skills管理", 279, 0],
+    ["scientific-tool", "科研工具", 216, 0],
+    ["mobile-development", "移动开发", 207, 0],
+    ["ai-automation", "AI 自动化", 168, 1],
+    ["content-strategy", "内容策略", 21, 1],
+    ["doc-processing", "文档处理 (PDF/PPTX/DOCX)", 6, 1],
+    ["analytics", "分析追踪", 6, 1],
+    ["ui-ux-design", "UI/UX 设计", 5, 1],
+    ["cost-optimization", "成本优化", 5, 1],
+    ["monitoring", "监控", 2, 1],
+    ["skill-creation", "技能创建", 2, 1],
+    ["api-design", "API 设计", 2, 1],
+    ["general-tools", "通用工具", 1, 1],
+];
+const MODELSCOPE_CATEGORY_CN = MODELSCOPE_CATEGORY_ROWS.map((row) => row[1]);
+// cacheKey 的分类段必须是 ASCII：makeCache 落盘文件名走 key.replace(/[^A-Za-z0-9_.-]/g, "_")
+//（src/sources.js:41 与 :56）。中文分类名会塌进同一个 json 文件，第二个分类在 5 分钟 TTL 内
+// 直接读到第一个分类的结果（实测 市场推广 与 移动开发 共用 modelscope_search__1_24______.json）。
+// 表内分类复用现成的 CatalogID 做 ASCII 段；表外分类把原文逐字符转码点序列，仍然互不相同，
+// 这样拒发态也不会复用无分类态的缓存（hint 会点名错误的分类）。
+const MODELSCOPE_CATEGORY_ID = {};
+for (const msCatRow of MODELSCOPE_CATEGORY_ROWS) MODELSCOPE_CATEGORY_ID[msCatRow[1]] = msCatRow[0];
+
+/** 分类入参 → cacheKey 用的 ASCII 片段；空/all 回空串（与无分类同键）。模块私有。 */
+function modelscopeCategoryCacheToken(value) {
+  const key = String(value === null || value === undefined ? "" : value).trim();
+  if (!key || key === "all") return "";
+  if (MODELSCOPE_CATEGORY_ID[key]) return MODELSCOPE_CATEGORY_ID[key];
+  return "ref-" + Array.from(key).map((ch) => ch.codePointAt(0).toString(36)).join("-");
+}
+
+/** 静态 L1 词表快照：形状与 trusttools/skillsmp/clawhub/lobehub 一致，面板按 source 前缀核验归属。 */
+export function modelscopeCategoryVocabulary() {
+  return {
+  capturedAt: Date.parse("2026-11-24T00:00:00Z"),
+  source: MODELSCOPE_ORIGIN,
+  categories: MODELSCOPE_CATEGORY_CN.map((label) => ({ slug: label, label })),
+  };
+}
+
+/**
+ * 分类入参归一：命中表内 ChineseName 才回该原文；空/all/表外一律回空串（=不按分类过滤）。
+ * 表外回空串不等于「该分类下没有匹配」——调用方须据此拒发并如实提示，绝不静默清空结果。
+ */
+export function modelscopeCategoryOf(value) {
+  const key = String(value === null || value === undefined ? "" : value).trim();
+  if (!key || key === "all") return "";
+  return MODELSCOPE_CATEGORY_CN.indexOf(key) >= 0 ? key : "";
+}
+
+/** 入参非空但归一后为空 = 表外分类（需要拒发提示），回原始入参供 hint 点名。 */
+function modelscopeCategoryRefused(value) {
+  const key = String(value === null || value === undefined ? "" : value).trim();
+  if (!key || key === "all") return "";
+  return MODELSCOPE_CATEGORY_CN.indexOf(key) >= 0 ? "" : key;
+}
+
 
 // 矩阵（sort-capability.js:31）对 modelscope 声称 installCount/stars/newest/updated/name。
 // 上游没有任何服务端 sort，所以「支持」= 全量拉取后本地排。少一个键进全量分支，
@@ -1261,7 +1347,7 @@ export const MODELSCOPE_SORT_GETTERS = {
   name: (r) => r.DisplayName || r.Name,
 };
 
-export async function searchModelScope({ query = "", page = 1, pageSize = 24, cache, sort = "" } = {}) {
+export async function searchModelScope({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "", transport = null } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
   const q = String(query || "").trim();
@@ -1274,13 +1360,19 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   // 现在 5 个键一律走全量分支。代价（明确记账）：这 3 个键从「单页快但错」变成
   // 「首次慢（5000×9 全量拉取，实测约 30–90 s）后正确」；fullKey 缓存 6h，翻页只是切片。
   const sortMode = modelScopeSortMode(sort);
+  // 分类入参归一（该上游无服务端 facet，见上方词表小节）：表内才过滤，表外拒发。
+  const catActive = modelscopeCategoryOf(category);
+  const catRefused = modelscopeCategoryRefused(category);
+  // 分类与排序共用全量分支：只滤当前页时 doc-processing(6)/monitoring(2)/general-tools(1)
+  // 这类小条数子类在首页可达行里几乎必为 0 行，会把「该分类存在」错报成「该分类为空」。
+  const useFull = sortMode || Boolean(catActive);
   // 非排序模式：保持上游分页（快，一次调用）。
   // 排序模式：上游无服务端 sort，必须拉全量（88,993 ÷ 20000 ≈ 5 次）在完整集合上排。
-  const cacheKey = `modelscope:search:${q.toLowerCase()}:${p}:${size}:${sort || ''}`;
+  const cacheKey = `modelscope:search:${q.toLowerCase()}:${p}:${size}:${sort || ''}:${modelscopeCategoryCacheToken(category)}`;
   const hit = cache ? await cache.get(cacheKey, 5 * 60 * 1000) : undefined;
   if (hit) return { ...hit, source: "modelscope" };
   const fetchOne = async (pageNumber, pageSize, timeoutMs = 25000) => {
-    const response = await fetch(MODELSCOPE_SKILLS_URL, {
+    const response = await (transport || fetch)(MODELSCOPE_SKILLS_URL, {
       method: "PUT",
       headers: { ...UA, "content-type": "application/json" },
       body: JSON.stringify({ PageNumber: pageNumber, PageSize: pageSize, ...(q ? { Query: q } : {}) }),
@@ -1293,7 +1385,7 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   };
   let rows = [];
   let total = 0;
-  if (sortMode) {
+  if (useFull) {
     // 全量目录缓存 6 小时：排序是对完整集合做的，翻页只是切片，不再重复拉取。
     const fullKey = `modelscope:full:${q.toLowerCase()}`;
     const fullHit = cache ? await cache.get(fullKey, 6 * 3600 * 1000) : undefined;
@@ -1329,12 +1421,34 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
     total = one.total;
   }
   const usableRows = rows.filter((raw) => raw && raw.Name);
+  // 分类过滤在可达集合内做；换分类不重拉行集（fullKey 仍只按 query，实测 9 页只发一次）。
+  let categoryRows = usableRows;
+  let catFiltered = false;
+  if (catActive) {
+    categoryRows = usableRows.filter((raw) => raw.L1 && typeof raw.L1 === "object" && raw.L1.ChineseName === catActive);
+    catFiltered = true;
+  }
+  const catTotal = catFiltered ? categoryRows.length : 0;
   // 上游分页深度上限（实测 offset≈45k）导致可达集合 < 全量时，如实告知用户排序覆盖范围。
   const msDepthHint = sortMode && total > rows.length
     ? `ModelScope 上游分页深度上限约 ${rows.length.toLocaleString()} 条（目录共 ${total.toLocaleString()} 条），排序覆盖上游可返回的全部行`
     : "";
-  sortRawRows(usableRows, sort, MODELSCOPE_SORT_GETTERS);
-  const pageRows = sortMode ? usableRows.slice((p - 1) * size, p * size) : usableRows;
+  // 分类态/表外拒发的如实提示：过滤在本地做，行数与 total 都是可达集合内的实测值，跨页
+  // 有效；同时说明可达集合外的分类会漏（残余风险），不假装覆盖了全目录。绝不设 serverFacet。
+  let msCatHint = "";
+  if (catActive) {
+    msCatHint = "ModelScope 上游不提供服务端分类过滤（30 组参数探针实测全部忽略），分类在可达的 " + rows.length.toLocaleString() + " 行（目录共 " + total.toLocaleString() + " 条）内本地过滤，跨页有效；本类实测 " + catTotal.toLocaleString() + " 条；可达集合外的分类会漏";
+  } else if (catRefused) {
+    msCatHint = "ModelScope 静态词表里没有「" + catRefused + "」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页";
+  }
+  const msHint = msCatHint || msDepthHint;
+  sortRawRows(categoryRows, sort, MODELSCOPE_SORT_GETTERS);
+  const pageRows = useFull ? categoryRows.slice((p - 1) * size, p * size) : usableRows;
+  // categoryInfo = 该源的分类能力声明：ModelScope 每条行都带 L1.ChineseName（见下方 items 归一），
+  // 与本页取到几条无关。聚合层 src/sources.js:840 的 catSupported 目前只看 items.some(...)，
+  // 分类态本页 0 条时便误判成「该源不提供分类信息」——那句对 modelscope 是假的（本页 0 条是
+  // 可达窗口内该类无行，不是源没有分类）。字段在此声明，消费方由 lead 在聚合层接。
+  const categoryInfo = true;
   const items = pageRows.map((raw) => {
     const owner = raw.Path || raw.Owner || "";
     const name = raw.Name || "";
@@ -1374,7 +1488,12 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
       modelScopeIdent: ident,
     };
   });
-  const result = { source: "modelscope", items, total: total || p * size + (rows.length >= size ? 1 : 0), hasMore: total ? p * size < total : rows.length >= size, ...(msDepthHint ? { hint: msDepthHint } : {}) };
+  // total 口径：分类态用可达集合内过滤后的真实条数；普通态上游 TotalCount 缺失/0 且本页
+  // 无行时绝不反推页码（旧写法 p*size+1 让空深页凭空造出 2400、14400）——只在确实有行时
+  // 兜底反推，与 sources.js:833 的守卫同一口径。
+  const resultTotal = catFiltered ? catTotal : (total || (items.length > 0 ? p * size + (rows.length >= size ? 1 : 0) : 0));
+  const resultHasMore = catFiltered ? p * size < catTotal : (resultTotal ? p * size < resultTotal : rows.length >= size && items.length > 0);
+  const result = { source: "modelscope", items, categoryInfo, total: resultTotal, hasMore: resultHasMore, ...(msHint ? { hint: msHint } : {}) };
   if (cache) await cache.put(cacheKey, result);
   return result;
 }
