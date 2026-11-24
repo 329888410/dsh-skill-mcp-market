@@ -96,6 +96,17 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
 
 ## 现状与待办
 
+- **全门回放实测（01:32，68 套件）：墙钟 43s**，对真网络 1064s（67 套件）。
+  该轮 62/68 green，6 条红的判读（**都不算回放层缺陷**）：
+  · test-func-fixes / test-paging / test-index-runtime 各「未命中 1 条」+
+  test-lobehub-category-vocab 21 条红（`REPLAY-MISS … cmd.exe ["/d","/s","/c","npx -y @lobehub/market-cli …"]`）
+  = **这份档案只录了那 10 个慢套件**，其余套件的请求本来就不在里面 ⇒
+  红灯正是守卫在起作用（对照组：同一轮里没录到的裸 fetch/CLI 一个都没被当成空数据放行）。
+  · test-profile-sync 2 条 = `work=0.5.164 profile=0.5.165`，我的分支基线是 558bbcd（0.5.164），
+  合入主树后自然对齐，与回放无关。
+  · test-gate-replay 1 条 = **我自己的判据姿势缺陷**：它问父进程 `engine.mode()`，
+  而门给子进程传了 `DSH_REPLAY=1` ⇒ 在回放态跑门时必然假红。已改为问子进程
+  （判据家 Test 8），两形态各 46/0。
 - 10 个慢套件（占门 970s / 1064s）回放态实测 **≈3s**；其余 59 个本来就合计 3s。
 - 档案 **不进 git**（13.3 MB，大头是 skills.sh sitemap 891KB×9 分片）；
   放在仓库外的目录，由 `DSH_REPLAY_DIR` 指过去。要长期用就得加一条「档案过期就重录」的

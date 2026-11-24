@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { safeTempDir } from "../src/home.js";
 import * as engine from "./replay/engine.mjs";
+import { parseConfig, allGreen, redDetail } from "./replay/backfill.mjs";
 
 const W = fileURLToPath(new URL("..", import.meta.url));
 const PRELOAD = pathToFileURL(join(W, "test", "replay", "preload.mjs")).href;
@@ -180,7 +181,14 @@ console.log("\nTest 8: DSH_REPLAY 未设时零参与（真网络门不许消失�
   const off = await run(script, { DSH_REPLAY: "" }, false);
   check("off 态真打上游", server.__hits.length === 1, "hits=" + server.__hits.length);
   check("off 态拿到响应", /OFF:.*"ok":true/.test(String(off.stdout || "")), String(off.stdout || "").trim().slice(0, 120));
-  check("engine.mode() 默认 off", engine.mode() === "off", engine.mode());
+  // mode 必须问**子进程**，不能问父进程自身：门在回放态把 DSH_REPLAY=1 传给了每个套件，
+  // 于是「父进程 engine.mode()==='off'」这条在 DSH_REPLAY=1 下跑门时必然假红（01:32 实测）。
+  // 真正要证的是「没带 DSH_REPLAY 的子进程视自己为 off」，与本套件的其它判据同一姿势。
+  const modeProbe = spawnSync(process.execPath, ["-e", "import('./test/replay/engine.mjs').then(m=>console.log('MODE:'+m.mode()))"], {
+    cwd: W, encoding: "utf8", timeout: 60000,
+    env: { ...process.env, DSH_REPLAY: "", DSH_REPLAY_MODE: "" },
+  });
+  check("子进程不带 DSH_REPLAY 时 mode=off", /MODE:off/.test(String(modeProbe.stdout || "")), String(modeProbe.stdout || "").trim().slice(0, 80));
 }
 
 console.log("\nTest 9: 门侧接线（run-gate 注入 --import，且契约同批改）");
@@ -218,6 +226,25 @@ console.log("\nTest 10: 门侧端到端 —— 空档案回放必须让门真红
   check("门退出码非 0（发布被拦）", (gate.status || 0) !== 0, "status=" + gate.status);
   check("红灯里有 publish blocked", /publish blocked/.test(gate.out), '');
   try { rmSync(emptyDir, { recursive: true, force: true }); } catch {}
+}
+
+console.log("\nTest 12: 编排器参数不许静默忽略（01:13 我传 --suites/--rounds 被吞，实跑成 68 套件）");
+{
+  const env = { DSH_GATE_ONLY: "from-env.mjs", DSH_REPLAY_BACKFILL_ROUNDS: "6", DSH_GATE_TIMEOUT_MS: "420000" };
+  const d = parseConfig([], env);
+  check("无参数时回退 env", d.suites === "from-env.mjs" && d.rounds === 6, JSON.stringify(d));
+  const o = parseConfig(["--suites=a.mjs,b.mjs", "--rounds=2", "--store=X"], env);
+  check("显式参数优先于 env", o.suites === "a.mjs,b.mjs" && o.rounds === 2 && o.store === "X", JSON.stringify(o));
+  const u = parseConfig(["--suites=a.mjs", "--seuits=a.mjs"], env);
+  check("拼错的参数进 unknown（不静默）", u.unknown.length === 1 && u.unknown[0] === "--seuits=a.mjs", JSON.stringify(u.unknown));
+  const bad = parseConfig(["--rounds=0", "--timeout=1"], env);
+  check("rounds/timeout 有下界", bad.rounds >= 1 && bad.timeoutMs >= 30000, JSON.stringify(bad));
+  const g = allGreen("[GATE] 10/10 suites green");
+  const g2 = allGreen("[GATE] 6/10 suites green");
+  check("allGreen 要 N===M（00:48 的 0/1 假收敛）", g === true && g2 === false, g + "/" + g2);
+  check("allGreen 无汇总行时为假", allGreen("node: something") === false, "should be false");
+  const r = redDetail("[GATE] test-x.mjs FAIL 3s 2 passed, 1 failed\nnoise\n[GATE] 5/6 suites green");
+  check("redDetail 抓到红套件行", r.some((l) => /test-x\.mjs FAIL/.test(l)), JSON.stringify(r));
 }
 
 server.close();
