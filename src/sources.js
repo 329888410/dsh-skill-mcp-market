@@ -648,7 +648,13 @@ export async function fanOutSources({ names, run, budgetMs = DEFAULT_BUDGET_MS, 
 // fan 对象后各自折叠，items 数组互不共享。
 const inflight = new Map();
 
+// 面板与工具的单源路径没有任何超时预算：慢源必须等到真返回或真网络失败（用户 2026-11-24
+// 口径「不管快慢，都得等待面板加载完毕」）。预算截断只属于 picked.length > 1 的聚合路径；
+// 单源传 0 让 settle 走 !(b > 0) 的无预算分支，超时文案与冷却标记都无从触发。
 async function fanOnce({ query, source, cache, sort, category, handlers, budgetMs, effectiveSort, p, size, picked, budgetOverrides }) {
+  const aggregate = picked.length > 1;
+  const fanBudget = aggregate ? budgetMs : 0;
+  const fanOverrides = aggregate ? budgetOverrides : null;
   const key = [
     handlers ? "test" : "live",
     String(query == null ? "" : query),
@@ -657,17 +663,17 @@ async function fanOnce({ query, source, cache, sort, category, handlers, budgetM
     String(size),
     String(sort || ""),
     String(category || ""),
-    budgetKey(picked, budgetMs, budgetOverrides),
+    budgetKey(picked, fanBudget, fanOverrides),
   ].join("\u0001");
   const pending = inflight.get(key);
   if (pending) return pending;
   const work = (async () => {
     return await fanOutSources({
       names: picked,
-      budgetMs,
-      budgetOverrides,
+      budgetMs: fanBudget,
+      budgetOverrides: fanOverrides,
       cache,
-      cooldownMs: picked.length > 1 ? AGGREGATE_COOLDOWN_MS : 0,
+      cooldownMs: aggregate ? AGGREGATE_COOLDOWN_MS : 0,
       cooldownKey: String(query == null ? "" : query).trim().toLowerCase(),
       run: (name) => {
         const handler = (handlers && handlers[name]) || SOURCE_HANDLERS[name];

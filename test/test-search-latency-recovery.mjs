@@ -136,7 +136,9 @@ console.log('Test 5: 源码锁 —— 冷却与合并必须写在真实实现里
   }).join(String.fromCharCode(10));
   check('fanOutSources 默认不冷却（cooldownMs = 0）', /cooldownMs = 0[,}]/.test(code), '');
   check('聚合冷却时长是具名常量', /const AGGREGATE_COOLDOWN_MS = 120000;/.test(code), '');
-  check('只有 picked 多于一个源才传冷却时长', /cooldownMs: picked\.length > 1 \? AGGREGATE_COOLDOWN_MS : 0/.test(code), '');
+  check('只有聚合路径才传冷却时长（单源恒 0）', /const aggregate = picked\.length > 1;/.test(code) && /cooldownMs: aggregate \? AGGREGATE_COOLDOWN_MS : 0/.test(code), '');
+  check('源码锁：单源路径的预算恒为 0（面板永不被截断）', /const fanBudget = aggregate \? budgetMs : 0;/.test(code) && /budgetMs: fanBudget,/.test(code), '');
+  check('源码锁：单源路径不带上游预算表（否则表里的值会绕过 0）', /const fanOverrides = aggregate \? budgetOverrides : null;/.test(code) && /budgetOverrides: fanOverrides,/.test(code), '');
   check('在途合并表在 settle 时清除（合并 ≠ 永久缓存）', /inflight[A-Za-z]*\.delete\(/.test(src), '');
   check('既有超时文案保持不变（其它套件的判据依赖它）', src.indexOf('来源响应超时（预算 ') >= 0, '');
 }
@@ -167,34 +169,38 @@ console.log('Test 6: 死分支移除后，槽位契约与冷却短路仍然成�
 }
 
 console.log('');
-console.log('Test 7: 面板单源路径永不进入冷却（用户 2026-11-23 决策：all 聚合只存在于工具，不能影响 UI 面板）');
+console.log('');
+console.log('Test 7: 面板单源路径既不截断也不冷却（用户 2026-11-24 口径：不管快慢，都得等待面板加载完毕）');
 {
   const calls = { lone: 0, slow: 0 };
   const handlers = {
     lone: async () => { calls.lone++; await sleep(400); return { items: [{ slug: 'l', name: 'l', source: 'lone' }], total: 1, totalPages: 1 }; },
-    slow: async () => { calls.slow++; await sleep(5000); return { items: [{ slug: 's', name: 's', source: 'slow' }], total: 1, totalPages: 1 }; },
+    slow: async () => { calls.slow++; await sleep(700); return { items: [{ slug: 's', name: 's', source: 'slow' }], total: 1, totalPages: 1 }; },
   };
   const cache = freshCache();
-  // ① 面板形态：source 指定单源且该源注定超时 —— 同词连搜四次都必须真打上游
+  // ① 面板形态：单源 + 显式小预算 ⇒ 预算必须被忽略，等到真返回
   const ps = { query: 'q', source: 'slow', page: 1, pageSize: 24, handlers, cache, budgetMs: 300 };
   const t1 = Date.now(); const r1 = await searchSkills(ps); const ms1 = Date.now() - t1;
-  check('面板单源首次：预算内切断并如实 degraded', ms1 < 1500 && /slow/.test(dgOf(r1)), ms1 + 'ms ' + dgOf(r1));
+  check('面板单源：预算被忽略，条目真到手', r1.items.length === 1 && r1.items[0].source === 'slow', 'items=' + r1.items.length + ' ' + JSON.stringify(r1.items.map((i) => i.source)));
+  check('面板单源：degraded 必须为空（不再出现「已跳过」）', (r1.degraded || []).length === 0, dgOf(r1));
+  check('面板单源：真实等待而非 300ms 截断', ms1 >= 600, ms1 + 'ms');
+  check('面板单源：sourceErrors 不再谎称没找到', JSON.stringify(r1.sourceErrors) === '[]', JSON.stringify(r1.sourceErrors));
   const t2 = Date.now(); const r2 = await searchSkills(ps); const ms2 = Date.now() - t2;
   check('面板单源第二次：仍真重试（calls.slow=2，没有被冷却短路）', calls.slow === 2, 'calls.slow=' + calls.slow);
-  check('面板单源第二次：文案不再出现「冷却/不再重试/稍后」', !/冷却|不再重试|稍后/.test(dgOf(r2)), dgOf(r2));
-  check('面板单源第二次：等待与首次同量级（不是被跳过后的瞬时）', ms2 >= ms1 / 3, '首次' + ms1 + 'ms 第二次' + ms2 + 'ms');
+  check('面板单源第二次：文案不再出现「冷却/不再重试/稍后/已跳过」', !/冷却|不再重试|稍后|已跳过/.test(dgOf(r2) + JSON.stringify(r2.sourceErrors)), dgOf(r2));
+  check('面板单源第二次：等待与首次同量级', ms2 >= ms1 / 3, '首次' + ms1 + 'ms 第二次' + ms2 + 'ms');
   await searchSkills(ps); await searchSkills(ps);
   check('面板单源第四次同词：累计四次全部打到上游', calls.slow === 4, 'calls.slow=' + calls.slow);
-  // ② 对照组：同一个坏源走聚合路径（两个 handler ⇒ wanted>1），第二次仍要短路
+  // ② 对照组：同一个慢源走聚合路径（两个 handler ⇒ wanted>1），预算与冷却都必须照旧生效
   const agg = { query: 'q', source: 'all', page: 1, pageSize: 24, handlers, cache, budgetMs: 300 };
-  calls.slow = 0;
+  calls.slow = 0; calls.lone = 0;
   await searchSkills(agg);
-  check('聚合首次：坏源真打上游', calls.slow === 1, 'calls.slow=' + calls.slow);
+  check('聚合首次：慢源真打上游', calls.slow === 1, 'calls.slow=' + calls.slow);
   const ta = Date.now(); const ra = await searchSkills(agg); const msa = Date.now() - ta;
   check('聚合第二次：冷却仍生效（不再打上游）', calls.slow === 1, 'calls.slow=' + calls.slow);
   check('聚合第二次：不再重付整段预算', msa < 150, msa + 'ms');
   check('聚合第二次：坏源仍如实进 degraded（冷却≠静默丢源）', (ra.degraded || []).some((d) => d.source === 'slow'), dgOf(ra));
-  // ③ 直调 fanOutSources：不传 cooldownMs = 默认不冷却；显式传仍可启用
+  // ③ 直调 fanOutSources：底层预算能力保留（聚合与工具路径仍可用）
   const { fanOutSources } = await import('../src/sources.js');
   let direct = 0;
   const dcache = freshCache();
@@ -266,7 +272,7 @@ console.log('Test 8: 每源预算可配置，但默认表为空 ⇒ 可见结果
   check('fanOutSources 与 searchSkills 的默认值都取自常量，不再是裸 12000', (code6.match(/budgetMs = DEFAULT_BUDGET_MS/g) || []).length === 2, String((code6.match(/budgetMs = DEFAULT_BUDGET_MS/g) || []).length));
   check('两条超时文案的秒数按该源实际预算算（否则多源文案会说谎）', (code6.match(/Math\.round\(budgetFor\(name, budgetMs, budgetOverrides\) \/ 1000\)/g) || []).length === 2 && code6.indexOf('Math.round(budgetMs / 1000)') < 0, '');
   check('超时判定用解析后的预算 b（不是整批共用一个 budgetMs）', /const b = budgetFor\(name, budgetMs, budgetOverrides\);/.test(code6) && /setTimeout\(\(\) => resolve\(\{ timeout: true \}\), b\)/.test(code6), '');
-  check('合并键的预算段走 budgetKey（空表时逐字符等于旧的 String(budgetMs)）', /budgetKey\(picked, budgetMs, budgetOverrides\)/.test(code6) && /return same \? String\(budgetMs\)/.test(code6), '');
+  check('合并键的预算段走 budgetKey（单源恒为 "0"，与聚合不串）', /budgetKey\(picked, fanBudget, fanOverrides\)/.test(code6) && /return same \? String\(budgetMs\)/.test(code6), '');
 }
 
 console.log('');
@@ -315,6 +321,47 @@ console.log('Test 9: 空结果与取数失败必须可区分（非空 query 不�
   const code9 = src9.split(String.fromCharCode(10)).filter((l) => { const t = l.trimStart(); return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*'); }).join(String.fromCharCode(10));
   check('源码锁：查询词非空不再是屏蔽失败披露的条件（旧判据整行消失）', !/items\.length > 0 \|\| String\(query/.test(code9), '');
   check('源码锁：失败披露走逐源分类函数（不是一个 slice 截断了事）', (code9.match(/describeFailure\(entry\.source, entry\.error\)/g) || []).length === 1, String((code9.match(/describeFailure/g) || []).length));
+}
+
+console.log('');
+console.log('Test 10: 面板必须完整呈现（浏览态给满一页、搜索态给全匹配集，预算值不得改变可见集合）');
+{
+  // 用户 2026-11-24 口径：「技能市场的UI面板必须完整地呈现所有技能，在搜索时完整地呈现所有搜索结果」。
+  // 判据形状：同一个 handler、只差 budgetMs 与超时预算的关系 —— 可见条目、total、页码必须逐条相同。
+  const rows = (n, tag) => Array.from({ length: n }, (_, i) => ({ slug: tag + i, name: tag + i, source: 'full', installs: n - i }));
+  let mode = 'browse';
+  const calls9 = { full: 0 };
+  const handlers9 = {
+    full: async (a) => {
+      calls9.full++;
+      await sleep(700);
+      if (mode === 'browse') return { items: rows(24, 'b'), total: 89020, totalPages: 3710 };
+      return { items: rows(7, 's'), total: 7, totalPages: 1 };
+    },
+  };
+  const cache9 = freshCache();
+  const shape = (r) => r.items.map((i) => i.slug).join(',') + '|' + r.total + '|' + r.page + '|' + r.pageSize + '|' + (r.pages === undefined ? 'undef' : r.pages) + '|' + (r.hasMore === undefined ? 'undef' : r.hasMore);
+  mode = 'browse';
+  const bNo = await searchSkills({ query: '', source: 'full', page: 1, pageSize: 24, handlers: handlers9, cache: cache9 });
+  const bCut = await searchSkills({ query: '', source: 'full', page: 1, pageSize: 24, handlers: handlers9, cache: cache9, budgetMs: 300 });
+  check('浏览态：一页 24 条必须一条不少（旧口径下预算 300ms 会砍成 0 条）', bNo.items.length === 24 && bCut.items.length === 24, '无预算=' + bNo.items.length + ' 小预算=' + bCut.items.length);
+  check('浏览态：上游 total 原样保留，不被预算截断改写', bNo.total === 89020 && bCut.total === 89020, '无预算=' + bNo.total + ' 小预算=' + bCut.total);
+  check('浏览态：有无预算两次可见结果逐字符相同', shape(bNo) === shape(bCut), shape(bNo) + ' vs ' + shape(bCut));
+  check('浏览态：两次都不许出现 degraded/hint 类截断文案', dgOf(bNo) === '' && dgOf(bCut) === '', dgOf(bCut));
+  mode = 'search';
+  const sNo = await searchSkills({ query: 'pdf', source: 'full', page: 1, pageSize: 24, handlers: handlers9, cache: cache9 });
+  const sCut = await searchSkills({ query: 'pdf', source: 'full', page: 1, pageSize: 24, handlers: handlers9, cache: cache9, budgetMs: 300 });
+  check('搜索态：匹配集必须给全（7 条就是 7 条）', sNo.items.length === 7 && sCut.items.length === 7, '无预算=' + sNo.items.length + ' 小预算=' + sCut.items.length);
+  check('搜索态：total 说清匹配总数且无下一页', sNo.total === 7 && sNo.hasMore === false && sCut.total === 7 && sCut.hasMore === false, 'hasMore=' + sNo.hasMore + '/' + sCut.hasMore + ' total=' + sNo.total + '/' + sCut.total);
+  check('搜索态：有无预算两次可见结果逐字符相同', shape(sNo) === shape(sCut), shape(sNo) + ' vs ' + shape(sCut));
+  check('搜索态：条目顺序即上游顺序（未被本地聚合排序搅乱）', sNo.items.map((i) => i.slug).join(',') === Array.from({ length: 7 }, (_, i) => 's' + i).join(','), sNo.items.map((i) => i.slug).join(','));
+  check('四次调用全部真打上游（单源无冷却 ⇒ 面板每次刷新都重新取数）', calls9.full === 4, 'calls=' + calls9.full);
+  mode = 'browse';
+  const bOv = await searchSkills({ query: '', source: 'full', page: 1, pageSize: 24, handlers: handlers9, cache: cache9, budgetMs: 12000, budgetOverrides: { full: 50 } });
+  check('浏览态：某源预算覆盖也不能砍单源（overrides 里 50ms 必须被忽略）', bOv.items.length === 24 && shape(bOv) === shape(bNo), 'items=' + bOv.items.length + ' ' + shape(bOv));
+  mode = 'search';
+  const sOv = await searchSkills({ query: 'pdf', source: 'full', page: 1, pageSize: 24, handlers: handlers9, cache: cache9, budgetMs: 12000, budgetOverrides: { full: 50 } });
+  check('搜索态：同上，覆盖表不得让单源少给条目', sOv.items.length === 7 && shape(sOv) === shape(sNo), 'items=' + sOv.items.length + ' ' + shape(sOv));
 }
 
 console.log(passed + ' passed, ' + failed + ' failed');

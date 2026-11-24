@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.162
+
+- 收 MON 效率口径第 ② 条（用户 2026-11-24 原话：「技能市场的UI面板必须完整地呈现所有技能，在搜索时完整地呈现所有搜索结果」「不管快慢，都得等待面板加载完毕」）：面板与所有单源调用从此**没有任何超时预算**。此前 fanOnce 把调用方的 budgetMs 原样传给 fanOutSources，单源同样被 12s 截断——面板点 trusttools/skillhub 等慢源时「trusttools 不可达：来源响应超时（预算 12s），已跳过」（真机截图取证，m13096）。现在 fanOnce 判 picked.length>1：单源传 budgetMs 0（settle 的既有 `!(b>0)` 分支即无预算真等待，超时文案与冷却标记都无从触发）且不带预算覆盖表（fanOverrides=null，否则表里的值会绕过 0）；聚合路径逐字节不变。上游侧自有超时仍在：src/http.js getJson 20s、curlText 15s、pythonText 20s+5s、面板 RPC 上限 5 分钟（client.js:352 AbortSignal.timeout(300000)），因此「无预算」仍有界，只是界从 12s 挪到了每条上游通道自己的真实失败点。
+- 完整呈现单独立判据（Test 10）：浏览态一页 24 条一条不少、上游 total 原样保留、搜索态匹配集给全、条目顺序即上游顺序；同一 handler 在 budgetMs=12000/300/覆盖表 50ms 三种口径下可见结果（slug 序列+total+页码+hasMore）逐字符相同——预算值从此不可能改变可见集合。四条覆盖判据顺带锁住单源无冷却（四次调用全部真打上游）。
+- 冷却口径不变：AGGREGATE_COOLDOWN_MS=120000 仍只在 picked.length>1 的聚合路径生效（skill_market_search source=all），面板单源刷新每次真打上游。0.5.147/0.5.156 的 CHANGELOG 表述在此更正：冷却与预算截断的收益只属于聚合路径，面板单源路径从本版起永不受截断、也从不冷却。
+- 合并键同步分流：budgetKey(picked, fanBudget, fanOverrides)——单源恒为 "0"，聚合为 String(12000)，两种口径的在途合并天然不串（source 段本就不同，双保险）。Test 5/8 的源码锁更新为新形状（aggregate/fanBudget/fanOverrides 三行 + 两条传参），合并键语义锁（空表逐字符等于旧 String(budgetMs)）不动。
+- 判据：test-search-latency-recovery 真 import + 注入 handler 出 RED（Test 7 重写后首跑 81 passed, 5 failed——items=0、degraded「响应超时（预算 0s）」、ms1=309ms 截断、sourceErrors 谎称、第二次文案含「已跳过」），落码后 88/0；补 Test 10 完整呈现 11 条后 97/0；再补覆盖表忽略判据（M2 反向破坏直接暴露的缺口）后 **99/0**。变异五向全杀：M1 去掉 aggregate 判定（13 FAIL）、M2 单源仍带覆盖表（3 FAIL：覆盖判据 2 + 源码锁 1）、M3 冷却改无条件（1 FAIL 源码锁）、M4 合并键回退（1 FAIL 源码锁）、M5 传参简写回退（13 FAIL）；逐向还原 sha16 一致（base 17367e5eacfd2d5c）。
+- 单源 budgetMs 全测试面回归：fanout 203/0、paging 30/0、clawhub-quality 86/0、skillsmp-category 65/0、skillsmp-search 73/0、trusttools-category 84/0、clawhub-category 62/0、index-runtime 26/0、dead-exports 47/0、inventory 12/0、sources 73s exit=0。
+- gate161-s1 的 test-sort-honesty TIMEOUT 1524s 归因：不是判据回归，是「不受 fanOut 预算保护的最后一段不受控等待」——src/sources.js browse 页对 skills.sh 缺 description 的行调 enrichSkillsShFast（src/enrich.js，每 fetch 4s 超时、3 候选路径×2 host、并发 8、limit 10），上游慢时 browse 页最长可挂 ~80s/次；run-gate.mjs 的 SIGKILL 在 Windows 上要等孙进程继承的 stdio 管道全关才 close，1524s=420s 上限+管道等待。上游快时同套件 18s 绿（gate161-clean.log:18）。本轮未改该路径（改动面与风险另立版本），在本轮全部门跑里该套件均为绿。
+
 ## 0.5.161
 
 - 收 S1「空结果与取数失败不可区分」：查询词非空时任何源的失败都被「没有找到匹配的技能。」吞掉。根因在 src/sources.js 的 sourceErrors 判据 `items.length > 0 || String(query || "").trim()` —— 它只在**空查询**时才披露 degraded，而面板 client.js 在拿不到任何 reason 时兜底成「没有找到匹配的技能。」，用户看到的是一句谎话。现在只要 items 为空且有 degraded，就逐源点名披露（`源名：原因` 用「；」连接），查询词是否非空不再影响诚实性（三态判据：非空 query+degraded 点名 / 非空 query 无 degraded 仍说没找到 / 空 query+degraded 保持 0.5.160 行为不回归）。
