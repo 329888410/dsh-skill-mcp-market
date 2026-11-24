@@ -70,7 +70,7 @@ node test/replay/backfill.mjs
 **发布前必须至少跑一次不带 `DSH_REPLAY` 的全量门**（或至少那 10 个真网络套件），
 回放用于开发迭代期。CI 的 `npm test` 走的是真网络层——这是有意的。
 
-## 四条必须知道的边界
+## 必须知道的边界（④–⑧）
 
 **④ cursor 链型套件的档案收敛靠「门重录轮」，不靠跨轮回放复用。**
 01:11 实测（chain-walk.mjs 读 replay-snap 315 条）：clawhub skills 77 条记录里
@@ -108,8 +108,21 @@ warm-budget 6 / func-fixes 1），不作为收敛或失败的判定。
 `npx.cmd` 以 UTF-8 写、cmd.exe 按 OEM 码页读 ⇒ 路径变 `C:\Users\??\` ⇒ 子 node
 `ERR_MODULE_NOT_FOUND`（02:47 复现；真实套件同进程自写自读不受影响）。
 
-## 睡眠不是慢：SUSPEND-SUSPECT
+**⑧ 回放态会走真网络走不到的分支——这类缺口补录永远补不上，只能整链重录。**
+05:25 实测：`test-full-sort.mjs:274` 的聚合段带 `query='agent' + sort='installCount'`，
+真网络态下 trusttools 在 12s 预算（`sources.js:550 DEFAULT_BUDGET_MS`）内回不来 ⇒
+走 `skip` 分支 ⇒ **那条 `…&search=agent` 请求从未发出**（空档案录制 records=60，
+trusttools 只有 3 条浏览态、无 search=agent，target key present=false）。
+回放态档案秒回 ⇒ 该分支走通 ⇒ 发出这条请求 ⇒ REPLAY-MISS。
+`backfill --rounds=4` 每轮稳定复现、`verdict=NOT-CONVERGED`：录制轮和回放轮走的分支不同，
+**收敛循环也吃不平**——它只能在「同一分支」上补齐档案。
+⇒ 判据：回放态的 miss 若来自「真网络被预算/超时挡掉的分支」，属档案代际问题，
+整链重录（换一份干净 store 从头 record）才是解；手工定向补录会把失败形态
+（`error` 记录）也掺进档案，反而多测一条假分支。05:27 那次手工补录就留下 2 条 ERR 记录。
+**顺带：回放态比真网络「多测」不是好事**——它意味着录放覆盖不一致，
+要么把该分支的预算调成录制轮也能走通，要么承认这条判据只在回放态成立。
 
+## 睡眠不是慢：SUSPEND-SUSPECT
 门的「被杀」判定原本只有 TIMEOUT 一种归因，于是**整机睡眠会被当成套件真慢**。
 实测（2026-11-24 08:24）：`test-sort-honesty` 记成 `TIMEOUT 1524s`，而 `perTimeout=420s`；
 Kernel-Power 事件 08:24:57 睡眠 / 08:50:21 唤醒，窗口正好 1524 秒。睡眠把杀定时器与
