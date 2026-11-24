@@ -5,7 +5,8 @@
 // 返回值里绝不出现 serverFacet: true。Test 8 另锁「空深页凭空造 total」。
 // 零网络：注入 transport，同时遮蔽 globalThis.fetch —— 两者共用同一假核心与同一计数器，
 // 于是「实现还没支持注入参数」的 RED 期也不会打到 modelscope.cn（遮蔽层兜住）。
-// 唯一联网项 Test 10 默认 SKIP，需 DSH_MS164_LIVE=1 显式开启（CI 门不付网络成本）。
+// 联网项 Test 10（0.5.164 上游真实性）与 Test 12（0.5.165 live 首屏复验）默认 SKIP，需
+// DSH_MS164_LIVE=1 / DSH_MS165_LIVE=1 显式开启（CI 门不付网络成本）。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -140,12 +141,14 @@ const fakeFetch = async (url, opts) => {
   const pn = Number(body.PageNumber) || 1;
   const ps = Number(body.PageSize) || 0;
   fakeCore.calls.push({ pn, ps });
+  // 注入失败：pn >= failFrom 的页一律超时（0.5.165 判据：失败不得静默截断）
+  if (fakeCore.failFrom && pn >= fakeCore.failFrom) throw new Error('The operation was aborted due to timeout');
   if (ps >= 1000) fakeCore.full += 1; else fakeCore.normal += 1;
   if (fakeCore.emptyRows) return { ok: true, status: 200, json: async () => ({ Data: { SkillList: [] } }) };
   const rows = ALL_ROWS.slice((pn - 1) * ps, (pn - 1) * ps + ps);
   return { ok: true, status: 200, json: async () => ({ Data: { SkillList: rows, TotalCount: TOTAL_REAL } }) };
 };
-const newFake = (extra) => { fakeCore = { calls: [], full: 0, normal: 0, emptyRows: false }; if (extra) Object.assign(fakeCore, extra); return fakeCore; };
+const newFake = (extra) => { fakeCore = { calls: [], full: 0, normal: 0, emptyRows: false, failFrom: 0 }; if (extra) Object.assign(fakeCore, extra); return fakeCore; };
 const realFetch = globalThis.fetch;
 const realFetchDesc = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
 const installFake = () => Object.defineProperty(globalThis, 'fetch', { value: fakeFetch, configurable: true, writable: true });
@@ -154,6 +157,9 @@ const runMs = async (a) => { installFake(); try { return await soft(() => esMod.
 const cacheRoot = path.join(safeTempDir(), 'dsh-ms164-' + process.pid + '-' + crypto.randomBytes(4).toString('hex'));
 let cacheSeq = 0;
 const mkCache = () => srcMod.makeCache(path.join(cacheRoot, 'c' + (cacheSeq += 1)));
+// 0.5.165 分页形状锁（与实现同源；改数值必须同步这里的期望）
+const MS_PAGE = 1000;
+const MS_MAX_PAGES = 45;
 
 console.log('');
 console.log('Test 3: 分类真过滤（跨页，全量可达集合内）——小条数子类也必须筛出非空');
@@ -218,7 +224,7 @@ else {
   const zDirect = await runMs({ query: '', page: 1, pageSize: 24, cache: undefined, sort: '', category: ZERO_CN });
   check('零命中分类态 handler 仍声明 categoryInfo === true', zDirect.ok && zDirect.v.categoryInfo === true, zDirect.ok ? JSON.stringify(zDirect.v.categoryInfo) : zDirect.err);
   check('零命中分类态 items 为空且 total 归零（不谎报该类有货）', zDirect.ok && zDirect.v.items.length === 0 && zDirect.v.total === 0, zDirect.ok ? zDirect.v.items.length + '/' + zDirect.v.total : zDirect.err);
-  check('零命中分类态 handler hint 如实说明该分类在可达 N 行内实测 0 条', zDirect.ok && /本类实测 0 条/.test(String(zDirect.v.hint || '')) && /可达的 [\d,]+ 行/.test(String(zDirect.v.hint || '')), zDirect.ok ? JSON.stringify(zDirect.v.hint) : zDirect.err);
+  check('零命中分类态 handler hint 如实说明该分类在可达 N 行内实测 0 条', zDirect.ok && /本类实测 0 条/.test(String(zDirect.v.hint || '')) && /已取回的 [\d,]+ 行/.test(String(zDirect.v.hint || '')), zDirect.ok ? JSON.stringify(zDirect.v.hint) : zDirect.err);
   const zWrap = { modelscope: (a) => esMod.searchModelScope({ query: a.query, page: a.page, pageSize: a.pageSize, cache: a.cache, sort: a.sort, category: a.category, transport: fakeFetch }) };
   newFake();
   installFake();
@@ -232,7 +238,7 @@ else {
 }
 
 console.log('');
-console.log('Test 5: 缓存键含分类，而行集只按 query 拉一次（换分类不得重拉 9 页）');
+console.log('Test 5: 缓存键含分类，而行集只按 query 拉一次（换分类不得重拉整份行集）');
 if (!vocabFn) skip('缓存键判据', '无分类通道（RED 期正常）');
 else {
   const st = newFake();
@@ -241,7 +247,7 @@ else {
   const nAfterA = st.calls.length;
   const b = await runMs({ query: '', page: 1, pageSize: 24, cache: shared, sort: '', category: '移动开发' });
   check('两个分类各自取到不同条目集合', a.ok && b.ok && JSON.stringify(a.v.items.map((i) => i.id)) !== JSON.stringify(b.v.items.map((i) => i.id)), a.ok && b.ok ? a.v.total + '/' + b.v.total : (a.err || b.err));
-  check('换分类命中行集缓存，不新增 5000 行请求（fullKey 仍按 query）', st.full === 9, 'full=' + st.full + ' calls=' + st.calls.length);
+  check('换分类命中行集缓存：整轮行集只按 query 拉一次（fullKey 不变，页数上界=' + MS_MAX_PAGES + '）', st.full === MS_MAX_PAGES, 'full=' + st.full + ' 期望=' + MS_MAX_PAGES + ' calls=' + st.calls.length);
   check('换分类不需要任何新上游请求（行集与分类无关，9 页只拉一次）', st.calls.length === nAfterA, 'before=' + nAfterA + ' after=' + st.calls.length);
   const nBefore = st.calls.length;
   const c = await runMs({ query: '', page: 1, pageSize: 24, cache: shared, sort: '', category: '市场推广' });
@@ -307,7 +313,7 @@ console.log('Test 9: 接线（下发 + 面板归属 + 导出 + 进门登记 + �
   check('extra-sources 导出三件', typeof esMod.searchModelScope === 'function' && typeof vocabFn === 'function' && typeof catOfFn === 'function', MISSING_EXPORTS.join(','));
   const pkg = JSON.parse(read('package.json'));
   check('新套件已登记进 test:chain', String(pkg.scripts['test:chain']).indexOf('test/test-modelscope-category-vocab.mjs') >= 0, 'chain');
-  check('版本已升到 0.5.164', pkg.version === '0.5.164', pkg.version);
+  check('版本已升到 0.5.165', pkg.version === '0.5.165', pkg.version);
   check('searchModelScope 接受注入 transport', /transport/.test(readLf('src/extra-sources.js').split('function searchModelScope')[1] || ''), 'param');
 }
 
@@ -351,8 +357,100 @@ else {
     check('live：表内分类在真实数据里确实存在（>=4 类命中，词表非编造）', hits.length >= 4, hits.length);
   }
 }
+console.log('');
+console.log('Test 11: 0.5.165 Fix B —— 首屏有界 + 取数失败绝不静默截断');
+{
+  const msSeg = readLf('src/extra-sources.js').split('function searchModelScope')[1] || '';
+  const pageLine = (msSeg.match(/const MS_PAGE = (\d+)/) || [])[1];
+  const maxLine = (msSeg.match(/const MS_MAX_PAGES = (\d+)/) || [])[1];
+  const budgetLine = (msSeg.match(/const MS_FETCH_BUDGET_MS = (\d+)/) || [])[1];
+  const timeoutLine = (msSeg.match(/const MS_PAGE_TIMEOUT_MS = (\d+)/) || [])[1];
+  check('分页形状锁：MS_PAGE 存在且 <= 1000（5000 行单页实测 66s，一次大页不得决定整源生死）', pageLine !== undefined && Number(pageLine) > 0 && Number(pageLine) <= 1000, 'MS_PAGE=' + pageLine);
+  check('单页超时锁：MS_PAGE_TIMEOUT_MS 存在且 <= 30000（PageSize=1000 live=24.1s，给到 30s 一档）', timeoutLine !== undefined && Number(timeoutLine) > 0 && Number(timeoutLine) <= 30000, 'timeout=' + timeoutLine);
+  check('不再沿用 90000 单次大页上限', msSeg.indexOf('90000') < 0, 'seg 内仍见 90000');
+  check('硬上界 + 单次调用时间预算常量齐备（MS_MAX_PAGES / MS_FETCH_BUDGET_MS）', maxLine !== undefined && budgetLine !== undefined && Number(maxLine) > 0 && Number(budgetLine) > 0, 'pages=' + maxLine + ' budget=' + budgetLine);
+  check('上界仍覆盖实测深度 45,000 行（MS_MAX_PAGES*MS_PAGE >= 45000）', Number(maxLine) * Number(pageLine) >= 45000, String(Number(maxLine) * Number(pageLine)));
+  check('预算算式：MS_FETCH_BUDGET_MS + MS_PAGE_TIMEOUT_MS < 旧 abort 90000（有界）', Number(budgetLine) + Number(timeoutLine) < 90000, String(Number(budgetLine) + Number(timeoutLine)));
+  check('页数上界与实现常量一致（套件不再自说自话）', Number(maxLine) === MS_MAX_PAGES && Number(pageLine) === MS_PAGE, 'impl=' + pageLine + '/' + maxLine + ' suite=' + MS_PAGE + '/' + MS_MAX_PAGES);
+  check('旧静默截断已消失：searchModelScope 内不得再有裸 catch+break', !/catch\s*\{\s*break;/.test(msSeg), '仍见 catch+break');
+
+  // (a) 中间页超时：必须部分成功 + 失败可见 + 行数取实际值
+  newFake({ failFrom: 3 });
+  const part = await runMs({ query: '', page: 1, pageSize: 24, cache: undefined, sort: '', category: '市场推广' });
+  check('中间页超时该次调用仍取数成功（不得抛穿整源）', part.ok, part.err);
+  if (part.ok) {
+    check('中间页超时仍返回非空条目（部分成功 > 整源归零）', part.v.items.length > 0, 'items=' + part.v.items.length);
+    check('失败必须记账：msFetchFailures 计数 >= 1', Number(part.v.msFetchFailures) >= 1, JSON.stringify(part.v.msFetchFailures));
+    check('失败页码逐页点名（msFetchFailedPages 含 3）', String(part.v.msFetchFailedPages || '').indexOf('3') >= 0, JSON.stringify(part.v.msFetchFailedPages));
+    const h = String(part.v.hint || '');
+    check('hint 点名第 3 页取数失败/超时', /第 3 页/.test(h) && /取数失败|超时/.test(h), JSON.stringify(h.slice(0, 160)));
+    check('hint 行数 = 实际取回行数（2,000），不得再报没取到的 45,000', h.indexOf('2,000') >= 0 && h.indexOf('45,000') < 0, JSON.stringify(h.slice(0, 160)));
+    check('失败态文案与「本类实测 0 条」可区分', h.indexOf('取数失败') >= 0 && h.indexOf('本类实测 0 条') < 0, JSON.stringify(h.slice(0, 160)));
+    check('失败态绝不声明 serverFacet', part.v.serverFacet !== true, JSON.stringify(part.v.serverFacet));
+  }
+
+  // (b) 第一页就失败：不得抛穿，不得静默成「该分类为空」
+  newFake({ failFrom: 1 });
+  const z = await runMs({ query: '', page: 1, pageSize: 24, cache: undefined, sort: '', category: '监控' });
+  check('首页失败也不得把异常抛穿到聚合层', z.ok, z.err);
+  if (z.ok) {
+    check('首页失败必须记账 msFetchFailures >= 1', Number(z.v.msFetchFailures) >= 1, JSON.stringify(z.v.msFetchFailures));
+    check('首页失败文案是取数失败，不是「本类实测 0 条」那种假话', /取数失败|超时/.test(String(z.v.hint || '')) && String(z.v.hint || '').indexOf('本类实测 0 条') < 0, JSON.stringify(z.v.hint));
+  }
+
+  // (c) 游标续暖：下一次调用从失败页接着拉（不回头重拉，行集只增不减）
+  const warm = mkCache();
+  newFake({ failFrom: 3 });
+  const w1 = await runMs({ query: '', page: 1, pageSize: 24, cache: warm, sort: '', category: '市场推广' });
+  const st2 = newFake({});
+  const w2 = await runMs({ query: '', page: 1, pageSize: 24, cache: warm, sort: '', category: '市场推广' });
+  check('续暖：第二次从失败页继续（首个请求是第 3 页，且绝不重拉 1-2 页）', w1.ok && w2.ok && st2.calls.length > 0 && st2.calls[0].pn === 3 && st2.calls.every((c) => c.pn >= 3), JSON.stringify(st2.calls.slice(0, 4)));
+  check('续暖：行集只增不减（分类 total 严格增长）', w1.ok && w2.ok && w2.v.total > w1.v.total, 'first=' + (w1.ok ? w1.v.total : w1.err) + ' second=' + (w2.ok ? w2.v.total : w2.err));
+  check('补全后失败标记消失（不再挂着上一轮的谎）', w2.ok && !w2.v.msFetchFailures, JSON.stringify(w2.ok ? w2.v.msFetchFailures : null));
+  check('补全后 hint 不再带上一轮的取数失败字样', w2.ok && String(w2.v.hint || '').indexOf('取数失败') < 0, w2.ok ? String(w2.v.hint || '').slice(0, 120) : w2.err);
+  check('补全后 total 到真实条数（游标最终拉满可达集合）', w2.ok && w2.v.total === COUNTS['市场推广'], w2.ok ? w2.v.total : w2.err);
+
+  // (d) 排序态中断：不得再声称「排序覆盖上游可返回的全部行」
+  newFake({ failFrom: 4 });
+  const srt = await runMs({ query: '', page: 1, pageSize: 24, cache: undefined, sort: 'stars' });
+  check('排序态中断仍回非空', srt.ok && srt.v.items.length > 0, srt.ok ? 'items=' + srt.v.items.length : srt.err);
+  if (srt.ok) {
+    check('中断态不得声称覆盖了上游可返回的全部行', String(srt.v.hint || '').indexOf('全部行') < 0, JSON.stringify(srt.v.hint));
+    check('中断态必须点名失败页 4', /第 4 页/.test(String(srt.v.hint || '')), JSON.stringify(srt.v.hint));
+    check('中断态也要记账 msFetchFailures', Number(srt.v.msFetchFailures) >= 1, JSON.stringify(srt.v.msFetchFailures));
+  }
+
+  // (e) 完好上游：走满上界，窗口末尾的小类也筛得出非空，且不留失败标记
+  const st5 = newFake({});
+  const okAll = await runMs({ query: '', page: 1, pageSize: 24, cache: undefined, sort: '', category: '通用工具' });
+  check('完好上游下末尾小类仍筛出非空（无失败记账）', okAll.ok && okAll.v.items.length > 0 && !okAll.v.msFetchFailures, okAll.ok ? okAll.v.items.length + '/' + JSON.stringify(okAll.v.msFetchFailures) : okAll.err);
+  check('完好上游按 MS_PAGE 小页拉取（无一次 5000 行的大页）', st5.calls.every((c) => c.ps === MS_PAGE), JSON.stringify(st5.calls.slice(0, 3)));
+}
+
+console.log('');
+console.log('Test 12: 真 live 复验（默认 SKIP；DSH_MS165_LIVE=1 开启，至多 4 次 PUT；0.5.165 的 live 复验由监测方跑）');
+if (process.env.DSH_MS165_LIVE !== '1') skip('live 首屏复验', '默认关闭（CI 门不联网）；DSH_MS165_LIVE=1 跑至多 4 次 PUT');
+else {
+  const liveCount = { n: 0 };
+  const liveTransport = (u, o) => { liveCount.n += 1; return realFetch(u, o); };
+  uninstallFake();
+  const t0 = Date.now();
+  const lv = await soft(() => esMod.searchModelScope({ query: '', page: 1, pageSize: 24, cache: mkCache(), sort: '', category: '市场推广', transport: liveTransport }));
+  const wall = (Date.now() - t0) / 1000;
+  if (!lv.ok) skip('live 首屏复验', lv.err);
+  else {
+    console.log('  live wall=' + wall.toFixed(1) + 's PUT=' + liveCount.n + ' items=' + lv.v.items.length + ' total=' + lv.v.total + ' failures=' + JSON.stringify(lv.v.msFetchFailures || 0));
+    console.log('  live hint=' + String(lv.v.hint || '').slice(0, 220));
+    check('live：单次调用在旧 90s abort 之前返回（有界）', wall < 88, wall.toFixed(1) + 's');
+    check('live：分类态首屏取到非空条目（不再是 items=0）', lv.v.items.length > 0, 'items=' + lv.v.items.length);
+    check('live：条目全属该类', lv.v.items.every((it) => it.category === '市场推广'), JSON.stringify(lv.v.items.slice(0, 3).map((it) => it.category)));
+    check('live：PUT 次数在预算内（<=4）', liveCount.n <= 4, 'PUT=' + liveCount.n);
+    check('live：绝不声明 serverFacet', lv.v.serverFacet !== true, JSON.stringify(lv.v.serverFacet));
+  }
+}
 if (MISSING_EXPORTS.length) console.log('  待补：' + MISSING_EXPORTS.join(', '));
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
 fs.rmSync(cacheRoot, { recursive: true, force: true });
 process.exit(failed ? 1 : 0);
+

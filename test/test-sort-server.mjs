@@ -104,7 +104,7 @@ console.log('Test 3: 缺陷2 — modelscope 5 个矩阵键必须都走全量拉�
       calls.push(body);
       const per = body.PageSize;
       const pg = body.PageNumber;
-      const totalRows = 12000; // 合成 12k 条，跨 3 个 5000 页
+      const totalRows = 12000; // 合成 12k 条；页长由生产常量定，注释不再写死 5000
       const rows = [];
       for (let i = 0; i < per; i += 1) { const idx = (pg - 1) * per + i; if (idx >= totalRows) break; rows.push(mkRow(idx)); }
       return { ok: true, status: 200, json: async () => ({ Data: { SkillList: rows, TotalCount: totalRows } }) };
@@ -114,7 +114,15 @@ console.log('Test 3: 缺陷2 — modelscope 5 个矩阵键必须都走全量拉�
       const p2 = await es.searchModelScope({ query: '', page: 2, pageSize: 12, cache: undefined, sort: 'stars' });
       // 只看第一次请求的翻页序列（后续请求在无 cache 时会再拉一遍，属预期）。
       const firstPull = calls.slice(0, 3).map((c) => c.PageNumber + '/' + c.PageSize).join(' ');
-      check('stars 首次即全量拉取 1/5000 2/5000 3/5000', firstPull === '1/5000 2/5000 3/5000', firstPull);
+      // 页长从生产源码取，不写死字面量：MS_PAGE 一改，期望序列自动跟着改。
+      const srcTxt = fs.readFileSync(path.join(W, 'src', 'extra-sources.js'), 'utf8');
+      const MS_PAGE = Number((srcTxt.match(/const MS_PAGE = (\d+);/) || [])[1] || 0);
+      check('生产源码里 MS_PAGE 是一个可解析的正数', MS_PAGE > 0, 'MS_PAGE=' + MS_PAGE);
+      // 判据不能吃写死的页长字面量：0.5.165 把 MS_PAGE 从 5000 降到 1000（实测 PageSize=5000
+      // 单页 66s，被旧的 90s 超时 abort，分类态从第一天就拿不到数据）。这里按同一条算式重取
+      // 期望序列，页长再变也不用改判据。
+      const wantPull = [1, 2, 3].map((n) => n + '/' + MS_PAGE).join(' ');
+      check('stars 首次即全量拉取前三页（页长取生产口径）', firstPull === wantPull, firstPull + ' 期望=' + wantPull);
       // 判别 off-by-one：12000 条 = 3 页；旧循环 pg < pagesNeeded 只拉 2 页 = 10000 条，
       // 于是第 1000 页（offset 11988）为空。修好后必须是 12 条。
       const deep = await es.searchModelScope({ query: '', page: 1000, pageSize: 12, cache: undefined, sort: 'stars' });

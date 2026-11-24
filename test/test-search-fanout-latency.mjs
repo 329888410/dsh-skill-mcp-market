@@ -533,7 +533,7 @@ console.log('Test 14: 请求序号守卫 —— 先发请求的结果不得覆�
     const body = c.slice(bgn + bodyStart.length, edn);
     // 函数体直接跑起来（注入 free variables），测的是行为而不是正则形状
     const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
-      '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage,' +
+      '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage, CAT_OTHER,' +
       '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setError, setBusy,' +
       '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight } = deps;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
     const fired = [];
@@ -548,6 +548,7 @@ console.log('Test 14: 请求序号守卫 —— 先发请求的结果不得覆�
       inflightRef: { current: new Set() },
       shouldSkipInflight,
       resolvePageSize: (o, s) => (o && o.size) || s,
+      CAT_OTHER: '__cat_other',
       setSkills: (rows) => fired.push(rows),
       setSkillsPage: () => {}, setSkillsTotalPages: () => {}, setSkillsTotal: () => {},
       setSkillsHasMore: () => {}, setServerFacet: () => {}, setNotice: () => {}, setError: () => {}, setBusy: () => {},
@@ -981,7 +982,7 @@ console.log('Test 20: 面板空列表必须复述逐源失败（S1 展示侧；�
   // 注入的自由变量里必须含 trustedTotal/totalBaseRef：Test 14 没注入它们，于是那条
   // 路径其实是被 catch 吞掉的 ReferenceError —— 面板 notice 判据要真的跑到底就得补齐。
   const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
-    '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage,' +
+    '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage, CAT_OTHER,' +
     '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setError, setBusy,' +
     '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight, trustedTotal, totalBaseRef } = deps;' +
     String.fromCharCode(10) + body + String.fromCharCode(10) + '};');

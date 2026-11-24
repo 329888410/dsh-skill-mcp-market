@@ -140,7 +140,9 @@ const CARD_BATCH = 48;
 // 第 32 名 moltbook 368 条 vs 第 33 名 technical 72 条有断崖），覆盖 33.4 万条技能的 99.6%；词表全集
 // 246 类里 rank>32 的 214 类合计仅 743 条。取 12 时窗口只覆盖 80.5%，把用户点名要看的分类（金融服务、
 // 浏览器 & 自动化、游戏娱乐、智能家居…）全留在折叠外，报障在可见层面等于没修。
-// 「更多分类」展开是会话内状态，翻页/换词不重置；窗口外的分类仍可从「更多分类」进入。
+// 「其他」合并是产品决策：窗口外的 214 类不再逐个铺开（展开态给 246 个按钮不是筛选，是倾倒），
+// 合并成一个「其他」chip 承接：条数=窗外合计（上游真数），点进去由已取到的集合本地过滤，
+// 上游没有可用的「其他」桶，这个 chip 是面板自造的合并入口，不代表任何一个上游分类。
 const CAT_CHIP_FOLD = 32;
 // 分类词表 → chip 的三件纯函数，放在组件外同一座「可测岛」上：不碰 React 状态，
 // 测试用 new Function 直接执行函数体（与 capsFor/CARD_BATCH 同一口径）。
@@ -149,7 +151,7 @@ const CAT_CHIP_FOLD = 32;
 function mergeCategoryVocab(derived, vocab) {
   const rows = (vocab && Array.isArray(vocab.categories)) ? vocab.categories : [];
   // 上游类目页返回的是它自己的页面顺序，不是条数降序；面板只展示前 CAT_CHIP_FOLD 个 chip，
-  // 照抄顺序会让窗口里留下 1.7 万条的入口、把 20 万条的挤到「更多分类」后面。这里按条数降序，
+  // 照抄顺序会让窗口里留下 1.7 万条的入口、把 20 万条的挤到窗口外。这里按条数降序，
   // 条数相同保持页内相对顺序（V8 的 Array.prototype.sort 是稳定的），顺序因此仍然可复现。
   const ordered = rows
     .map((r, i) => ({ r, i }))
@@ -225,6 +227,25 @@ function categoryLabelLite(chip) {
   const label = String((chip && chip.label) || (chip && chip.value) || '');
   const n = Number(chip && chip.totalAll) || 0;
   return n > 0 ? label + ' ' + n.toLocaleString() : label;
+}
+// 窗外分类合并成一个「其他」入口（产品决策：246 类逐个铺开等于没做筛选）。
+// 上游没有可用的「其他」桶（lobehub 词表里 general/Others 各 1 条，是被挡的自由标签），所以这个
+// chip 是面板自造的：它不代表任何一个上游分类，条数也绝不从上游总量里编——只如实报「窗外还有 N 类
+// / 合计 M 条」，实际可列出的条目由已取到的集合本地过滤得出（见 visibleSkills）。
+const CAT_OTHER = '__cat_other';
+
+function foldChips(vocabChips, limit) {
+  const chips = [];
+  for (const c of (Array.isArray(vocabChips) ? vocabChips : [])) if (c && c.value && c.value !== CAT_OTHER) chips.push(c);
+  const cap = Number(limit) > 0 ? Number(limit) : chips.length;
+  if (chips.length <= cap) return { window: chips, other: null, otherCount: 0, otherTotal: 0 };
+  const head = chips.slice(0, cap);
+  const tail = chips.slice(cap);
+  let otherTotal = 0;
+  const covers = [];
+  for (const c of tail) { otherTotal += Number(c.totalAll) || 0; covers.push(c.value); }
+  const other = { value: CAT_OTHER, label: '其他', totalAll: otherTotal, fixed: true, covers };
+  return { window: head.concat([other]), other: other, otherCount: tail.length, otherTotal: otherTotal };
 }
 // 路径 tab 的降级模型：settings.get 失败（0.5.148 实测：缺 import 时每次必抛）只该让
 // 「依赖它的那几个字段」变成未知，不该让整页消失——目录草稿本来就来自本地 state，
@@ -588,7 +609,6 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const [categoryVocab, setCategoryVocab] = useState(null);
       // 当页分类筛选是不是上游做的：为真时列表不再二次本地过滤（见 visibleSkills）。
       const [serverFacet, setServerFacet] = useState(false);
-      const [categoryExpanded, setCategoryExpanded] = useState(false);
       // 可选 op 的运行时可用性：null=还没探过；探过之后每个 op 一个布尔。
       // 入口只有在确认服务端有这个 op 时才渲染 —— 探测前与探测失败都不得画出按钮。
       const [opStatus, setOpStatus] = useState(null);
@@ -878,6 +898,11 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         // 回落到当前选中的源——否则回车/点「搜索」会退化成「全部来源」聚合
         const src = (options && options.source) || liveRef.current.source;
         const cat = (options && options.category) || liveRef.current.category || 'all';
+        // 「其他」是面板自造的合并入口，不是上游任何一个分类 slug：把它当 category 发下去，
+        // 上游会按不存在的 slug 过滤成 0 条（live 实测 category=__cat_other ⇒ n=0/total=0/
+        // serverFacet=true），面板再配一句「上游不可达或响应超时」——把自造控件讲成网络故障。
+        // 这里兜住任何残留状态（旧缓存 key、旧 liveRef）：自造 slug 一律按浏览态发给上游。
+        const upstreamCat = cat === CAT_OTHER ? 'all' : cat;
         const q = String(text || '');
         const pageNo = (options && options.page) || 1;
         const pageSize = resolvePageSize(options, size);
@@ -928,7 +953,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
           const d = await call('skills.search', {
             query: text,
             source: src,
-            category: cat === 'all' ? '' : cat,
+            category: upstreamCat === 'all' ? '' : upstreamCat,
             page: pageNo,
             pageSize,
             sort: effSort,
@@ -1856,12 +1881,14 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 60);
       // 固定词表在前（上游条目数降序），当前页派生的串补在后：词表抓不到时入口不关，改版也不丢。
       const vocabChips = categoryChipsForSource(source, categories, categoryVocab);
-      const chipBySlug = {};
-      for (const chip of vocabChips) if (!chipBySlug[chip.value]) chipBySlug[chip.value] = chip;
-      const chipSlugs = ['all'].concat(vocabChips.map((c) => c.value));
-      const chipWindow = categoryExpanded || chipSlugs.length <= CAT_CHIP_FOLD + 1
-        ? chipSlugs
-        : chipSlugs.slice(0, CAT_CHIP_FOLD + 1);
+      // 默认窗口外的分类不再逐个铺开：合并成一个「其他」（窗内条数仍是上游真数，窗外合计如实标注）。
+      // 声明顺序要紧：chipEntries 与 visibleSkills 都读 chipFold，写在后面会撞 TDZ（node --check 看不见）。
+      const chipFold = foldChips(vocabChips, CAT_CHIP_FOLD);
+      const chipWindow = chipFold.window;
+      // 渲染集合必须自己带上 'all' 首入口：chipFold.window 只有分类，照它铺开会让「全部分类」
+      // 从面板上静默消失（用户没法取消筛选）。0.5.164 的中间量 chipBySlug/chipSlugs 在折叠改造后
+      // 没有任何消费方——留着就是死量，判据（lobehub Test 8）直接锁这两行不再出现。
+      const chipEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }].concat(chipFold.window);
       // 上游已按分类筛过（serverFacet=true）时不再二次本地过滤：facet 页只有当前窗口的
       // 卡片，再按本地标签筛一遍会把未标注分类的条目无谓筛掉，还与分页器总数对不上。
       // 0.5.164：分类态本地过滤必须与聚合层同口径。src/sources.js:848 对「该源未标注分类」的行按
@@ -1869,6 +1896,8 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // 删掉 ⇒ 渲染比聚合层承诺少（实测：聚合 items=3/filteredOut=0，面板只剩 1 条）。少掉的条目不会
       // 出现在任何文案里，用户看不见这个丢失——正是 0.5.101 起反复判死的静默偷内容。无分类行放行，
       // 异类行仍严格剔除（判据在 test-category-info-declaration Test 6，真跑本行函数体）。
+      // 「其他」不是可点入口（渲染块已把它降级为披露 span）：窗外集合只报条数，不参与过滤，
+      // 所以这里绝不能有 CAT_OTHER 分支——面板自造的伪分类不许混进真实分类口径。
       const visibleSkills = orderedSkills.filter((item) => serverFacet || category === 'all' || !item.category || item.category === category);
       const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
         h('div', { key: item.id, style: S.card },
@@ -2350,19 +2379,32 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
               : null,
             tab === 'skills' && (categories.length > 0 || vocabChips.length > 0)
               ? h('div', { style: S.row },
-                  chipWindow.map((cat) =>
-                    h('button', {
+                  // 0.5.165 真缺陷（离线+肉眼同证）：foldChips 之后 chipWindow 里装的是 chip 对象，
+                  // 渲染块还按 0.5.164 的字符串数组写——cat === 'all' 恒假、chipBySlug[对象] 取不到、
+                  // onClick 还把对象塞进 category。面板上「全部分类」丢失、chip 文案塌成 [object Object]、
+                  // 点上去分类参数是假值。既有套件全绿也抓不到它（Test 8 只测窗口集合，不测渲染 map），
+                  // 判据补在 test-lobehub-category-vocab Test 8：真跑本块谓词与文案取值。
+                  chipEntries.map((chip) => {
+                    const cat = chip && chip.value;
+                    const foldChip = chipFold.other && chip === chipFold.other;
+                    // 「其他」是面板自造入口，必须把自己的身份写进文案：只报「其他 743 条」
+                    // 会被读成上游那一个叫「其他」的分类（modelscope 就有 565 条的同名类）。
+                    const chipText = foldChip
+                      ? '其他 · 窗外 ' + chipFold.otherCount + ' 类合计 ' + Number(chip.totalAll || 0).toLocaleString() + ' 条'
+                      : categoryLabelLite(chip);
+                    if (foldChip) {
+                      // 窗外 214 类合计 743 条=全目录 0.22%，散在几百个分页里；上游一次只收一个 slug，
+                      // 面板没有通路把这批条目取回来。做成可点的 chip 就是「点了没反应」的假控件
+                      // （live 实测下发假分类 ⇒ n=0 再谎报网络故障），所以它是披露不是入口。
+                      return h('span', { key: 'cat_tail_disclosure', style: { ...S.status, alignSelf: 'center', fontSize: 11 } }, chipText);
+                    }
+                    return h('button', {
                       key: cat,
                       style: S.chip(category === cat),
                       onClick: () => { setCategory(cat); searchSkills(query, { source, size, category: cat, page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },
-                    }, cat === 'all' ? '全部分类' : (chipBySlug[cat] ? categoryLabelLite(chipBySlug[cat]) : cat)))
-                    .concat(chipWindow.length < chipSlugs.length
-                      ? [h('button', {
-                          key: '__cat_fold',
-                          style: S.chip(false),
-                          onClick: () => setCategoryExpanded(!categoryExpanded),
-                        }, categoryExpanded ? '收起分类' : '更多分类（共 ' + (chipSlugs.length - 1) + ' 个）')]
-                      : []))
+                    }, chipText);
+                  })
+                  )
               : null,
           )
         : null;

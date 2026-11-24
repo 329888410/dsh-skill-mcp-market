@@ -1385,35 +1385,78 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   };
   let rows = [];
   let total = 0;
+  // 0.5.165 Fix B —— 分页形状（本机同姿势实测：PageSize=5000 → HTTP 200 但 wall=66s；
+  // PageSize=1000 → 24.1s；PageSize=200 → 7.3s）。旧写法 fetchOne(1, 5000, 90 秒) 让一次大页
+  // 请求决定整源生死：live 撞 90.3 秒 abort（监测方留档 after164-chips.txt：cat=市场推广/开发工具
+  // /监控 三条一律 items=0 wall=90.3 秒），紧随的 裸 catch 后 break 又把失败静默吞掉 ⇒ 可达集合
+  // =空 ⇒ 分类永远筛不出行。改成小页多拉 + 每页超时 + 单次调用硬预算 + 断点游标续暖：
+  //   MS_PAGE 1000 —— 1000 行档实测 24.1s，可被 30s 单页超时兜住（旧 5000 行 66s 兜不住）
+  //   MS_MAX_PAGES 45 —— 上界随页长同步定：45×1000 = 旧口径 9×5000 同一覆盖，即实测深度上限
+  //     offset≈45,000 行（PageSize=20000 时 page2 即空；PageSize=5000 时 page9 有数据 page10 空）
+  //   MS_PAGE_TIMEOUT_MS 30000 —— 24.1s 之上留一档；不再沿用 90 秒
+  //   MS_FETCH_BUDGET_MS 45000 —— 单次调用在拉取循环上的硬时间预算，只在实际超时时截断，
+  //     且首个未缓存页不受预算截断（否则慢机器会退化成整源归零）
+  // 预算算术：MS_FETCH_BUDGET_MS(45s) + MS_PAGE_TIMEOUT_MS(30s) = 75s 最坏等待 < 旧 abort 上限，
+  // 有界；聚合路径每源 12s（src/sources.js:550 DEFAULT_BUDGET_MS）在更外层截断，口径互不遮蔽。
+  const MS_PAGE = 1000;
+  const MS_MAX_PAGES = 45;
+  const MS_PAGE_TIMEOUT_MS = 30000;
+  const MS_FETCH_BUDGET_MS = 45000;
+  // 取数失败/预算截断必须可见（B2）：页码与原因记账进返回值，绝不裸 break 当没事。
+  const msFetchFailures = [];
+  let msBudgetStop = false;
+  let msDone = false;
+  let msNextPage = 0;
   if (useFull) {
-    // 全量目录缓存 6 小时：排序是对完整集合做的，翻页只是切片，不再重复拉取。
+    // 全量目录缓存 6 小时：排序与分类都是对已取回集合做的，翻页只是切片，不再重复拉取。
     const fullKey = `modelscope:full:${q.toLowerCase()}`;
     const fullHit = cache ? await cache.get(fullKey, 6 * 3600 * 1000) : undefined;
-    if (fullHit && Array.isArray(fullHit.rows)) {
-      rows = fullHit.rows;
-      total = fullHit.total || rows.length;
-    } else {
-      // 上游分页深度上限实测为 offset≈45,000（PageSize=20000 时 page2 即空；
-      // PageSize=5000 时 page9 有数据、page10 空）。按 5000×9 拉取上游可达的全部行。
-      const MS_PAGE = 5000;
-      const MS_MAX_PAGES = 9;
-      const first = await fetchOne(1, MS_PAGE, 90000);
-      rows = first.rows;
-      total = first.total;
-      // 注意边界：pagesNeeded 是**需要的页数**，循环必须含它（旧写法 pg < pagesNeeded
-      // 少拉最后一页，实测差一整页 5000 条 ≈ 可达集合的 11%，与上面注释「5000×9」自相矛盾，
-      // 排序集合因此并非声称的「上游可返回的全部行」）。空页仍由 break 兜住。
-      const pagesNeeded = Math.min(MS_MAX_PAGES, Math.ceil(Math.min(total || 1, MS_PAGE * MS_MAX_PAGES) / MS_PAGE));
-      for (let pg = 2; pg <= pagesNeeded; pg += 1) {
+    const startedAt = Date.now();
+    // 缓存里的行集只是「已取回的前 N 页」，不是全量：done=false 时从第 next 页续暖，
+    // 绝不回头重取已成功的页（换分类/翻页因此都不重拉，断点续取实测生效）。
+    rows = fullHit && Array.isArray(fullHit.rows) ? fullHit.rows : [];
+    total = Number(fullHit && fullHit.total) || 0;
+    const cachedPages = rows.length ? Math.ceil(rows.length / MS_PAGE) : 0;
+    let next = fullHit && fullHit.done ? 0 : cachedPages + 1;
+    msDone = next === 0;
+    if (next > 0) {
+      // 注意边界：pagesNeeded 是**需要的页数**，循环必须含它（旧写法 pg < pagesNeeded 少拉
+      // 最后一页，实测差一整页 ≈ 可达集合的 11%，与注释声称的覆盖自相矛盾）。空页仍由 break 兜住。
+      const msPagesNeeded = (n) => Math.min(MS_MAX_PAGES, Math.ceil(Math.min(n || 1, MS_PAGE * MS_MAX_PAGES) / MS_PAGE));
+      // 页数上界必须在拿到第一页的 TotalCount 之后再定：缓存未命中时 total 还是 0，先算会把
+      // 上界误判成 1 页（只取 1000 行就收工，正是小分类筛不出行的老毛病）。total 未知时按硬上界
+      // 一直试到空页为止（上游真实深度上限 offset≈45,000 行）。
+      let pagesNeeded = total > 0 ? msPagesNeeded(total) : MS_MAX_PAGES;
+      while (next <= pagesNeeded) {
+        // 预算截断只在已经取到行时生效：一页都没取回时至少把下一页试完。
+        if (next > cachedPages + 1 && rows.length && Date.now() - startedAt > MS_FETCH_BUDGET_MS) {
+          msBudgetStop = true;
+          break;
+        }
         try {
-          const nx = await fetchOne(pg, MS_PAGE, 90000);
-          if (!nx.rows.length) break;
+          const nx = await fetchOne(next, MS_PAGE, MS_PAGE_TIMEOUT_MS);
+          if (!nx.rows.length) {
+            msDone = true; // 上游到尽头（实测 5000×9 时 page10 起为空）
+            break;
+          }
           rows = rows.concat(nx.rows);
-        } catch {
-          break; // partial catalogue is still far better than a 500-row window
+          if (!total && nx.total) {
+            total = nx.total;
+            pagesNeeded = msPagesNeeded(total);
+          }
+          next += 1;
+        } catch (error) {
+          // 失败绝不静默：记页码与原因，保住已取到的行（部分成功 > 整源归零），断点留在缓存里
+          // 让下一次调用从这一页重试。不再 break 之后当没事发生。
+          msFetchFailures.push({ page: next, error: String((error && error.message) || error) });
+          break;
         }
       }
-      if (cache && rows.length) await cache.put(fullKey, { rows, total });
+      if (!msFetchFailures.length && !msBudgetStop && next > pagesNeeded) msDone = true;
+      msNextPage = next;
+      if (cache && rows.length) await cache.put(fullKey, { rows, total, next, done: msDone });
+    } else {
+      msNextPage = next;
     }
   } else {
     const one = await fetchOne(p, size);
@@ -1421,7 +1464,7 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
     total = one.total;
   }
   const usableRows = rows.filter((raw) => raw && raw.Name);
-  // 分类过滤在可达集合内做；换分类不重拉行集（fullKey 仍只按 query，实测 9 页只发一次）。
+  // 分类过滤在已取回的行集内做；换分类不重拉行集（fullKey 仍只按 query，整份行集只拉一次）。
   let categoryRows = usableRows;
   let catFiltered = false;
   if (catActive) {
@@ -1429,17 +1472,30 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
     catFiltered = true;
   }
   const catTotal = catFiltered ? categoryRows.length : 0;
+  // 取数中断的可区分文案（B2）：失败页/预算截断必须写成「取数失败」，绝不与「本类实测 0 条」
+  // 混为一谈；hint 里的行数一律是实际取回的行数（rows.length），不再出现没取到的 45,000。
+  const msFailPages = msFetchFailures.map((f) => f.page).join('/');
+  const msInterrupt = msFailPages
+    ? '第 ' + msFailPages + ' 页取数失败/超时'
+    : (msBudgetStop ? '本轮取数已用完 ' + Math.round(MS_FETCH_BUDGET_MS / 1000) + 's 时间预算（中断于第 ' + msNextPage + ' 页）' : '');
+  const msResumeNote = '下次搜索会从第 ' + msNextPage + ' 页继续补拉';
   // 上游分页深度上限（实测 offset≈45k）导致可达集合 < 全量时，如实告知用户排序覆盖范围。
-  const msDepthHint = sortMode && total > rows.length
-    ? `ModelScope 上游分页深度上限约 ${rows.length.toLocaleString()} 条（目录共 ${total.toLocaleString()} 条），排序覆盖上游可返回的全部行`
-    : "";
-  // 分类态/表外拒发的如实提示：过滤在本地做，行数与 total 都是可达集合内的实测值，跨页
+  // 中断态绝不再声称「排序覆盖上游可返回的全部行」——那是假话。
+  let msDepthHint = "";
+  if (sortMode && total > rows.length) {
+    msDepthHint = msInterrupt
+      ? 'ModelScope 排序取数中断（' + msInterrupt + '），本次只在已取回的 ' + rows.length.toLocaleString() + ' 行内排序（目录共 ' + total.toLocaleString() + ' 条），不是全量覆盖；' + msResumeNote
+      : `ModelScope 上游分页深度上限约 ${rows.length.toLocaleString()} 条（目录共 ${total.toLocaleString()} 条），排序覆盖上游可返回的全部行`;
+  }
+  // 分类态/表外拒发的如实提示：过滤在本地做，行数与 total 都是已取回行内的实测值，跨页
   // 有效；同时说明可达集合外的分类会漏（残余风险），不假装覆盖了全目录。绝不设 serverFacet。
   let msCatHint = "";
   if (catActive) {
-    msCatHint = "ModelScope 上游不提供服务端分类过滤（30 组参数探针实测全部忽略），分类在可达的 " + rows.length.toLocaleString() + " 行（目录共 " + total.toLocaleString() + " 条）内本地过滤，跨页有效；本类实测 " + catTotal.toLocaleString() + " 条；可达集合外的分类会漏";
+    msCatHint = msInterrupt
+      ? 'ModelScope 分类取数中断（' + msInterrupt + '）：可达集合只到已取回的 ' + rows.length.toLocaleString() + ' 行（目录共 ' + total.toLocaleString() + ' 条），该类在这些行内命中 ' + catTotal.toLocaleString() + ' 条；这不是「该分类没有匹配」，是取数失败，' + msResumeNote
+      : 'ModelScope 上游不提供服务端分类过滤（30 组参数探针实测全部忽略），分类在已取回的 ' + rows.length.toLocaleString() + ' 行（目录共 ' + total.toLocaleString() + ' 条）内本地过滤，跨页有效；本类实测 ' + catTotal.toLocaleString() + ' 条；可达集合外的分类会漏';
   } else if (catRefused) {
-    msCatHint = "ModelScope 静态词表里没有「" + catRefused + "」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页";
+    msCatHint = 'ModelScope 静态词表里没有「' + catRefused + '」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页';
   }
   const msHint = msCatHint || msDepthHint;
   sortRawRows(categoryRows, sort, MODELSCOPE_SORT_GETTERS);
@@ -1493,8 +1549,11 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   // 兜底反推，与 sources.js:833 的守卫同一口径。
   const resultTotal = catFiltered ? catTotal : (total || (items.length > 0 ? p * size + (rows.length >= size ? 1 : 0) : 0));
   const resultHasMore = catFiltered ? p * size < catTotal : (resultTotal ? p * size < resultTotal : rows.length >= size && items.length > 0);
-  const result = { source: "modelscope", items, categoryInfo, total: resultTotal, hasMore: resultHasMore, ...(msHint ? { hint: msHint } : {}) };
-  if (cache) await cache.put(cacheKey, result);
+  const result = { source: "modelscope", items, categoryInfo, total: resultTotal, hasMore: resultHasMore, ...(msHint ? { hint: msHint } : {}), ...(msFailPages ? { msFetchFailures: msFetchFailures.length, msFetchFailedPages: msFailPages } : {}) };
+  // 行集不完整（取数失败或预算截断）时绝不把这一轮结果写进 5 分钟结果缓存：那会把「取数失败」
+  // 的文案冻住 5 分钟，并让下一次搜索直接命中截断结果、把续暖通道堵死。
+  const msPartial = useFull && (!msDone || msFetchFailures.length > 0 || msBudgetStop);
+  if (cache && !msPartial) await cache.put(cacheKey, result);
   return result;
 }
 
@@ -1676,3 +1735,4 @@ export async function clawhubResolve(reference) {
     `clawhub 页面与 API 里都没有找到 GitHub 源仓库（${detailUrl}）——可直接在浏览器中打开该页查看详情`,
   );
 }
+

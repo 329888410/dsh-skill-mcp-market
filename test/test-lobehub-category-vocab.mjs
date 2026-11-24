@@ -509,18 +509,117 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     const winChips = runChips(['lobehub', [], { lobehub: lhVocab }]);
     const winVals = Array.isArray(winChips) ? winChips.slice(0, foldN).map((c) => c.value) : [];
     const winMiss = NAMED_SLUGS.filter((s) => !winVals.includes(s));
-    check('点名分类全部落在默认窗口内（不点「更多分类」就能看见、能点）',
+    check('点名分类全部落在默认窗口内（不点任何展开就能看见、能点）',
         Array.isArray(winChips) && winChips.length > foldN && winMiss.length === 0,
         'chip=' + (winChips && winChips.length) + ' fold=' + foldN + ' 窗外点名=' + winMiss.join(','));
-    check('超出窗口的分类仍有「更多分类」承接（不是静默截断）',
-        Array.isArray(winChips) && winChips.length > foldN,
-        'chip=' + (winChips && winChips.length) + ' fold=' + foldN);
+    // 窗外分类不再逐个铺开（用户 m16072 定的产品决策：合并成一个「其他」入口），
+    // 所以承接判据从「更多分类」换成「其他」：窗口 = 前 foldN 类 + 1 个其他，
+    // 「其他」的条数必须是窗外合计的上游真数，covers 必须盖住窗外全部 slug，
+    // 且用户点名的分类绝不被卷进「其他」（那等于把报障的分类藏得更深）。
+    const foldBody = bodyOf('function foldChips(');
+    check('client.js 里 foldChips 合并岛可被真跑（bodyOf 取到函数体）', foldBody !== null, foldBody === null ? '未取到函数体' : '');
+    const otherSlug = (client.match(/const CAT_OTHER = '([^']+)';/) || [])[1] || '';
+    check('「其他」入口用稳定 slug，且不与任何上游分类同名', otherSlug !== '' && otherSlug.indexOf('其他') < 0, 'CAT_OTHER=' + otherSlug);
+    const runFold = (() => {
+        if (foldBody === null || !Array.isArray(winChips)) return { err: 'unavailable' };
+        try {
+            return new Function('CAT_OTHER', foldBody + NL + 'return foldChips;')(otherSlug)(winChips, foldN);
+        } catch (e) { return { err: String((e && e.message) || e) }; }
+    })();
+    const tail = Array.isArray(winChips) ? winChips.slice(foldN) : [];
+    const tailTotal = tail.reduce((n, c) => n + (Number(c.totalAll) || 0), 0);
+    check('窗外分类由「其他」承接：窗口 = 前 foldN 类 + 1 个其他（246 类不再逐个铺开）',
+        !runFold.err && runFold.window.length === foldN + 1 && !!runFold.other && runFold.other.label === '其他',
+        JSON.stringify({ win: runFold.window && runFold.window.length, err: runFold.err }));
+    check('「其他」的条数 = 窗外合计的上游真数（实测只有几百，不是全目录总数）',
+        !!runFold.other && runFold.other.totalAll === tailTotal && tailTotal > 0 && tailTotal < 1000,
+        JSON.stringify({ other: runFold.other && runFold.other.totalAll, tailTotal }));
+    check('「其他」covers 盖住窗外全部 slug，且不含任何点名分类',
+        !!runFold.other && runFold.other.covers.length === tail.length &&
+        NAMED_SLUGS.every((s) => runFold.other.covers.indexOf(s) < 0),
+        JSON.stringify({ covers: runFold.other && runFold.other.covers.length, tail: tail.length }));
     const many = Array.from({ length: 40 }, (_, i) => 'cat-' + i);
     const got = runChips(['skills.sh', many, {}]);
     check('无词表源在 40 个派生分类时给出 40 个入口（改前被截到 10）', Array.isArray(got) && got.length === 40,
         JSON.stringify(got && got.length !== 40 ? { n: got.length } : { n: got.length }));
     const fold = clientLines.filter((l) => /chipWindow|CAT_CHIP_FOLD/.test(l)).length;
-    check('面板折叠逻辑仍在（入口变多由「更多分类」承接，不是靠截断）', fold >= 2, 'lines=' + fold);
+    check('窗口外仍有承接入口（现在是「其他」chip，不是靠截断分类）', fold >= 2, 'lines=' + fold);
+    // 渲染层真判据（0.5.165 自伤复盘）：foldChips 之后 chipFold.window 里是 chip 对象，渲染 map 曾照
+    // 0.5.164 的字符串数组写 —— 集合判据全绿，面板上「全部分类」却消失、文案塌成 [object Object]、
+    // onClick 把对象塞进 category。所以这里从 client.js 取真实渲染块执行，不复制实现。
+    const renderSrc = (() => {
+        const at2 = clientLines.findIndex((l) => l.includes('chipEntries.map((chip) =>'));
+        if (at2 < 0) return null;
+        for (let i = at2 + 1; i < clientLines.length; i++) if (clientLines[i].trim() === '})') return clientLines.slice(at2, i + 1).join(NL);
+        return null;
+    })();
+    check('渲染块可从 client.js 整段取到（chipEntries.map 收口完整）', renderSrc !== null, renderSrc === null ? '未取到：map 行或 }) 收口不在' : '');
+    const winValsAsSlugs = winChips.map((c) => String(c.value));
+    const labelBody = bodyOf('function categoryLabelLite(');
+    const runRender = (() => {
+        if (renderSrc === null || labelBody === null || runFold.err) return { err: 'unavailable' };
+        const entries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }].concat(runFold.window);
+        const clickCalls = [];
+        const hh = (tag, props, ...kids) => ({ tag, props, kids });
+        const SS = { chip: (active) => ({ active: Boolean(active) }) };
+        const winStub = { scrollTo: () => {} };
+        const lite = new Function(labelBody + NL + 'return categoryLabelLite;')();
+        try {
+            const nodesRun = new Function('chipEntries', 'chipFold', 'categoryLabelLite', 'h', 'S', 'category', 'setCategory', 'searchSkills', 'query', 'source', 'size', 'sort', 'window',
+                'return (' + renderSrc + NL + ');')(entries, runFold, lite, hh, SS, 'all',
+                (v) => clickCalls.push({ kind: 'setCategory', v }), (q, o) => clickCalls.push({ kind: 'searchSkills', o }),
+                '天气 预报', 'lobehub', 24, 'installCount', winStub);
+            return { nodes: nodesRun, calls: clickCalls };
+        } catch (e) { return { err: String((e && e.message) || e) }; }
+    })();
+    const nodes = Array.isArray(runRender.nodes) ? runRender.nodes : [];
+    const texts = nodes.map((n) => String(n.kids[0]));
+    check('渲染块真跑（不抛、返回节点数组）', !runRender.err && nodes.length > 0, JSON.stringify({ err: runRender.err, n: nodes.length }));
+    check('「全部分类」仍是首个 chip（渲染集合自带 all 入口，不靠折叠窗口）',
+        nodes.length > 0 && nodes[0].props.key === 'all' && texts[0] === '全部分类', texts.slice(0, 2).join(' | '));
+    check('chip 数量 = 全部分类 + 前 foldN 类 + 1 个「其他」（246 类不铺开）',
+        nodes.length === foldN + 2, 'nodes=' + nodes.length + ' 期望=' + (foldN + 2));
+    check('没有任何 chip 文案塌成 [object Object]',
+        texts.every((t) => t !== '' && t.indexOf('[object Object]') < 0), JSON.stringify(texts.slice(0, 3)));
+    check('未选中时高亮只落在「全部分类」一处（拿对象与字符串比较会全灰）',
+        nodes.filter((n) => n.props.style.active).length === 1 && nodes[0].props.style.active === true,
+        'active=' + nodes.filter((n) => n.props.style.active).length);
+    const otherNode = nodes[foldN + 1];
+    const otherText = otherNode ? String(otherNode.kids[0]) : '';
+    check('「其他」文案自带身份（窗外出身写进标签，不与上游同名分类混读）',
+        !!otherNode && otherText.indexOf('其他') === 0 && /窗外 \d+ 类合计 [\d,]+ 条/.test(otherText) && otherText !== '其他',
+        JSON.stringify(otherText));
+    const pdfIdx = nodes.findIndex((n) => n.props.key === 'pdf-documents');
+    check('窗内分类 chip 带上游真条数（categoryLabelLite 真接到渲染层）',
+        pdfIdx > 0 && /[\d,]{4,}/.test(texts[pdfIdx]), JSON.stringify({ pdfIdx, text: texts[pdfIdx] }));
+    // 渲染层的「其他」必须是披露，不是入口：窗外集合面板取不回，做成可点 chip 就是假控件。
+    const otherTag = otherNode ? String(otherNode.tag) : '(none)';
+    check('「其他」不是可点 chip（窗外集合取不回，可点即假控件）',
+        !!otherNode && otherTag === 'span' && otherNode.props.onClick === undefined,
+        JSON.stringify({ tag: otherTag, hasClick: !!(otherNode && otherNode.props.onClick) }));
+    check('「其他」的 key 不是上游分类 slug（面板自造值不得进任何下发链路）',
+        !!otherNode && String(otherNode.props.key).indexOf('__cat_other') < 0,
+        'key=' + (otherNode && otherNode.props.key));
+    const buttonKeys = nodes.filter((n) => n.tag === 'button').map((n) => String(n.props.key));
+    check('渲染层可点的 chip 全是上游真 slug（含 all，不含派生/自造值）',
+        buttonKeys.length === foldN + 1 && buttonKeys[0] === 'all' &&
+        buttonKeys.every((k) => k === 'all' || (winValsAsSlugs && winValsAsSlugs.indexOf(k) >= 0)),
+        JSON.stringify({ n: buttonKeys.length, keys: buttonKeys.slice(0, 3) }));
+    const clickBase = (runRender.calls || []).length;
+    if (nodes.length > 1) nodes[1].props.onClick();
+    if (otherNode && otherNode.props.onClick) otherNode.props.onClick();
+    const clicks = (runRender.calls || []).slice(clickBase);
+    check('chip 按下：setCategory 与下发的 category 都是上游真 slug（对象/自造值一律不许）',
+        clicks.length === 2 && typeof clicks[0].v === 'string' && clicks[0].v === nodes[1].props.key &&
+        !!clicks[1].o && clicks[1].o.category === nodes[1].props.key &&
+        String(clicks[0].v).indexOf('__cat_other') < 0,
+        JSON.stringify(clicks.map((c) => c.kind + '=' + JSON.stringify(c.v !== undefined ? c.v : c.o && c.o.category)).slice(0, 2)));
+    check('按下 chip 回第 1 页并带上当前源（渲染层仍接得住既有口径）',
+        clicks.length === 2 && !!clicks[1].o && clicks[1].o.page === 1 && clicks[1].o.source === 'lobehub' && !!clicks[1].o.sort,
+        JSON.stringify(clicks[1] && clicks[1].o));
+    check('0.5.164 的中间量 chipSlugs / chipBySlug 不再是无人消费的死声明',
+        !/const chipSlugs =/.test(client) && !/const chipBySlug =/.test(client),
+        'chipSlugs=' + /const chipSlugs =/.test(client) + ' chipBySlug=' + /const chipBySlug =/.test(client));
 }
 
 

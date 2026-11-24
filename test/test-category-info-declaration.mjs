@@ -110,10 +110,28 @@ console.log('Test 6: 面板的本地过滤必须兑现聚合层的「无分类�
     const ARROW = String.fromCharCode(61, 62);
     const inner = vline.slice(vline.indexOf('.filter(') + 8, vline.lastIndexOf(')'));
     const body = inner.slice(inner.indexOf(ARROW) + 2).trim();
-    const f = new Function('item', 'serverFacet', 'category', 'return (' + body + ');');
-    check('真函数：无分类行在分类态被放行', f({ slug: 'x' }, false, '市场推广') === true, 'got=' + f({ slug: 'x' }, false, '市场推广'));
-    check('真函数：异类仍被筛掉（自证探针有效）', f({ category: '开发工具' }, false, '市场推广') === false, '');
-    check('真函数：facet 态全放行', f({ category: '开发工具' }, true, '市场推广') === true, '');
+    const clTxt = fs.readFileSync(path.join(here, '..', 'client.js'), 'utf8');
+    const CAT_OTHER = (clTxt.match(/const CAT_OTHER = '([^']+)';/) || [])[1] || '';
+    // 0.5.165 起谓词还读 chipFold.other.covers（「其他」合并入口），所以绑定必须补齐这两个量，
+    // 否则测的是 ReferenceError 而不是过滤口径。fixture：covers 里只有 市场推广。
+    const chipFold = { other: { value: CAT_OTHER, label: '其他', covers: ['市场推广'] } };
+    check('面板谓词依赖的「其他」slug 在 client.js 里存在', CAT_OTHER !== '', 'CAT_OTHER=' + CAT_OTHER);
+    const f = new Function('item', 'serverFacet', 'category', 'CAT_OTHER', 'chipFold', 'return (' + body + ');');
+    check('真函数：无分类行在分类态被放行', f({ slug: 'x' }, false, '市场推广', CAT_OTHER, chipFold) === true, 'got=' + f({ slug: 'x' }, false, '市场推广', CAT_OTHER, chipFold));
+    check('真函数：异类仍被筛掉（自证探针有效）', f({ category: '开发工具' }, false, '市场推广', CAT_OTHER, chipFold) === false, '');
+    check('真函数：facet 态全放行', f({ category: '开发工具' }, true, '市场推广', CAT_OTHER, chipFold) === true, '');
+  // 0.5.165：「其他」已从可点 chip 降级为披露 span（窗外集合面板取不回，可点=假控件），
+  // 所以面板过滤集合里根本不该再出现自造分类：CAT_OTHER 进谓词就等于承认它是合法过滤态。
+  check('面板谓词不再引用 CAT_OTHER（自造 slug 不是合法过滤态）',
+    vline.indexOf('CAT_OTHER') < 0, vline.trim());
+  check('真函数：万一残留 CAT_OTHER 态，带分类的行一律筛掉（不会把整个目录当「其他」）',
+    f({ category: '开发工具' }, false, CAT_OTHER, CAT_OTHER, chipFold) === false, '');
+  check('真函数：CAT_OTHER 残留态下无分类行仍按「无分类不过滤」放行',
+    f({ slug: 'x' }, false, CAT_OTHER, CAT_OTHER, chipFold) === true, '');
+  const reqLine = clines.find((l) => /category: upstreamCat === 'all' \? '' : upstreamCat,/.test(l)) || '';
+  const mapLine = clines.find((l) => /const upstreamCat = cat === CAT_OTHER \? 'all' : cat;/.test(l)) || '';
+  check('下发上游的 category 读的是映射后的值，不是原始 cat', reqLine.length > 0, '未找到 upstreamCat 下发行');
+  check('CAT_OTHER 在下发前被映射回浏览态（不把面板自造 slug 发给上游）', mapLine.length > 0, '未找到映射行');
   }
 }
 console.log('Test 5: 源码锁——catSupported 必须同时认能力声明');
@@ -125,5 +143,49 @@ console.log('Test 5: 源码锁——catSupported 必须同时认能力声明');
 }
 
 console.log('');
+console.log('');
+console.log('Test 7: 取数失败/超时不得被翻译成「该源不提供分类信息」（0.5.164 live 复验抓到的谎）');
+{
+  // live 原样复现（C:/Users/Public/dsh-scratch/after164-chips.txt）：modelscope 分类态单次
+  // 5000 行请求撞满 90s ⇒ handler 抛 abort，items=0、degraded=[modelscope]。旧口径此时
+  // catSupported=false，于是把网络故障讲成「所选来源不提供分类信息」——而每行都带分类。
+  const boom = async () => { const e = new Error("The operation was aborted due to timeout"); throw e; };
+  const r = await searchSkills({
+    query: "", source: "modelscope", page: 1, pageSize: 24, cache: null,
+    category: "市场推广", handlers: { modelscope: boom },
+  });
+  const note = String(r.categoryNote || "");
+  check("失败态不得说「不提供分类信息」", !/不提供分类信息/.test(note), JSON.stringify(note));
+  check("失败态要说清是取数失败/超时", /取数失败|超时|未能确认/.test(note), JSON.stringify(note));
+  check("失败态仍逐源点名失败原因（sourceErrors 未被吞）",
+    Array.isArray(r.sourceErrors) && r.sourceErrors.length > 0 && /timeout|abort/i.test(r.sourceErrors.join(" ")),
+    JSON.stringify(r.sourceErrors));
+  check("失败态绝不谎称已按分类过滤", !/已按|已过滤掉/.test(note), JSON.stringify(note));
+}
+console.log('');
+console.log('Test 8: 反向锁——取数成功且真不提供分类的源，旧文案不得被放宽掉');
+{
+  const r = await searchSkills({
+    query: "q", source: "browse.sh", page: 1, pageSize: 24, cache: null,
+    category: "security", handlers: { "browse.sh": mkHandler([{ id: "x1", slug: "x1", name: "n", description: "", source: "browse.sh" }]) },
+  });
+  check("取数成功 + 无声明 + 无分类行 ⇒ 仍说「不提供分类信息」",
+    /不提供分类信息/.test(String(r.categoryNote || "")), JSON.stringify(r.categoryNote));
+  check("取数成功时不得冒出「取数失败」文案（fetchFailedOnly 只在真失败时成立）",
+    !/取数失败/.test(String(r.categoryNote || "")), JSON.stringify(r.categoryNote));
+}
+console.log('');
+console.log('Test 9: 源码锁——失败分支与 catSupported 各管各的');
+{
+  const lines = srcTxt.split(/\r?\n/);
+  const failLine = lines.find((l) => /const fetchFailedOnly =/.test(l)) || "";
+  check("fetchFailedOnly 同时要求「有失败源」与「本页无条目」",
+    /degraded\.length\s*>\s*0/.test(failLine) && /items\.length\s*===\s*0/.test(failLine), failLine.trim());
+  const branch = lines.find((l) => /if \(fetchFailedOnly\) \{/.test(l)) || "";
+  const elseIf = lines.find((l) => /} else if \(!catSupported\) \{/.test(l)) || "";
+  check("失败分支在前、不提供分类分支仍是 else-if（两个口径互不吞）",
+    branch !== "" && elseIf !== "", JSON.stringify({ branch: branch !== "", elseIf: elseIf !== "" }));
+}
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed > 0 ? 1 : 0);

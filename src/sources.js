@@ -846,11 +846,19 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   // 过滤在客户端做，小分类的深页合法地回 0 条 —— 只看页内样本会把「本类实测 0 条」
   // 谎报成「该源不提供分类信息」（0.5.164 判据：test/test-category-info-declaration.mjs）。
   const catSupported = items.some((item) => item.category) || (items.length === 0 && declaredCategoryInfo);
+  // 「取数失败」与「该源不提供分类」是两件事，必须分开说：0.5.164 的 live 复验里 modelscope
+  // 分类态撞满单次超时（handler 抛 abort）⇒ 没有 result ⇒ declaredCategoryInfo 仍为 false
+  // ⇒ 旧口径把这次失败讲成「所选来源不提供分类信息」，而每行其实都带 L1.ChineseName。
+  // 判据位：test/test-category-info-declaration.mjs Test 7。sourceErrors 已经逐源点名失败原因，
+  // 这里只负责不再把失败翻译成内容不存在（也绝不谎称已按分类过滤）。
+  const fetchFailedOnly = degraded.length > 0 && items.length === 0;
   let visible = items;
   let categoryNote = "";
   let filteredOut = 0;
   if (catNeedle && catNeedle !== "all" && !serverFacet) {
-    if (!catSupported) {
+    if (fetchFailedOnly) {
+      categoryNote = "所选来源本次取数失败或超时，未能确认该分类下的条目（这不等于该来源没有分类信息）";
+    } else if (!catSupported) {
       categoryNote = "所选来源不提供分类信息，已忽略分类筛选";
     } else {
       visible = items.filter((item) => !item.category || item.category === catNeedle);
