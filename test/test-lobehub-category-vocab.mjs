@@ -61,6 +61,25 @@ const check = (name, cond, detail) => {
     else { failed++; console.log('  FAIL ' + name + (detail !== undefined ? '  ' + String(detail).slice(0, 300) : '')); }
 };
 const skip = (name, why) => { skipped++; console.log('  SKIP ' + name + (why ? '  ' + String(why).slice(0, 160) : '')); };
+// ── 平台短路（CI 平台差异处置，方案 (a)：非 win32 显式 SKIP）─────────────
+// SKIP 判据 = process.platform !== 'win32'（DSH_LH_WIN_ONLY=off 可在 Windows 上强制走该分支自证）。
+// 为什么 SKIP 而不是改断言：这 22 条断言断的是 Windows 专有的生产分支——cmd.exe /d /s /c 拼串、
+// quoteForCmd 引号姿势、windowsVerbatimArguments、.cmd shim 假 npx。ubuntu-latest 上没有对应分支可断，
+// 且 npx 不在 PATH（CI 原文：spawn npx ENOENT）。断言一条不删、也不改成 Linux 也能过（那等于拿掉
+// 本次修复的核心判据）。非 win32 时夹具整段不执行（绝不 spawn 真 npx 走真网络），其中每条断言
+// 逐个点名 SKIP；纯函数与源码锁断言（词表解析、面板 chip 函数体、引号/接线锁）跨平台照跑。
+const IS_WIN = process.platform === 'win32' && process.env.DSH_LH_WIN_ONLY !== 'off';
+const WIN_SKIP_WHY = 'win32-only fixture (cmd.exe + .cmd shim + windowsVerbatimArguments); process.platform=' + process.platform + (process.env.DSH_LH_WIN_ONLY === 'off' ? ' forced-off' : '');
+const needWinSkip = (names) => { if (IS_WIN) return; for (const n of names) skip(n, WIN_SKIP_WHY); };
+let fixtureChecksRun = 0;
+// 夹具可用性本身是 Windows 专有事实：非 win32 记 SKIP，不算失败也不算通过。
+const checkPlat = (name, cond, detail) => {
+    if (!IS_WIN) { skip(name, WIN_SKIP_WHY); return; }
+    check(name, cond, detail);
+};
+// checkW/checkWPlat = 夹具分支内的断言入口：计数器自证「非 win32 时一条都没跑」，否则就是假绿。
+const checkW = (...a) => { fixtureChecksRun += 1; return check(...a); };
+const checkWPlat = (...a) => { fixtureChecksRun += 1; return checkPlat(...a); };
 // 夹具目录必须是纯 ASCII：cmd.exe 走 OEM 代码页解析路径，含中文的用户名目录会让 npx.cmd 直接
 // 「文件名、目录名或卷标语法不正确」（本机实测：Temp 在 C:\Users\<中文>\AppData\Local\Temp 下必挂）。
 const asciiDir = (p) => typeof p === 'string' && /^[ -~]+$/.test(p);
@@ -130,10 +149,14 @@ const NODE_BIN = path.normalize(existsSync('D:/nodejs/node.exe') ? 'D:/nodejs/no
 writeFileSync(path.join(SHIM, 'npx.cmd'), '@echo off' + NL + '"' + NODE_BIN + '" "' + CLI_SCRIPT + '" %*' + NL, 'utf8');
 const SYSROOT = process.env.SystemRoot || process.env.windir || ('C:\\Windows');
 const SYSTEM32 = SYSROOT + '\\System32\\';
-check('假 npx 夹具可用（真 node.exe 与 cmd.exe 都在位）', existsSync(NODE_BIN) && existsSync(SYSTEM32 + 'cmd.exe'), NODE_BIN + ' / ' + SYSTEM32);
+checkPlat('假 npx 夹具可用（真 node.exe 与 cmd.exe 都在位）', existsSync(NODE_BIN) && existsSync(SYSTEM32 + 'cmd.exe'), NODE_BIN + ' / ' + SYSTEM32);
 const savedPath = process.env.PATH;
 const savedComSpec = process.env.ComSpec;
+// shimPathApplied 只在真把 PATH 指向假 npx 时自增：非 win32 必须恒为 0（零 spawn 痕迹的凭据之一）。
+let shimPathApplied = 0;
 const useShim = (stdoutFile) => {
+  if (!IS_WIN) { process.env.LH_STDOUT_FILE = stdoutFile; return; }
+  shimPathApplied += 1;
   process.env.PATH = SHIM + ';' + SYSTEM32 + ';' + path.dirname(SYSTEM32);
   process.env.ComSpec = path.join(SYSTEM32, 'cmd.exe');
   process.env.LH_ARGV_OUT = ARGV_OUT;
@@ -217,6 +240,8 @@ console.log('Test 2: 词表抓取——只读缓存优先、失败与空表一�
 console.log('');
 console.log('Test 3: searchLobeHubSkills 真收 category（假 npx 落盘 argv 自证）');
 {
+    needWinSkip([ 'CLI 真收到 --category（参数名与值都落在 argv 里）', '回 serverFacet=true（上游真过滤，不是本地滤当前页）', '回 totalPages（面板分页不再靠反推）', 'total 取上游 totalCount', 'items 都带所请求的分类', '换分类必须重新取数（cacheKey 含 category，不串缓存）', '浏览态不推空 --q（空串会被 CLI 当 positional）', '浏览态也不推 --category（无分类取全量）', '浏览态不得声明 serverFacet（没筛过就不许说筛过）' ]);
+    if (IS_WIN) {
     const facetOut = path.join(SHIM, 'facet.json');
     writeFileSync(facetOut, JSON.stringify(facetFixture), 'utf8');
     useShim(facetOut);
@@ -224,39 +249,40 @@ console.log('Test 3: searchLobeHubSkills 真收 category（假 npx 落盘 argv �
         const cache = freshCache();
         const g1 = await soft(() => searchLobeHubSkills({ query: 'pdf', page: 1, pageSize: 5, cache, sort: '', category: 'pdf-documents' }));
         const argv = readArgv();
-        check('CLI 真收到 --category（参数名与值都落在 argv 里）',
+        checkW('CLI 真收到 --category（参数名与值都落在 argv 里）',
             !!argv && argv.indexOf('--category') >= 0 && argv[argv.indexOf('--category') + 1] === 'pdf-documents',
             (g1.ok ? '' : 'threw: ' + g1.err.slice(0, 120) + ' ') + 'argv=' + JSON.stringify(argv));
         const r1 = g1.v;
-        check('回 serverFacet=true（上游真过滤，不是本地滤当前页）',
+        checkW('回 serverFacet=true（上游真过滤，不是本地滤当前页）',
             g1.ok && r1 && r1.serverFacet === true,
             g1.ok ? JSON.stringify({ keys: Object.keys(r1 || {}), serverFacet: r1 && r1.serverFacet }) : 'threw: ' + g1.err.slice(0, 120));
-        check('回 totalPages（面板分页不再靠反推）', g1.ok && r1 && r1.totalPages === 615, g1.ok && r1 ? r1.totalPages : '-');
-        check('total 取上游 totalCount', g1.ok && r1 && r1.total === 3074, g1.ok && r1 ? r1.total : '-');
-        check('items 都带所请求的分类', g1.ok && r1 && r1.items.length === 5 && r1.items.every((i) => i.category === 'pdf-documents'),
+        checkW('回 totalPages（面板分页不再靠反推）', g1.ok && r1 && r1.totalPages === 615, g1.ok && r1 ? r1.totalPages : '-');
+        checkW('total 取上游 totalCount', g1.ok && r1 && r1.total === 3074, g1.ok && r1 ? r1.total : '-');
+        checkW('items 都带所请求的分类', g1.ok && r1 && r1.items.length === 5 && r1.items.every((i) => i.category === 'pdf-documents'),
             g1.ok && r1 ? r1.items.map((i) => i.category).join(',') : '-');
         const argvPath2 = path.join(SHIM, 'argv2.json');
         process.env.LH_ARGV_OUT = argvPath2;
         const g2 = await soft(() => searchLobeHubSkills({ query: 'pdf', page: 1, pageSize: 5, cache, sort: '', category: 'gaming' }));
         const argv2 = existsSync(argvPath2) ? JSON.parse(readFileSync(argvPath2, 'utf8')) : null;
-        check('换分类必须重新取数（cacheKey 含 category，不串缓存）',
+        checkW('换分类必须重新取数（cacheKey 含 category，不串缓存）',
             !!argv2 && argv2.indexOf('--category') >= 0 && argv2[argv2.indexOf('--category') + 1] === 'gaming',
             (g2.ok ? '' : 'threw: ' + g2.err.slice(0, 120) + ' ') + 'argv=' + JSON.stringify(argv2));
         const argvPath3 = path.join(SHIM, 'argv3.json');
         process.env.LH_ARGV_OUT = argvPath3;
         const g3 = await soft(() => searchLobeHubSkills({ query: '', page: 1, pageSize: 24, cache: freshCache(), sort: '', category: '' }));
         const argv3 = existsSync(argvPath3) ? JSON.parse(readFileSync(argvPath3, 'utf8')) : null;
-        check('浏览态不推空 --q（空串会被 CLI 当 positional）', !!argv3 && !argv3.includes('--q'),
+        checkW('浏览态不推空 --q（空串会被 CLI 当 positional）', !!argv3 && !argv3.includes('--q'),
             (g3.ok ? '' : 'threw: ' + g3.err.slice(0, 120) + ' ') + 'argv=' + JSON.stringify(argv3));
-        check('浏览态也不推 --category（无分类取全量）', !!argv3 && !argv3.includes('--category'), JSON.stringify(argv3));
+        checkW('浏览态也不推 --category（无分类取全量）', !!argv3 && !argv3.includes('--category'), JSON.stringify(argv3));
         // 诚实性护栏：没发 --category 就绝不许声称服务端筛过（否则聚合层会跳过本地兜底过滤，
         // 用户点分类看到的是没筛的全量条目，比原来的假文案更坏）。
-        check('浏览态不得声明 serverFacet（没筛过就不许说筛过）',
+        checkW('浏览态不得声明 serverFacet（没筛过就不许说筛过）',
             g3.ok && g3.v && g3.v.serverFacet !== true,
             g3.ok ? 'serverFacet=' + JSON.stringify(g3.v.serverFacet) : 'threw: ' + g3.err.slice(0, 120));
         process.env.LH_ARGV_OUT = ARGV_OUT;
     } finally {
         releaseShim();
+    }
     }
 }
 
@@ -286,6 +312,8 @@ console.log('Test 5: 真跑生产 npxRun——多词查询必须作为单个 arg
     const mod = await import('../src/cli-install.js');
     const npxRun = mod.npxRun;
     check('npxRun 可导入', typeof npxRun === 'function', typeof npxRun);
+    needWinSkip([ 'argv 里 --q 的值是一段完整字符串（live 指纹 got 1. 的根因）', '后续参数没被值里的空格带跑（--page 1 仍在）', '含 & 的关键词不被 cmd 拆成多条命令', '带空格的值仍是一段（三段变一段）' ]);
+    if (IS_WIN) {
     writeFileSync(path.join(SHIM, 'empty.json'), '{}', 'utf8');
     useShim(path.join(SHIM, 'empty.json'));
     try {
@@ -293,42 +321,46 @@ console.log('Test 5: 真跑生产 npxRun——多词查询必须作为单个 arg
         process.env.LH_ARGV_OUT = out;
         const g = await soft(() => npxRun('@lobehub/market-cli', ['skills', 'search', '--q', 'weather forecast', '--page', '1'], { timeoutMs: 60000 }));
         const a = existsSync(out) ? JSON.parse(readFileSync(out, 'utf8')) : null;
-        check('argv 里 --q 的值是一段完整字符串（live 指纹 got 1. 的根因）',
+        checkW('argv 里 --q 的值是一段完整字符串（live 指纹 got 1. 的根因）',
             !!a && a.indexOf('--q') >= 0 && a[a.indexOf('--q') + 1] === 'weather forecast',
             (g.ok ? '' : 'threw: ' + g.err.slice(0, 140) + ' ') + 'argv=' + JSON.stringify(a));
-        check('后续参数没被值里的空格带跑（--page 1 仍在）',
+        checkW('后续参数没被值里的空格带跑（--page 1 仍在）',
             !!a && a.indexOf('--page') >= 0 && a[a.indexOf('--page') + 1] === '1', JSON.stringify(a));
         const out2 = path.join(SHIM, 'argv5b.json');
         process.env.LH_ARGV_OUT = out2;
         const g2 = await soft(() => npxRun('@lobehub/market-cli', ['skills', 'search', '--q', 'Agent & Orchestration'], { timeoutMs: 60000 }));
         const b = existsSync(out2) ? JSON.parse(readFileSync(out2, 'utf8')) : null;
-        check('含 & 的关键词不被 cmd 拆成多条命令',
+        checkW('含 & 的关键词不被 cmd 拆成多条命令',
             !!b && b[b.indexOf('--q') + 1] === 'Agent & Orchestration',
             (g2.ok ? '' : 'threw: ' + g2.err.slice(0, 140) + ' ') + 'argv=' + JSON.stringify(b));
         const out3 = path.join(SHIM, 'argv5c.json');
         process.env.LH_ARGV_OUT = out3;
         const g3 = await soft(() => npxRun('@lobehub/market-cli', ['skills', 'search', '--q', 'say hi now'], { timeoutMs: 60000 }));
         const c = existsSync(out3) ? JSON.parse(readFileSync(out3, 'utf8')) : null;
-        check('带空格的值仍是一段（三段变一段）', !!c && c.indexOf('--q') >= 0 && c[c.indexOf('--q') + 1] === 'say hi now' && !c.some((x) => x.includes(BS)),
+        checkW('带空格的值仍是一段（三段变一段）', !!c && c.indexOf('--q') >= 0 && c[c.indexOf('--q') + 1] === 'say hi now' && !c.some((x) => x.includes(BS)),
             (g3.ok ? '' : 'threw: ' + g3.err.slice(0, 140) + ' ') + 'argv=' + JSON.stringify(c));
         process.env.LH_ARGV_OUT = ARGV_OUT;
     } finally {
         releaseShim();
     }
+    }
+    needWinSkip([ '修复后多词搜索真的取到条目（改前是整源 CLI failed）', '上游收到的 --q 是完整两个词', '不再把 CLI 报错当数据返回' ]);
+    if (IS_WIN) {
     const multiOut = path.join(SHIM, 'multi.json');
     writeFileSync(multiOut, JSON.stringify(multiFixture), 'utf8');
     useShim(multiOut);
     try {
         const gm = await soft(() => searchLobeHubSkills({ query: 'weather forecast', page: 1, pageSize: 24, cache: freshCache(), sort: '', category: '' }));
         const a = readArgv();
-        check('修复后多词搜索真的取到条目（改前是整源 CLI failed）',
+        checkW('修复后多词搜索真的取到条目（改前是整源 CLI failed）',
             gm.ok && gm.v && Array.isArray(gm.v.items) && gm.v.items.length === 3,
             gm.ok ? JSON.stringify({ n: gm.v.items.length }) : 'threw: ' + gm.err.slice(0, 180));
-        check('上游收到的 --q 是完整两个词', !!a && a[a.indexOf('--q') + 1] === 'weather forecast', JSON.stringify(a));
-        check('不再把 CLI 报错当数据返回', !String(gm.err || '').includes('too many arguments') &&
+        checkW('上游收到的 --q 是完整两个词', !!a && a[a.indexOf('--q') + 1] === 'weather forecast', JSON.stringify(a));
+        checkW('不再把 CLI 报错当数据返回', !String(gm.err || '').includes('too many arguments') &&
             !JSON.stringify(gm.v || {}).includes('too many arguments'), gm.ok ? '' : String(gm.err).slice(0, 180));
     } finally {
         releaseShim();
+    }
     }
 }
 
@@ -413,6 +445,8 @@ console.log('Test 6: 面板 chip 来自词表而不是当前页派生（用户�
 console.log('');
 console.log('Test 7: 端到端——带分类的 lobehub 请求必须服务端过滤，多词查询整链路可用');
 {
+    needWinSkip([ '聚合层认定服务端已过滤（serverFacet=true）', '不再出现「仅当前页本地过滤/不提供分类信息」那类兜底文案', 'total/pages 用上游真值（不反推、不虚增）', '可见条目 5 条一条不少（完整呈现）', '多词查询端到端出条目（改前 items=0 + CLI failed）', '多词成功时 sourceErrors 为空（不再谎称没找到）' ]);
+    if (IS_WIN) {
     const facetOut = path.join(SHIM, 'facet7.json');
     writeFileSync(facetOut, JSON.stringify(facetFixture), 'utf8');
     useShim(facetOut);
@@ -421,24 +455,25 @@ console.log('Test 7: 端到端——带分类的 lobehub 请求必须服务端�
         const g = await soft(() => searchSkills({ query: 'pdf', source: 'lobehub', page: 1, pageSize: 5, cache: freshCache(), handlers, category: 'pdf-documents' }));
         const r = g.v || {};
         const blob = JSON.stringify({ notes: [r.categoryNote, r.hints], se: r.sourceErrors });
-        check('聚合层认定服务端已过滤（serverFacet=true）', g.ok && r.serverFacet === true,
+        checkW('聚合层认定服务端已过滤（serverFacet=true）', g.ok && r.serverFacet === true,
             g.ok ? JSON.stringify({ serverFacet: r.serverFacet, filteredOut: r.filteredOut, note: r.categoryNote }) : 'threw: ' + g.err.slice(0, 160));
-        check('不再出现「仅当前页本地过滤/不提供分类信息」那类兜底文案', !/仅当前页|不提供分类信息/.test(blob), blob.slice(0, 240));
-        check('total/pages 用上游真值（不反推、不虚增）', g.ok && r.total === 3074 && r.pages === 615,
+        checkW('不再出现「仅当前页本地过滤/不提供分类信息」那类兜底文案', !/仅当前页|不提供分类信息/.test(blob), blob.slice(0, 240));
+        checkW('total/pages 用上游真值（不反推、不虚增）', g.ok && r.total === 3074 && r.pages === 615,
             JSON.stringify({ total: r.total, pages: r.pages, totalPages: r.totalPages }));
-        check('可见条目 5 条一条不少（完整呈现）', g.ok && r.items.length === 5 && (r.filteredOut || 0) === 0,
+        checkW('可见条目 5 条一条不少（完整呈现）', g.ok && r.items.length === 5 && (r.filteredOut || 0) === 0,
             JSON.stringify({ n: (r.items || []).length, filteredOut: r.filteredOut }));
         const multiOut = path.join(SHIM, 'multi7.json');
         writeFileSync(multiOut, JSON.stringify(multiFixture), 'utf8');
         process.env.LH_STDOUT_FILE = multiOut;
         const g2 = await soft(() => searchSkills({ query: 'weather forecast', source: 'lobehub', page: 1, pageSize: 24, cache: freshCache(), handlers, category: '' }));
         const r2 = g2.v || {};
-        check('多词查询端到端出条目（改前 items=0 + CLI failed）',
+        checkW('多词查询端到端出条目（改前 items=0 + CLI failed）',
             g2.ok && (r2.items || []).length === 3 && (r2.degraded || []).length === 0,
             g2.ok ? JSON.stringify({ n: (r2.items || []).length, degraded: (r2.degraded || []).map((d) => d.error) }).slice(0, 220) : 'threw: ' + g2.err.slice(0, 200));
-        check('多词成功时 sourceErrors 为空（不再谎称没找到）', JSON.stringify(r2.sourceErrors || []) === '[]', JSON.stringify(r2.sourceErrors));
+        checkW('多词成功时 sourceErrors 为空（不再谎称没找到）', JSON.stringify(r2.sourceErrors || []) === '[]', JSON.stringify(r2.sourceErrors));
     } finally {
         releaseShim();
+    }
     }
     const idx = readLf('index.js');
     // 只认装配真正需要的两件：parse 是纯函数，只属于 extra-sources 与它的单测，
@@ -482,4 +517,19 @@ const { rmSync } = await import('node:fs');
 try { rmSync(SHIM, { recursive: true, force: true }); } catch (e) {}
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
+
+console.log('');
+console.log('Test 9: 平台分支自证（零假绿 / 零 spawn 痕迹）');
+{
+    // 非 win32 分支：夹具一次都没执行 => PATH 从未被指向假 npx，SHIM 里除 cli.cjs/npx.cmd 之外
+    // 不得出现任何 argv/stdout 落盘文件（那些文件只有真 spawn 过才会生成）。win32 侧反向要求跑过。
+    const leftovers = (() => {
+        try { return readdirSync(SHIM).filter((f) => !/^cli\.cjs$|^npx\.cmd$/.test(f)); } catch (e) { return ['(no-shim-dir)']; }
+    })();
+    check('平台分支自证：win32 跑过夹具 / 非 win32 零 spawn 痕迹',
+        IS_WIN ? shimPathApplied > 0 && fixtureChecksRun === 22 : (shimPathApplied === 0 && fixtureChecksRun === 0 && leftovers.length === 0),
+        JSON.stringify({ IS_WIN, platform: process.platform, shimPathApplied, fixtureChecksRun, leftovers }));
+}
+console.log('[FIXTURE] 夹具分支内实际执行断言=' + fixtureChecksRun + '（IS_WIN=' + IS_WIN + '；非 win32 必须为 0，否则即假绿）');
+console.log('[PLATFORM] process.platform=' + process.platform + ' DSH_LH_WIN_ONLY=' + (process.env.DSH_LH_WIN_ONLY || '(unset)') + ' SKIP点名=' + skipped);
 process.exit(failed ? 1 : 0);
