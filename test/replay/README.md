@@ -108,6 +108,20 @@ warm-budget 6 / func-fixes 1），不作为收敛或失败的判定。
 `npx.cmd` 以 UTF-8 写、cmd.exe 按 OEM 码页读 ⇒ 路径变 `C:\Users\??\` ⇒ 子 node
 `ERR_MODULE_NOT_FOUND`（02:47 复现；真实套件同进程自写自读不受影响）。
 
+## 睡眠不是慢：SUSPEND-SUSPECT
+
+门的「被杀」判定原本只有 TIMEOUT 一种归因，于是**整机睡眠会被当成套件真慢**。
+实测（2026-11-24 08:24）：`test-sort-honesty` 记成 `TIMEOUT 1524s`，而 `perTimeout=420s`；
+Kernel-Power 事件 08:24:57 睡眠 / 08:50:21 唤醒，窗口正好 1524 秒。睡眠把杀定时器与
+子进程一起冻住，`Date.now()` 照走。那条红当时被当成机制 bug 查了两版。
+
+现在 `gateVerdict` 收 `ms/perTimeout/suspendGraceMs`：被杀且墙钟超出
+`perTimeout + 宽限(默认 60s)` ⇒ **SUSPEND-SUSPECT**。仍算红灯（不替它放行），
+但归因行会写「疑似整机睡眠 ⇒ 先单独复跑本套件确认，再谈机制」。
+判据在 `test-gate-contract.mjs` Test 6（13 条，含一个真造 40s 假套件的端到端）。
+`DSH_GATE_SUSPEND_GRACE_MS=0` 只为复现；生产必须 >0，否则正常被杀（ms 只超出
+几十毫秒的关流延迟）也会被误报成睡眠。
+
 ## 本地动作不许冻进档案
 
 `isNetworkCli` 只认 curl / npx / npm（以及 `cmd.exe /c` 里包着这些命令的命令行）；
