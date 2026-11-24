@@ -147,6 +147,21 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
 
 ## 现状与待办
 
+- **全门可复现终数（07:05，69 套件、整门录制档案 replay-full2）：**
+  · 录制轮 = 真网络整门一遍 `DSH_REPLAY=record` ⇒ `[GATE] 69/69 suites green` / `total 1076s`
+  （`gate-all-record.txt`），档案 **271 条 / 11,763,131 B**。
+  · 回放轮（**冷缓存**：每轮新建 `DSH_TMP` + 外层 `DSH_REPLAY_MISS_DIR`）⇒
+  串行 `[GATE] 69/69 suites green` / `total 78s` / 墙钟 78s / 未命中 0 条；
+  `DSH_GATE_PARALLEL=4` ⇒ `69/69 green` / `total 85s` / **墙钟 36s** / 未命中 0 条、exit=0。
+  ⇒ **开发迭代期一遍全门 1076s → 36s（约 30×）**。此前 02:52/03:22 的数字依赖 replay-full/p4
+  两份档案，已被 04:54 那次 scratch 清收删除，**从本行起以 replay-full2 为准**。
+  · 整门档案仍缺两类请求，本轮手工补齐（都属边界⑧的 A 类）：
+  trusttools `…&search=agent` 的 page=1/2/3（12s 聚合预算挡掉，录制轮根本不发出；
+  从 worktree 默认 store 按 key 搬成功形态）+ lobehub `market.lobehub.com/api/v1/skills/categories`
+  （`index.js:1201` 的 fire-and-forget 冷词表补取，只在词表冷缓存时触发）。
+  ⚠️**定向补录必须带 `--import=…/replay/preload.mjs`**：只设 `DSH_REPLAY=record` 而不注入预加载，
+  生产侧 http.js 不会被替换 ⇒ 请求真打但**不落档**（07:00 实测：不带跑出 `OK cats= 246`、
+  档案里搜不到该 URL；带上同键立刻落档 13,375 B）。这条坑比边界⑧本身更容易让人误判「补录无效」。
 - **全门回放终态（02:52，68 套件、夹具识别与 Test 13 都落码后）：**
   · 串行 `DSH_REPLAY=1` ⇒ `[GATE] 68/68 suites green` / `total 45s`，墙钟 45s，外层账本 0 条未命中。
   · `DSH_GATE_PARALLEL=4` ⇒ `[GATE] 68/68 suites green` / `total 53s`，**墙钟 25s**（exit=0、账本 0 条）。
