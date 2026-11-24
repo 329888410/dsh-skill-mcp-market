@@ -495,6 +495,90 @@ export async function warmClawHubCatalog(cache, options = {}) {
   return { rows, done, budget };
 }
 
+
+// ---------------------------------------------------------------- LobeHub 技能分类词表
+// 上游有权威端点（2026-11-24 实测 GET → 200，296 行 [{category,count}]）：246 行是规范 slug、
+// 50 行是作者自由标签（含空格/&/大写/下划线/前导数字，如 _meta、2d-assets、AI & Machine Learning）。
+// 自由标签上游 search 不认，做成 chip 就是给一个点了没用的入口，所以与 clawhub 同口径只留规范形态；
+// 但一条都不截——监测方点名的 smart-home-iot/calendar-scheduling 在条数降序里排 28/29 名，
+// 任何「取前 26」的截断都会把它们再次挤出窗口，用户报障原样复现。
+// 这份是技能侧 taxonomy，不是站点 MCP 导航那 15 类：面板这个 tab 走 skills search。
+const LOBEHUB_CATEGORIES_URL = "https://market.lobehub.com/api/v1/skills/categories";
+const LOBEHUB_VOCAB_KEY = "lobehub_categories_v1";
+const LOBEHUB_VOCAB_TTL = 7 * 24 * 3600 * 1000;
+
+/** 瞬时网络抖动重试一次（与 clawhub 同姿势）：一次抖动不等于「该源没有分类」。 */
+async function getJsonLobeHubMarket(url, attempt = 0) {
+  try {
+    return await getJsonEscalating(url, { headers: UA, timeoutMs: 25000 });
+  } catch (error) {
+    if (attempt < 1 && /fetch failed|ETIMEDOUT|ECONNRESET|socket|network|timeout/i.test(String((error && error.message) || error))) {
+      return getJsonLobeHubMarket(url, attempt + 1);
+    }
+    throw error;
+  }
+}
+
+/**
+ * payload → [{slug,label,count,totalAll}]，按上游条数降序。0 列纯函数。
+ * 三种上游形状都要吃（实测都存在）：顶层数组 [{category,count}]、{categories:[{category,count}]}、
+ * 以及 search 响应里那份 {categories:[string,…]}（不带条数）。无条数时 count 记 0——
+ * 面板 categoryLabelLite 只有 totalAll>0 才拼条数，缺字段就不显示条数，硬显示才是编数据。
+ */
+export function parseLobeHubSkillCategories(payload) {
+  const raw = Array.isArray(payload) ? payload
+    : (payload && Array.isArray(payload.categories) ? payload.categories : []);
+  const out = [];
+  const seen = new Set();
+  for (const row of raw) {
+    const slug = String(typeof row === "string" ? row : ((row && row.category) || "")).trim();
+    // 形态校验打在原值上、不是小写化之后：上游那 7 条首字母大写的自由标签（Analytics/Backend/DevOps…）
+    // 小写后看着像规范 slug，但 CLI 的 --category 不认它们——放行就是给一个点了没用的入口。
+    if (!/^[a-z][a-z0-9-]*$/.test(slug) || seen.has(slug)) continue;
+    seen.add(slug);
+    const count = Number(row && typeof row === "object" ? row.count : 0) || 0;
+    out.push({ slug, label: slug, count, totalAll: count });
+  }
+  out.sort((a, b) => b.count - a.count);
+  return out;
+}
+
+/** 抓取 + 7 天 TTL。命中回同一引用；抓取失败或解析为空一律 null 且绝不落空快照。 */
+export async function lobeHubSkillCategoryVocabulary({ cache, getJson = getJsonLobeHubMarket, now = Date.now } = {}) {
+  if (!cache) return null;
+  const at = Number(typeof now === "function" ? now() : now) || Date.now();
+  try {
+    const hit = await cache.get(LOBEHUB_VOCAB_KEY, LOBEHUB_VOCAB_TTL);
+    if (hit && Array.isArray(hit.categories) && hit.categories.length && at - Number(hit.capturedAt) < LOBEHUB_VOCAB_TTL) return hit;
+  } catch {
+    /* 缓存读失败只意味着这次要重取 */
+  }
+  let payload = null;
+  try {
+    payload = await getJson(LOBEHUB_CATEGORIES_URL);
+  } catch {
+    return null;
+  }
+  const categories = parseLobeHubSkillCategories(payload);
+  // 0 条 = 上游改版，不是「lobehub 没有分类」：落空快照会把面板已有的派生 chip 一起关掉。
+  if (!categories.length) return null;
+  const value = { capturedAt: at, source: LOBEHUB_CATEGORIES_URL, categories };
+  try { await cache.put(LOBEHUB_VOCAB_KEY, value); } catch {}
+  return value;
+}
+
+/** 只读缓存：settings.get 用它，绝不在此处等网络。没有/过期都回 null。 */
+export async function readLobeHubSkillCategoryVocabulary({ cache, now = Date.now } = {}) {
+  if (!cache) return null;
+  const at = Number(typeof now === "function" ? now() : now) || Date.now();
+  try {
+    const hit = await cache.get(LOBEHUB_VOCAB_KEY, LOBEHUB_VOCAB_TTL);
+    if (hit && Array.isArray(hit.categories) && hit.categories.length && at - Number(hit.capturedAt) < LOBEHUB_VOCAB_TTL) return hit;
+  } catch {
+    /* 读失败按「没有词表」处理 */
+  }
+  return null;
+}
 // ---------------------------------------------------------------- trusttools 分类词表
 // 上游没有可用的分类词表端点：实测 https://ai.trusttools.cn/api/skills/categories 与站点本身
 // 一样超时（2026-11-24 连测 7 次全 timeout），所以这份表不能像 clawhub/skillsmp 那样抓取缓存，
@@ -760,7 +844,7 @@ export function lobehubSkillLocalSortApplies(sort) {
   return typeof LOBEHUB_SKILL_SORT_GETTERS[key] === "function";
 }
 
-export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24, cache, sort = "" }) {
+export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "" }) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
   const sortKey = String(sort || "").trim();
@@ -776,7 +860,9 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const sortArg = lobehubSkillSortArg(sortKey);
   const fetchPage = p;
   const fetchSize = size;
-  const cacheKey = `lobehub_skills_search:${query.trim()}:${sortKey}:${fetchPage}:${fetchSize}`;
+  // category 进 cacheKey：面板换分类时必须重新打上游，拿上一个分类的缓存页答它属于假数据。
+  const cat = String(category || "").trim();
+  const cacheKey = `lobehub_skills_search:${query.trim()}:${sortKey}:${cat}:${fetchPage}:${fetchSize}`;
   const cached = cache ? await cache.get(cacheKey, 30 * 60 * 1000) : undefined;
   if (cached) return { source: "lobehub", ...cached };
 
@@ -786,6 +872,9 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
   const q = String(query || "").trim();
   const args = ["skills", "search"];
   if (q) args.push("--q", q);
+  // 分类透传给官方 CLI（--category <slug> 服务端过滤，实测 6/6 行 category 等于所请求值）。
+  // 空分类不推这个参数：CLI 会把空串当 positional 拒掉，与 --q 同一个坑。
+  if (cat) args.push("--category", cat);
   // installCount/stars/name 原样透传（实测 exit0）；newest/updated 见上映射；
   // 词表外的键（如 trending）→ sortArg 为空 → 不传 --sort，保持上游默认序，绝不冒整源消失的风险。
   if (sortArg) args.push("--sort", sortArg);
@@ -829,10 +918,16 @@ export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24,
     note: "通过官方 CLI 安装 LobeHub 技能",
   }));
   const total = Number(parsed.totalCount || 0);
+  // 上游直接报总页数（实测 facet 页 615）：面板分页不再靠 total/size 反推。
+  const totalPages = Number(parsed.totalPages || 0);
   const result = {
     source: "lobehub",
     items,
     total,
+    // serverFacet 只在「真的发了 --category」时声明（与 clawhub/skillsmp 同一契约）：聚合层据此
+    // 走服务端已筛路径，不再本地滤当前页；没发分类就不许声称筛过。
+    serverFacet: cat !== "",
+    totalPages: totalPages > 0 ? totalPages : undefined,
     hasMore: total ? p * size < total : items.length >= size,
   };
   if (cache) await cache.put(cacheKey, result);

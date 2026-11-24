@@ -38,7 +38,7 @@ export function lobehubRegistered() {
 function quoteForCmd(value) {
   const text = String(value);
   if (!/[\s"&|<>^]/.test(text)) return text;
-  return `"${text.replace(/"/g, '\\"')}"`;
+  return `"${text.replace(/"/g, '""')}"`;
 }
 
 function runCli(args, timeoutMs = 90000) {
@@ -56,6 +56,7 @@ function runCli(args, timeoutMs = 90000) {
       {
         timeout: timeoutMs,
         maxBuffer: 16 * 1024 * 1024,
+        windowsVerbatimArguments: true,
         windowsHide: true,
         env: { ...process.env, MARKET_BASE_URL: LOBEHUB_MARKET_BASE, NO_COLOR: "1", npm_config_yes: "true" },
       },

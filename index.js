@@ -30,7 +30,7 @@ import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js
 // 技能市场分类词表（skillsmp /zh/categories 实测抓取）只随 settings.get 走：读缓存 + 后台补取，
 // 面板首屏的 RPC 不等外网抓取。
 import { readSkillsMpCategoryVocabulary, skillsmpCategoryVocabulary, readClawhubCategoryVocabulary, clawhubCategoryVocabulary,
-  trusttoolsCategoryVocabulary } from "./src/extra-sources.js";
+  trusttoolsCategoryVocabulary, readLobeHubSkillCategoryVocabulary, lobeHubSkillCategoryVocabulary } from "./src/extra-sources.js";
 import { evaluation as skillhubEvaluation } from "./src/skillhub.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket, viewLobeHubMcp } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
@@ -1170,25 +1170,32 @@ function needsConfirmFor(patch, current) {
         let categoryVocabulary = null;
         let smpVocab = null;
         let clawVocab = null;
+        let lhVocab = null;
         // trusttools 没有可抓的词表端点（上游 2026-11-24 起超时）：静态表随包发，
         // 直接同步取，不经缓存也不经网络。
         const ttVocab = trusttoolsCategoryVocabulary();
         try {
-          [smpVocab, clawVocab] = await Promise.all([
+          [smpVocab, clawVocab, lhVocab] = await Promise.all([
             readSkillsMpCategoryVocabulary({ cache: marketCache }),
             readClawhubCategoryVocabulary({ cache: marketCache }),
+            readLobeHubSkillCategoryVocabulary({ cache: marketCache }),
           ]);
         } catch {
           smpVocab = null;
           clawVocab = null;
+          lhVocab = null;
         }
-        if (smpVocab || clawVocab) {
-          categoryVocabulary = { skillsmp: smpVocab || undefined, clawhub: clawVocab || undefined };
+        if (smpVocab || clawVocab || lhVocab) {
+          categoryVocabulary = { skillsmp: smpVocab || undefined, clawhub: clawVocab || undefined, lobehub: lhVocab || undefined };
         }
         if (categoryVocabulary) categoryVocabulary.trusttools = ttVocab;
         else categoryVocabulary = { trusttools: ttVocab };
         if (!smpVocab) {
           void skillsmpCategoryVocabulary({ cache: marketCache }).catch(() => {});
+        }
+        if (!lhVocab) {
+          // lobehub 词表冷缓存时同样只后台补取：面板首屏不等外网。
+          void lobeHubSkillCategoryVocabulary({ cache: marketCache }).catch(() => {});
         }
         if (!clawVocab) {
           void clawhubCategoryVocabulary({ cache: marketCache }).catch(() => {});

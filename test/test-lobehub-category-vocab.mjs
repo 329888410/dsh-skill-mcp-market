@@ -1,0 +1,485 @@
+#!/usr/bin/env node
+// test-lobehub-category-vocab.mjs — lobehub 技能市场分类通道 + 多词查询真实送达（0.5.163）。
+//
+// 三条缺陷都有 live 指纹（2026-11-24 宿主 RPC 实测）与上游端点取证，不是推测：
+//   1) 面板 chip 永不变化（用户报障：lobehub 与 modelscope 两个技能市场的分类标签没有变化）。
+//      机制有两层：服务端侧 lobehub 根本没有词表通道（index.js 只下发 skillsmp/clawhub/trusttools）；
+//      面板侧 client.js:1849 从**累积**的 skills 里派生再 .slice(0,10)，第一页凑满 10 个不同分类后
+//      chip 就永久锁死。监测方逐页复算：14 页里上游真实分类 26 个，被 slice(0,10) 挤出 16 个
+//      （含 browser-automation / gaming / finance），用户永远点不到。
+//      上游权威词表端点真实存在：GET market.lobehub.com/api/v1/skills/categories → 200，
+//      296 行 [{category,count}]，其中 246 行是规范 slug 形态、50 行是自由标签
+//      （Agent & Orchestration、AI & Machine Learning、_meta、_persona、developer_tooling 等）。
+//   2) searchLobeHubSkills 完全丢弃 category：签名里没有它，面板传了分类也只拿全量，再走聚合层
+//      「仅当前页」本地兜底 — 与 0.5.148 之前 skillsmp、0.5.153 之前 clawhub 同形。真 CLI 实测：
+//      skills search --category productivity 服务端真过滤（6/6 行 category 等于所请求值）；
+//      --category developer 回 0 行（developer 是 MCP 侧标签）⇒ 词表必须取技能侧那份 categories，
+//      不能照搬站点 MCP 导航的 15 类。
+//   3) 多词查询整源失败：live 指纹「@lobehub/market-cli CLI failed: error: too many arguments
+//      for search」。根因不在 lobehub，在 Windows 引号姿势：quoteForCmd 产出的内嵌引号是反斜杠+引号，
+//      cmd 不认，--q 的值被拆成两段（实测 argv: ["--q","\"weather","forecast\""]）。
+//      同仓库两份同构实现（src/cli-install.js:61-64、src/lobehub-market.js:38-42）必须一起判掉。
+//
+// 判据全部真跑：真 import 生产模块、真起进程（PATH 注入假 npx，argv 落盘自证）、真解析夹具，零网络。
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { safeTempDir } from '../src/home.js';
+import { once, lineOf } from './anchor-lib.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const read = (f) => readFileSync(path.join(here, '..', f), 'utf8');
+const readLf = (f) => read(f).replace(/\r\n/g, String.fromCharCode(10));
+const Q = String.fromCharCode(34);
+const BS = String.fromCharCode(92);
+const NL = String.fromCharCode(10);
+
+const esMod = await import('../src/extra-sources.js');
+const srcMod = await import('../src/sources.js');
+const makeCacheOf = srcMod.makeCache;
+const searchSkills = srcMod.searchSkills;
+const searchLobeHubSkills = esMod.searchLobeHubSkills;
+// 缺导出时桩住而不是具名 import：链接期崩掉的红（NO-SUMMARY）拿不到判据原文，那种红是无效红。
+// 缺导出时桩成「回 null」而不是 throw：throw 会让套件在第一条判据上崩掉（NO-SUMMARY），
+// 拿不到逐条失败原文，那种红是无效红。桩件把缺失记进 MISSING_EXPORTS，末行一并打印。
+const MISSING_EXPORTS = [];
+const noExport = (name) => { if (!MISSING_EXPORTS.includes(name)) MISSING_EXPORTS.push(name); return null; };
+const parseLobeHubSkillCategories = typeof esMod.parseLobeHubSkillCategories === "function"
+    ? esMod.parseLobeHubSkillCategories : (p) => noExport("parseLobeHubSkillCategories");
+const lobeHubSkillCategoryVocabulary = typeof esMod.lobeHubSkillCategoryVocabulary === "function"
+    ? esMod.lobeHubSkillCategoryVocabulary : async (a) => noExport("lobeHubSkillCategoryVocabulary");
+const readLobeHubSkillCategoryVocabulary = typeof esMod.readLobeHubSkillCategoryVocabulary === "function"
+    ? esMod.readLobeHubSkillCategoryVocabulary : async (a) => noExport("readLobeHubSkillCategoryVocabulary");
+
+let passed = 0;
+let failed = 0;
+let skipped = 0;
+const check = (name, cond, detail) => {
+    if (cond) { passed++; console.log('  PASS ' + name); }
+    else { failed++; console.log('  FAIL ' + name + (detail !== undefined ? '  ' + String(detail).slice(0, 300) : '')); }
+};
+const skip = (name, why) => { skipped++; console.log('  SKIP ' + name + (why ? '  ' + String(why).slice(0, 160) : '')); };
+// 夹具目录必须是纯 ASCII：cmd.exe 走 OEM 代码页解析路径，含中文的用户名目录会让 npx.cmd 直接
+// 「文件名、目录名或卷标语法不正确」（本机实测：Temp 在 C:\Users\<中文>\AppData\Local\Temp 下必挂）。
+const asciiDir = (p) => typeof p === 'string' && /^[ -~]+$/.test(p);
+const shimRoot = (() => {
+    const cand = [
+        path.join(here, '..', '.dsh-tmp'),
+        process.env.DSH_SCRATCH_DIR || null,
+        process.env.TEMP || null,
+        process.env.TMP || null,
+        safeTempDir(),
+    ].filter(Boolean);
+    for (const c of cand) {
+        if (!asciiDir(c)) continue;
+        try { mkdirSync(c, { recursive: true }); writeFileSync(path.join(c, '.dsh-lh-probe'), "1", "utf8"); return c; } catch (err) {}
+    }
+    return null;
+})();
+
+const freshCache = () => makeCacheOf(path.join(shimRoot || safeTempDir(), 'dsh-lh-cache-' + process.pid + '-' + Math.random().toString(36).slice(2)));
+
+// 上游取数在修复前会真的抛错（live 指纹就是 CLI failed 抛进 degraded）。判据要拿到逐条红字
+// 而不是让套件在第一条上崩掉，所以每次调用都过 soft：抛错也变成一条可断言的 FAIL。
+const soft = async (fn) => {
+    try { return { ok: true, v: await fn() }; }
+    catch (e) { return { ok: false, err: String((e && e.message) || e) }; }
+};
+
+// ---------------------------------------------------------------- 夹具
+const FIX = path.join(here, 'fixtures', 'lobehub-skill-categories.json');
+const FACET_FIX = path.join(here, 'fixtures', 'lobehub-skill-facet.json');
+const MULTI_FIX = path.join(here, 'fixtures', 'lobehub-skill-multiword.json');
+const vocabFixture = existsSync(FIX) ? JSON.parse(readFileSync(FIX, 'utf8')) : null;
+const facetFixture = existsSync(FACET_FIX) ? JSON.parse(readFileSync(FACET_FIX, 'utf8')) : null;
+const multiFixture = existsSync(MULTI_FIX) ? JSON.parse(readFileSync(MULTI_FIX, 'utf8')) : null;
+check('三份夹具在位（真词表响应 / 真 facet 响应 / 真多词响应）',
+    !!vocabFixture && !!facetFixture && !!multiFixture,
+    'categories=' + !!vocabFixture + ' facet=' + !!facetFixture + ' multi=' + !!multiFixture);
+if (!vocabFixture || !facetFixture || !multiFixture) {
+    console.log('');
+    console.log('0 passed, ' + failed + ' failed（夹具缺失，后续判据无从执行）');
+    process.exit(1);
+}
+// 监测方 m13927 ①：词表类数不得少于他逐页数出来的 26，且必须包含第 1 页之外的分类。
+const NAMED_SLUGS = ['browser-automation', 'gaming', 'finance', 'pdf-documents', 'devops-cloud', 'smart-home-iot', 'calendar-scheduling'];
+const RAW_NONEMPTY = vocabFixture.filter((r) => String(r.category || '').trim() !== '').length;
+const RAW_SLUGFORM = vocabFixture.filter((r) => /^[a-z][a-z0-9-]*$/.test(String(r.category || '').trim())).length;
+console.log('夹具实测：总行数=' + vocabFixture.length + ' 非空=' + RAW_NONEMPTY + ' 规范 slug 形态=' + RAW_SLUGFORM + ' 自由标签=' + (RAW_NONEMPTY - RAW_SLUGFORM));
+
+// ------------------------------------------------- 假 npx 夹具（真跑生产 npxRun 的姿势）
+// 生产代码在 Windows 走 execFile(cmd.exe, ['/d','/s','/c', 拼串])，所以只要把 PATH 指向
+// 一个假 npx.cmd，就能拿到「上游 CLI 实际收到的 argv」——这是唯一能在 CI 里复现 live 指纹、
+// 又不打网络的办法。argv 落盘，判据直接读文件，不看 stdout 文案。
+const SHIM = path.join(shimRoot || safeTempDir(), 'dsh-lh-shim-' + process.pid);
+mkdirSync(SHIM, { recursive: true });
+const ARGV_OUT = path.join(SHIM, 'argv.json');
+const CLI_SCRIPT = path.join(SHIM, 'cli.cjs');
+writeFileSync(CLI_SCRIPT, [
+    "const fs = require(\"fs\");",
+    "const argv = process.argv.slice(2);",
+    "const out = process.env.LH_ARGV_OUT;",
+    "if (out) fs.writeFileSync(out, JSON.stringify(argv));",
+    "const src = process.env.LH_STDOUT_FILE;",
+    "if (src) process.stdout.write(fs.readFileSync(src, \"utf8\"));",
+    "process.exit(0);",
+].join(NL), "utf8");
+const NODE_BIN = path.normalize(existsSync('D:/nodejs/node.exe') ? 'D:/nodejs/node.exe' : process.execPath);
+writeFileSync(path.join(SHIM, 'npx.cmd'), '@echo off' + NL + '"' + NODE_BIN + '" "' + CLI_SCRIPT + '" %*' + NL, 'utf8');
+const SYSROOT = process.env.SystemRoot || process.env.windir || ('C:\\Windows');
+const SYSTEM32 = SYSROOT + '\\System32\\';
+check('假 npx 夹具可用（真 node.exe 与 cmd.exe 都在位）', existsSync(NODE_BIN) && existsSync(SYSTEM32 + 'cmd.exe'), NODE_BIN + ' / ' + SYSTEM32);
+const savedPath = process.env.PATH;
+const savedComSpec = process.env.ComSpec;
+const useShim = (stdoutFile) => {
+  process.env.PATH = SHIM + ';' + SYSTEM32 + ';' + path.dirname(SYSTEM32);
+  process.env.ComSpec = path.join(SYSTEM32, 'cmd.exe');
+  process.env.LH_ARGV_OUT = ARGV_OUT;
+  process.env.LH_STDOUT_FILE = stdoutFile;
+};
+const releaseShim = () => {
+  process.env.PATH = savedPath;
+  if (savedComSpec !== undefined) process.env.ComSpec = savedComSpec;
+  delete process.env.LH_ARGV_OUT;
+  delete process.env.LH_STDOUT_FILE;
+};
+const readArgv = () => {
+  if (!existsSync(ARGV_OUT)) return null;
+  return JSON.parse(readFileSync(ARGV_OUT, 'utf8'));
+};
+
+console.log('');
+
+
+console.log('Test 1: 词表解析——上游权威端点，类数 >=26 且含第 1 页之外的分类');
+{
+    const rows = parseLobeHubSkillCategories(vocabFixture);
+    check('返回数组且条数 >=26（监测方逐页数出的真实分类数）', Array.isArray(rows) && (rows || []).length >= 26,
+        'rows=' + (Array.isArray(rows) ? (rows || []).length : typeof rows));
+    const slugs = (rows || []).map((r) => r.slug);
+    const missing = NAMED_SLUGS.filter((s) => !slugs.includes(s));
+    check('点名分类全在词表内（第 1 页之外那些也必须能拿到）', missing.length === 0, 'missing=' + missing.join(','));
+    check('规范 slug 一条不丢（246 条全入表）', slugs.length === RAW_SLUGFORM,
+        'got=' + slugs.length + ' rawSlugForm=' + RAW_SLUGFORM);
+    check('自由标签不入表（含空格/&/大写/下划线/前导数字那 50 条）',
+        !slugs.some((s) => !/^[a-z][a-z0-9-]*$/.test(s)), JSON.stringify(slugs.filter((s) => !/^[a-z][a-z0-9-]*$/.test(s)).slice(0, 5)));
+    check('无重复 slug', new Set(slugs).size === slugs.length,
+        'dupes=' + slugs.filter((s, i) => slugs.indexOf(s) !== i).join(','));
+    const counts = (rows || []).map((r) => Number(r.count) || 0);
+    let desc = true;
+    for (let i = 1; i < counts.length; i++) if (counts[i] > counts[i - 1]) { desc = false; break; }
+    check('按上游条数降序（chip 顺序稳定，不随页码漂移）', desc, counts.slice(0, 8).join(','));
+    check('count 字段带真值（面板 chip 才能显示条数）',
+        (rows || []).filter((r) => Number(r.count) > 0).length === (rows || []).length,
+        'withCount=' + (rows || []).filter((r) => Number(r.count) > 0).length + '/' + (rows || []).length);
+    check('facet 端点的 categories 字符串数组也能解析（同一词表两种形状）',
+        (() => { const r2 = parseLobeHubSkillCategories({ categories: facetFixture.categories }); return Array.isArray(r2) && r2.length >= 26; })(),
+        'from facet=' + (() => { const r2 = parseLobeHubSkillCategories({ categories: facetFixture.categories }); return Array.isArray(r2) ? r2.length : typeof r2; })());
+}
+
+
+console.log('');
+console.log('Test 2: 词表抓取——只读缓存优先、失败与空表一律 null、绝不落空快照');
+{
+    const cache = freshCache();
+    let calls = 0;
+    const getJsonOk = async () => { calls++; return { categories: vocabFixture.map((r) => ({ category: r.category, count: r.count })) }; };
+    const v1 = await lobeHubSkillCategoryVocabulary({ cache, getJson: getJsonOk });
+    check('抓到词表且带 source 与 capturedAt', v1 && Array.isArray(v1.categories) && typeof v1.source === 'string' && Number.isFinite(v1.capturedAt),
+        v1 ? 'keys=' + Object.keys(v1).join(',') + ' n=' + v1.categories.length : String(v1));
+    check('词表条数 >=26（不是当前页派生那 10 个）', v1 && v1.categories.length >= 26, v1 && v1.categories.length);
+    const v2 = await lobeHubSkillCategoryVocabulary({ cache, getJson: getJsonOk });
+    check('热缓存命中回同一引用，不再打网络', calls === 1 && v2 === v1, 'calls=' + calls);
+    const cold = freshCache();
+    const getJsonBoom = async () => { calls += 100; throw new Error('fetch failed'); };
+    const bad = await lobeHubSkillCategoryVocabulary({ cache: cold, getJson: getJsonBoom });
+    check('上游失败返回 null（不抛给面板）', bad === null, JSON.stringify(bad));
+    const again = await lobeHubSkillCategoryVocabulary({ cache: cold, getJson: getJsonBoom });
+    check('失败不落空快照：下一次仍重新尝试而不是把 null 当真值缓存', again === null, JSON.stringify(again));
+    const emptyCache = freshCache();
+    const empty = await lobeHubSkillCategoryVocabulary({ cache: emptyCache, getJson: async () => ({ categories: [] }) });
+    check('解析出 0 条同样返回 null（空表宁可用派生）', empty === null, JSON.stringify(empty));
+    const shapeCache = freshCache();
+    const junk = await lobeHubSkillCategoryVocabulary({ cache: shapeCache, getJson: async () => ({ data: { nope: 1 } }) });
+    check('形态不符返回 null，不写坏快照', junk === null, JSON.stringify(junk));
+    const readOnlyCache = freshCache();
+    let readCalls = 0;
+    await readLobeHubSkillCategoryVocabulary({ cache: readOnlyCache, getJson: async () => { readCalls++; return { categories: vocabFixture }; } });
+    check('冷缓存下只读不取网络（面板打开不等上游）', readCalls === 0, 'getJson calls=' + readCalls);
+    await lobeHubSkillCategoryVocabulary({ cache: readOnlyCache, getJson: async () => ({ categories: vocabFixture }) });
+    const hot = await readLobeHubSkillCategoryVocabulary({ cache: readOnlyCache, getJson: async () => { readCalls += 10; return null; } });
+    check('热缓存下只读取回词表', hot && Array.isArray(hot.categories) && hot.categories.length >= 26 && readCalls === 0,
+        hot ? 'n=' + hot.categories.length : String(hot));
+}
+
+console.log('');
+console.log('Test 3: searchLobeHubSkills 真收 category（假 npx 落盘 argv 自证）');
+{
+    const facetOut = path.join(SHIM, 'facet.json');
+    writeFileSync(facetOut, JSON.stringify(facetFixture), 'utf8');
+    useShim(facetOut);
+    try {
+        const cache = freshCache();
+        const g1 = await soft(() => searchLobeHubSkills({ query: 'pdf', page: 1, pageSize: 5, cache, sort: '', category: 'pdf-documents' }));
+        const argv = readArgv();
+        check('CLI 真收到 --category（参数名与值都落在 argv 里）',
+            !!argv && argv.indexOf('--category') >= 0 && argv[argv.indexOf('--category') + 1] === 'pdf-documents',
+            (g1.ok ? '' : 'threw: ' + g1.err.slice(0, 120) + ' ') + 'argv=' + JSON.stringify(argv));
+        const r1 = g1.v;
+        check('回 serverFacet=true（上游真过滤，不是本地滤当前页）',
+            g1.ok && r1 && r1.serverFacet === true,
+            g1.ok ? JSON.stringify({ keys: Object.keys(r1 || {}), serverFacet: r1 && r1.serverFacet }) : 'threw: ' + g1.err.slice(0, 120));
+        check('回 totalPages（面板分页不再靠反推）', g1.ok && r1 && r1.totalPages === 615, g1.ok && r1 ? r1.totalPages : '-');
+        check('total 取上游 totalCount', g1.ok && r1 && r1.total === 3074, g1.ok && r1 ? r1.total : '-');
+        check('items 都带所请求的分类', g1.ok && r1 && r1.items.length === 5 && r1.items.every((i) => i.category === 'pdf-documents'),
+            g1.ok && r1 ? r1.items.map((i) => i.category).join(',') : '-');
+        const argvPath2 = path.join(SHIM, 'argv2.json');
+        process.env.LH_ARGV_OUT = argvPath2;
+        const g2 = await soft(() => searchLobeHubSkills({ query: 'pdf', page: 1, pageSize: 5, cache, sort: '', category: 'gaming' }));
+        const argv2 = existsSync(argvPath2) ? JSON.parse(readFileSync(argvPath2, 'utf8')) : null;
+        check('换分类必须重新取数（cacheKey 含 category，不串缓存）',
+            !!argv2 && argv2.indexOf('--category') >= 0 && argv2[argv2.indexOf('--category') + 1] === 'gaming',
+            (g2.ok ? '' : 'threw: ' + g2.err.slice(0, 120) + ' ') + 'argv=' + JSON.stringify(argv2));
+        const argvPath3 = path.join(SHIM, 'argv3.json');
+        process.env.LH_ARGV_OUT = argvPath3;
+        const g3 = await soft(() => searchLobeHubSkills({ query: '', page: 1, pageSize: 24, cache: freshCache(), sort: '', category: '' }));
+        const argv3 = existsSync(argvPath3) ? JSON.parse(readFileSync(argvPath3, 'utf8')) : null;
+        check('浏览态不推空 --q（空串会被 CLI 当 positional）', !!argv3 && !argv3.includes('--q'),
+            (g3.ok ? '' : 'threw: ' + g3.err.slice(0, 120) + ' ') + 'argv=' + JSON.stringify(argv3));
+        check('浏览态也不推 --category（无分类取全量）', !!argv3 && !argv3.includes('--category'), JSON.stringify(argv3));
+        // 诚实性护栏：没发 --category 就绝不许声称服务端筛过（否则聚合层会跳过本地兜底过滤，
+        // 用户点分类看到的是没筛的全量条目，比原来的假文案更坏）。
+        check('浏览态不得声明 serverFacet（没筛过就不许说筛过）',
+            g3.ok && g3.v && g3.v.serverFacet !== true,
+            g3.ok ? 'serverFacet=' + JSON.stringify(g3.v.serverFacet) : 'threw: ' + g3.err.slice(0, 120));
+        process.env.LH_ARGV_OUT = ARGV_OUT;
+    } finally {
+        releaseShim();
+    }
+}
+
+
+console.log('');
+console.log('Test 4: Windows 引号姿势——两处实现都必须双写内嵌引号并声明 verbatim');
+{
+    const cliSrc = readLf('src/cli-install.js');
+    const mkSrc = readLf('src/lobehub-market.js');
+    const qf = (body) => {
+        const i = body.indexOf('function quoteForCmd');
+        return i < 0 ? '' : body.slice(i, body.indexOf(NL + '}', i));
+    };
+    const qc = qf(cliSrc);
+    const qm = qf(mkSrc);
+    check('cli-install.js quoteForCmd 内置引号改双写（cmd 只认 """"）', qc.includes(Q + Q) && !qc.includes(BS + Q), qc.slice(0, 160));
+    check('lobehub-market.js 第二份同构实现同步改掉（否则安装路径仍拆参）', qm.includes(Q + Q) && !qm.includes(BS + Q), qm.slice(0, 160));
+    check('cli-install.js execFile 选项加 windowsVerbatimArguments', /windowsVerbatimArguments:\s*true/.test(cliSrc), 'no match');
+    check('lobehub-market.js 同样加 windowsVerbatimArguments', /windowsVerbatimArguments:\s*true/.test(mkSrc), 'no match');
+    const noNaive = !/windowsVerbatimArguments:\s*false/.test(cliSrc + mkSrc);
+    check('没有留下 false 的自伤写法', noNaive, 'found false');
+}
+
+console.log('');
+console.log('Test 5: 真跑生产 npxRun——多词查询必须作为单个 argv 送达 CLI');
+{
+    const mod = await import('../src/cli-install.js');
+    const npxRun = mod.npxRun;
+    check('npxRun 可导入', typeof npxRun === 'function', typeof npxRun);
+    writeFileSync(path.join(SHIM, 'empty.json'), '{}', 'utf8');
+    useShim(path.join(SHIM, 'empty.json'));
+    try {
+        const out = path.join(SHIM, 'argv5.json');
+        process.env.LH_ARGV_OUT = out;
+        const g = await soft(() => npxRun('@lobehub/market-cli', ['skills', 'search', '--q', 'weather forecast', '--page', '1'], { timeoutMs: 60000 }));
+        const a = existsSync(out) ? JSON.parse(readFileSync(out, 'utf8')) : null;
+        check('argv 里 --q 的值是一段完整字符串（live 指纹 got 1. 的根因）',
+            !!a && a.indexOf('--q') >= 0 && a[a.indexOf('--q') + 1] === 'weather forecast',
+            (g.ok ? '' : 'threw: ' + g.err.slice(0, 140) + ' ') + 'argv=' + JSON.stringify(a));
+        check('后续参数没被值里的空格带跑（--page 1 仍在）',
+            !!a && a.indexOf('--page') >= 0 && a[a.indexOf('--page') + 1] === '1', JSON.stringify(a));
+        const out2 = path.join(SHIM, 'argv5b.json');
+        process.env.LH_ARGV_OUT = out2;
+        const g2 = await soft(() => npxRun('@lobehub/market-cli', ['skills', 'search', '--q', 'Agent & Orchestration'], { timeoutMs: 60000 }));
+        const b = existsSync(out2) ? JSON.parse(readFileSync(out2, 'utf8')) : null;
+        check('含 & 的关键词不被 cmd 拆成多条命令',
+            !!b && b[b.indexOf('--q') + 1] === 'Agent & Orchestration',
+            (g2.ok ? '' : 'threw: ' + g2.err.slice(0, 140) + ' ') + 'argv=' + JSON.stringify(b));
+        const out3 = path.join(SHIM, 'argv5c.json');
+        process.env.LH_ARGV_OUT = out3;
+        const g3 = await soft(() => npxRun('@lobehub/market-cli', ['skills', 'search', '--q', 'say hi now'], { timeoutMs: 60000 }));
+        const c = existsSync(out3) ? JSON.parse(readFileSync(out3, 'utf8')) : null;
+        check('带空格的值仍是一段（三段变一段）', !!c && c.indexOf('--q') >= 0 && c[c.indexOf('--q') + 1] === 'say hi now' && !c.some((x) => x.includes(BS)),
+            (g3.ok ? '' : 'threw: ' + g3.err.slice(0, 140) + ' ') + 'argv=' + JSON.stringify(c));
+        process.env.LH_ARGV_OUT = ARGV_OUT;
+    } finally {
+        releaseShim();
+    }
+    const multiOut = path.join(SHIM, 'multi.json');
+    writeFileSync(multiOut, JSON.stringify(multiFixture), 'utf8');
+    useShim(multiOut);
+    try {
+        const gm = await soft(() => searchLobeHubSkills({ query: 'weather forecast', page: 1, pageSize: 24, cache: freshCache(), sort: '', category: '' }));
+        const a = readArgv();
+        check('修复后多词搜索真的取到条目（改前是整源 CLI failed）',
+            gm.ok && gm.v && Array.isArray(gm.v.items) && gm.v.items.length === 3,
+            gm.ok ? JSON.stringify({ n: gm.v.items.length }) : 'threw: ' + gm.err.slice(0, 180));
+        check('上游收到的 --q 是完整两个词', !!a && a[a.indexOf('--q') + 1] === 'weather forecast', JSON.stringify(a));
+        check('不再把 CLI 报错当数据返回', !String(gm.err || '').includes('too many arguments') &&
+            !JSON.stringify(gm.v || {}).includes('too many arguments'), gm.ok ? '' : String(gm.err).slice(0, 180));
+    } finally {
+        releaseShim();
+    }
+}
+
+
+// 面板函数体真跑（0.5.153/0.5.155 既有形状：读真 client.js、切函数体、new Function 执行）。
+const clientLines = readLf('client.js').split(NL);
+const bodyOf = (needle) => {
+    const at = clientLines.findIndex((l) => l.indexOf(needle) >= 0);
+    if (at < 0) return null;
+    for (let i = at + 1; i < clientLines.length; i++) if (clientLines[i] === '}') return clientLines.slice(at, i + 1).join(NL);
+    return null;
+};
+const runChips = (args) => {
+    const outer = bodyOf('function categoryChipsForSource(');
+    if (outer === null) return { err: '未取到函数体 categoryChipsForSource' };
+    const inner = bodyOf('function mergeCategoryVocab(');
+    if (inner === null) return { err: '未取到函数体 mergeCategoryVocab' };
+    try { return new Function(inner + NL + outer + NL + 'return categoryChipsForSource;')()(...args); }
+    catch (e) { return { err: String((e && e.message) || e) }; }
+};
+const LH_ORIGIN = 'https://market.lobehub.com/api/v1/skills/categories';
+// 词表必须给全（246 条），不是截 26：监测方点名的 smart-home-iot / calendar-scheduling 在条数
+// 降序里排 28/29 名，只留 26 条它们照样被挤出窗口——那就是把用户报障原样复现。
+const lhVocab = {
+    capturedAt: 1,
+    source: LH_ORIGIN,
+    categories: vocabFixture
+        .filter((r) => /^[a-z][a-z0-9-]*$/.test(String(r.category).trim()))
+        .map((r) => ({ slug: String(r.category).trim(), label: String(r.category).trim(), totalAll: Number(r.count) || 0 }))
+        .sort((a, b) => b.totalAll - a.totalAll),
+};
+
+console.log('');
+console.log('Test 6: 面板 chip 来自词表而不是当前页派生（用户报障「分类标签没有变化」的直接判据）');
+{
+    const bySource = { lobehub: lhVocab, skillsmp: { capturedAt: 1, source: 'https://skillsmp.com/zh/categories', categories: [{ slug: 'debugging', name: '调试工具', totalAll: 532411 }] } };
+    const got = runChips(['lobehub', ['pdf-documents', 'coding-agents-ides'], bySource]);
+    if (got && got.err) check('lobehub 按源取词表可执行', false, got.err);
+    else {
+        check('lobehub 拿到全量词表 chip（>=26 条，不是当前页那 10 个）', got.length >= 26 && got.every((c) => c.fixed === true),
+            'n=' + got.length + ' first=' + JSON.stringify(got[0]).slice(0, 120));
+        const vals = got.map((c) => c.value);
+        const miss = NAMED_SLUGS.filter((s) => !vals.includes(s));
+        check('被 slice(0,10) 挤出的分类现在全部出现', miss.length === 0, 'missing=' + miss.join(','));
+        check('词表在手时不混入派生 chip', !got.some((c) => c.fixed === false), JSON.stringify(got.filter((c) => c.fixed === false).map((c) => c.value)));
+        check('chip 带上游条数（totalAll 有真值，categoryLabelLite 才拼得出「标签 5,636」）', got.every((c) => Number(c.totalAll) > 0), JSON.stringify(got.slice(0, 2).map((c) => [c.label, c.totalAll])));
+        const p1 = runChips(['lobehub', ['a', 'b'], bySource]);
+        const p2 = runChips(['lobehub', ['x', 'y', 'z', 'w'], bySource]);
+        check('翻页/换词后 chip 集合完全不变（词表驱动，不再随累积条目漂移）',
+            JSON.stringify(p1.map((c) => c.value)) === JSON.stringify(p2.map((c) => c.value)),
+            p1.length + ' vs ' + p2.length);
+    }
+    const crossed = runChips(['lobehub', ['pdf-documents'], { lobehub: bySource.skillsmp, skillsmp: bySource.skillsmp }]);
+    check('词表串味（lobehub 位上放 skillsmp 词表）按来源拒绝', Array.isArray(crossed) && crossed.length === 1,
+        JSON.stringify(crossed && crossed.err ? crossed : crossed.map((c) => c.value)));
+    const failNull = runChips(['lobehub', ['douyin', 'pdf-documents'], { lobehub: null }]);
+    check('词表抓取失败（字段 null）时派生入口仍可用',
+        Array.isArray(failNull) && failNull.length === 2 && failNull.every((c) => c.fixed === false),
+        JSON.stringify(failNull && failNull.err ? failNull : failNull.map((c) => c.value)));
+    const failEmpty = runChips(['lobehub', ['douyin'], { lobehub: { capturedAt: 1, source: LH_ORIGIN, categories: [] } }]);
+    check('词表解析为空（categories=[]）时派生入口仍可用',
+        Array.isArray(failEmpty) && failEmpty.length === 1 && failEmpty[0].value === 'douyin' && failEmpty[0].fixed === false,
+        JSON.stringify(failEmpty && failEmpty.err ? failEmpty : failEmpty.map((c) => c.value)));
+    const failAbsent = runChips(['lobehub', ['douyin'], { skillsmp: bySource.skillsmp }]);
+    check('分组里缺 lobehub 键时派生入口仍可用',
+        Array.isArray(failAbsent) && failAbsent.length === 1 && failAbsent[0].fixed === false,
+        JSON.stringify(failAbsent && failAbsent.err ? failAbsent : failAbsent.map((c) => c.value)));
+    const smp = runChips(['skillsmp', ['pdf-documents'], bySource]);
+    check('lobehub 接入不得改动 skillsmp 既有行为', Array.isArray(smp) && smp.length === 1 && smp[0].value === 'debugging' && smp[0].totalAll === 532411,
+        JSON.stringify(smp && smp.err ? smp : smp.map((c) => c.value)));
+    const other = runChips(['browse.sh', ['page-derived-slug'], bySource]);
+    check('无词表市场仍走派生（不许把 lobehub 词表漏给别的源）',
+        Array.isArray(other) && other.length === 1 && other[0].value === 'page-derived-slug',
+        JSON.stringify(other && other.err ? other : other.map((c) => c.value)));
+    const originLine = clientLines.find((l) => l.trim().startsWith('const ORIGIN = {'));
+    check('client.js 的 ORIGIN 表登记 lobehub（按源归属，词表来源域名）',
+        !!originLine && /lobehub:\s*String\.fromCharCode|lobehub:/.test(originLine) && String(originLine).includes('lobehub.com'),
+        (originLine || '未取到 ORIGIN 行').trim().slice(0, 180));
+}
+
+
+console.log('');
+console.log('Test 7: 端到端——带分类的 lobehub 请求必须服务端过滤，多词查询整链路可用');
+{
+    const facetOut = path.join(SHIM, 'facet7.json');
+    writeFileSync(facetOut, JSON.stringify(facetFixture), 'utf8');
+    useShim(facetOut);
+    try {
+        const handlers = { lobehub: (a) => searchLobeHubSkills(a) };
+        const g = await soft(() => searchSkills({ query: 'pdf', source: 'lobehub', page: 1, pageSize: 5, cache: freshCache(), handlers, category: 'pdf-documents' }));
+        const r = g.v || {};
+        const blob = JSON.stringify({ notes: [r.categoryNote, r.hints], se: r.sourceErrors });
+        check('聚合层认定服务端已过滤（serverFacet=true）', g.ok && r.serverFacet === true,
+            g.ok ? JSON.stringify({ serverFacet: r.serverFacet, filteredOut: r.filteredOut, note: r.categoryNote }) : 'threw: ' + g.err.slice(0, 160));
+        check('不再出现「仅当前页本地过滤/不提供分类信息」那类兜底文案', !/仅当前页|不提供分类信息/.test(blob), blob.slice(0, 240));
+        check('total/pages 用上游真值（不反推、不虚增）', g.ok && r.total === 3074 && r.pages === 615,
+            JSON.stringify({ total: r.total, pages: r.pages, totalPages: r.totalPages }));
+        check('可见条目 5 条一条不少（完整呈现）', g.ok && r.items.length === 5 && (r.filteredOut || 0) === 0,
+            JSON.stringify({ n: (r.items || []).length, filteredOut: r.filteredOut }));
+        const multiOut = path.join(SHIM, 'multi7.json');
+        writeFileSync(multiOut, JSON.stringify(multiFixture), 'utf8');
+        process.env.LH_STDOUT_FILE = multiOut;
+        const g2 = await soft(() => searchSkills({ query: 'weather forecast', source: 'lobehub', page: 1, pageSize: 24, cache: freshCache(), handlers, category: '' }));
+        const r2 = g2.v || {};
+        check('多词查询端到端出条目（改前 items=0 + CLI failed）',
+            g2.ok && (r2.items || []).length === 3 && (r2.degraded || []).length === 0,
+            g2.ok ? JSON.stringify({ n: (r2.items || []).length, degraded: (r2.degraded || []).map((d) => d.error) }).slice(0, 220) : 'threw: ' + g2.err.slice(0, 200));
+        check('多词成功时 sourceErrors 为空（不再谎称没找到）', JSON.stringify(r2.sourceErrors || []) === '[]', JSON.stringify(r2.sourceErrors));
+    } finally {
+        releaseShim();
+    }
+    const idx = readLf('index.js');
+    // 只认装配真正需要的两件：parse 是纯函数，只属于 extra-sources 与它的单测，
+    // index.js 用不到就不许为了源码锁塞一个无用 import（死 import 会进 dead-export 面）。
+    check('index.js 从 extra-sources 导入 lobehub 词表（read + 抓取两件）',
+        /readLobeHubSkillCategoryVocabulary/.test(idx) && /lobeHubSkillCategoryVocabulary/.test(idx),
+        (idx.match(/import[^\n]*extra-sources\.js/) || ['(无 import 行)'])[0].slice(0, 180));
+    check('settings.get 按源下发 lobehub 词表（分组里必须有 lobehub 键）',
+        /categoryVocabulary[\s\S]{0,1200}lobehub:/.test(idx), 'no lobehub key near categoryVocabulary');
+    check('面板装配只读缓存、不等网络（read + void 补取）',
+        /readLobeHubSkillCategoryVocabulary\(\{\s*cache:/.test(idx) && /void lobeHubSkillCategoryVocabulary\(/.test(idx), 'read/void 组合缺失');
+    const esSrc = readLf('src/extra-sources.js');
+    check('extra-sources.js 导出三件', /export function parseLobeHubSkillCategories/.test(esSrc)
+        && /export async function lobeHubSkillCategoryVocabulary/.test(esSrc)
+        && /export async function readLobeHubSkillCategoryVocabulary/.test(esSrc), '');
+}
+
+console.log('');
+console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只留 10 个分类）');
+{
+    const client = readLf('client.js');
+    const _dl = client.split(NL).find((l) => l.includes("new Set(skills.map(") && l.includes(".slice(")) || "";
+    const derivedLine = (_dl === undefined ? '' : _dl).trim();
+    check('派生行的 10 上限已放开（词表在手时是权威，缺词表时用户也不该只看到 10 个入口）',
+        derivedLine !== '' && !/\.slice\(0,\s*10\)/.test(derivedLine) && /\.slice\(0,\s*\d{2,}\)/.test(derivedLine),
+        derivedLine.slice(0, 180));
+    check('折叠常量未被改动（chip 多了照样折叠，UI 不炸）', /const CAT_CHIP_FOLD = 12;/.test(client), '');
+    const many = Array.from({ length: 40 }, (_, i) => 'cat-' + i);
+    const got = runChips(['skills.sh', many, {}]);
+    check('无词表源在 40 个派生分类时给出 40 个入口（改前被截到 10）', Array.isArray(got) && got.length === 40,
+        JSON.stringify(got && got.length !== 40 ? { n: got.length } : { n: got.length }));
+    const fold = clientLines.filter((l) => /chipWindow|CAT_CHIP_FOLD/.test(l)).length;
+    check('面板折叠逻辑仍在（入口变多由「更多分类」承接，不是靠截断）', fold >= 2, 'lines=' + fold);
+}
+
+
+console.log('');
+releaseShim();
+check('假 npx 夹具未污染真实 PATH（判据跑完必须还原）', process.env.PATH === savedPath, (process.env.PATH || '').slice(0, 80));
+const { rmSync } = await import('node:fs');
+try { rmSync(SHIM, { recursive: true, force: true }); } catch (e) {}
+console.log('');
+console.log(passed + ' passed, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
+process.exit(failed ? 1 : 0);

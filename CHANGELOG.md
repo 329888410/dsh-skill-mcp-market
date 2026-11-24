@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.163
+
+- 收用户 2026-11-24 点名的 lobehub 两缺陷。①多词搜索整源失败：live 指纹 @lobehub/market-cli CLI failed: error: too many arguments for 'search'. Expected 0 arguments but got N。根因是 Windows 分支把参数拼成 cmd 命令行时，quoteForCmd 对内嵌引号写成反斜杠转义（\"），且 execFile 没开 windowsVerbatimArguments —— cmd.exe 下 --q 后面拿到的是 \"weather 与 forecast\" 两段，上游收到的是被拆碎的关键词。
+- 修法：两份同构 quoteForCmd（src/cli-install.js:64 六个安装路径共用、src/lobehub-market.js:41 市场命令）内嵌引号改为 cmd 认的双写 ""，并在各自 execFile 选项加 windowsVerbatimArguments: true。姿势矩阵实测：只改引号不加 verbatim 仍拆参、只加 verbatim 不改引号也拆参，两者缺一即红 —— 所以判据同时锁两处源码行与一次真跑 argv。
+- ②分类 chip 恒定不随分类变化：index.js 只下发 skillsmp/clawhub/trusttools 三家词表，client.js 的 ORIGIN 表里没有 lobehub，categoryChipsForSource 取不到词表就退回当前页派生；叠加 client.js:948-953 的 append 累积与派生行的 slice(0, 10)，首页凑满 10 个不同分类后 chip 集合永久锁死（监测方按面板算法逐页复现：lobehub 14 页真实 26 类，被挤出 16 类）。
+- 修法：src/extra-sources.js 新增 LobeHub 词表三件套（parseLobeHubSkillCategories 吃顶层数组 / categories 对象数组 / categories 字符串数组三种上游形状，按上游条数降序）+ lobeHubSkillCategoryVocabulary（7 天 TTL、命中回同一引用、抓取失败或解析 0 条一律 null 且绝不落空快照）+ readLobeHubSkillCategoryVocabulary（只读缓存不等网络）；index.js settings.get 按既有形状装配第三家，冷的那份 void 后台补取，面板首屏不等外网；client.js ORIGIN 登记 lobehub；searchLobeHubSkills 收 category 真正推 --category，并回 serverFacet:true 与 totalPages，cacheKey 加 category 段防换分类串到上一个分类的缓存页。
+- 解析口径教训（实测自纠）：slug 先 toLowerCase 再做 /^[a-z][a-z0-9-]*$/ 白名单校验等于放宽白名单 —— 上游 7 条首字母大写的自由标签（Analytics/Backend/DevOps/Observability/Organization/Planning/Security）会伪装成规范 slug 入表（解析出 256 而非 246），而 CLI 的 --category 并不认这些值，放行的结果是一个点了没用的入口。现口径：只 trim 不降大小写，形态校验打在原值上，实测 246 条。
+- 派生 chip 上限 slice(0, 10) 提到 slice(0, 60)【判定理由】：60 是本仓既有的可见性口径（client.js resolvePageSize 的 Math.min(60, v)），10 会把用户本可点击的分类入口静默截掉；CAT_CHIP_FOLD=12 的折叠不动，展开态可见全部。词表在手时 chip 由词表给全（246 条，翻页与换词集合不变）；词表抓取失败退回当前页派生时，兜底态可见前 60 个分类入口（如实更正：本轮之前该兜底硬截 10 个，且 lobehub 根本没有词表通道）。
+- 诚实性护栏：serverFacet 只在真的推过 --category 时声明（cat !== 空串），浏览态不许自称服务端已筛；上游没给条数的分类不拼条数（categoryLabelLite 仅在 totalAll>0 时显示）。聚合层无需改动，src/sources.js 的 facet 计票按 handler 回旗走。
+- 判据：新套件 test/test-lobehub-category-vocab.mjs 68 条。RED 首跑 35 passed / 32 failed，真实红字含：词表=null、--category 不在 argv、result 无 serverFacet 与 totalPages、换分类 argv=null（串缓存）、生产 npxRun 经假 npx 落盘自证的拆参 argv、面板 chip n=2 且 first.fixed=false 走派生、ORIGIN 行未登记 lobehub、端到端 note=所选来源不提供分类信息，已忽略分类筛选。假 npx 夹具落在纯 ASCII 目录（含中文用户名的 Temp 在 cmd OEM 代码页下必报 文件名、目录名或卷标语法不正确，已按候选目录写探针择优，全不可用即记 SKIP 而不冒充通过）。
+- 两类「判据变了」分开标注（避免被误读成改测试迁就实现）：套件 :312「带空格的值仍是一段」RED 期断言 argv 长度 4，实测假 npx 透传的是 npxRun 全参数（-y、包名、skills、search、--q、值 = 6 段）⇒ 这是判据自身写错，改成断言 --q 的下一段等于完整值；而 :164 的 256→246 是实现改了（先小写再校验等于放宽白名单）。前者改测试、后者改生产，性质不同。
+- 自由标签不入表的代价已量化：被排除的 50 条合计只覆盖 471 条技能，占上游全部 334,638 条的 0.14%，最大一条 Backend:225。⇒ 不入表不是洁癖，是用 0.14% 的覆盖换「点了真有结果」的入口，比定性说不规范硬。
+- 变异 12 向全杀：撤 verbatim=5 红、双写退回转义=两份各 1 红、cacheKey 去 category 段=1 红、serverFacet 无条件 true=1 红（浏览态那条）、不推 --category=2 红、丢弃 totalPages=1 红、parse 不排序=1 红、parse 先小写=1 红（got=256）、parse 截前 26=2 红（missing=smart-home-iot,calendar-scheduling）、ORIGIN 去 lobehub=6 红、派生上限回 10=1 红、index 不下发 lobehub 键=1 红。逐向还原后五个文件 sha256-16 回到 GREEN 值（cli-install 4f1e7a0bf678fc2f、lobehub-market 11bb5bd65ff3acbc、extra-sources 33e4e3f791766e95、index c31d43910d014dcb、client e9bdf3985c4cda11）。
+- 版本归属声明：0.5.163 = lobehub 两缺陷（多词拆参 + 分类词表通道）同一轮 —— 二者同源于 lobehub 面板路径且共用同一测试面；modelscope 分类词表（上游无公开词表端点，需 L1 静态表加行内归一）与空深页 total 凭空造数那条另立 0.5.164，理由是取证与设计各自独立，混进一个判据家只会让两件事互相拖着。
+- live 半段口径：宿主 61246 进程内仍是旧服务端（AGENTS.md 禁止自行重启宿主），本版面板展开态的 live 截图须待用户点菜单『重启应用与 Host』后复验；取到之前不宣称面板侧已生效。
+
 ## 0.5.162
 
 - 收 MON 效率口径第 ② 条（用户 2026-11-24 原话：「技能市场的UI面板必须完整地呈现所有技能，在搜索时完整地呈现所有搜索结果」「不管快慢，都得等待面板加载完毕」）：面板与所有单源调用从此**没有任何超时预算**。此前 fanOnce 把调用方的 budgetMs 原样传给 fanOutSources，单源同样被 12s 截断——面板点 trusttools/skillhub 等慢源时「trusttools 不可达：来源响应超时（预算 12s），已跳过」（真机截图取证，m13096）。现在 fanOnce 判 picked.length>1：单源传 budgetMs 0（settle 的既有 `!(b>0)` 分支即无预算真等待，超时文案与冷却标记都无从触发）且不带预算覆盖表（fanOverrides=null，否则表里的值会绕过 0）；聚合路径逐字节不变。上游侧自有超时仍在：src/http.js getJson 20s、curlText 15s、pythonText 20s+5s、面板 RPC 上限 5 分钟（client.js:352 AbortSignal.timeout(300000)），因此「无预算」仍有界，只是界从 12s 挪到了每条上游通道自己的真实失败点。

@@ -196,7 +196,7 @@ function categoryChipLabel(value, vocab) {
 function categoryChipsForSource(source, derived, bySource) {
   // trusttools 没有可抓的词表端点（上游超时），词表是服务端随包发的静态表，source 同样指向上游站点，
   // 所以归属核验与前两家走同一条规则，不做特例。
-  const ORIGIN = { skillsmp: 'https://skillsmp.com/', clawhub: 'https://clawhub.ai/', trusttools: 'https://ai.trusttools.cn/' };
+  const ORIGIN = { skillsmp: 'https://skillsmp.com/', clawhub: 'https://clawhub.ai/', trusttools: 'https://ai.trusttools.cn/', lobehub: 'https://market.lobehub.com/' };
   const key = String(source || '');
   if (!ORIGIN[key] || !bySource || typeof bySource !== 'object') return mergeCategoryVocab(derived, null);
   // 两种下发形状都要吃：分组 { skillsmp, clawhub }（0.5.153 起），以及旧服务端那份未分组
@@ -1846,7 +1846,10 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         if (sort === 'name') return String(a.name || a.slug).localeCompare(String(b.name || b.slug));
         return (b.installs || 0) - (a.installs || 0);
       });
-      const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 10);
+      // 派生兜底上限从 10 放开到 60：10 会把用户能点的分类静默截掉（面板每页条数上限本就是 60，见
+      // resolvePageSize 的 Math.min(60, …)，同一个可见性口径）。词表在手时 chip 由词表给全，这里
+      // 只是无词表源（skills.sh / skillhub / modelscope）的兜底，可见窗口仍由 CAT_CHIP_FOLD 折叠。
+      const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 60);
       // 固定词表在前（上游条目数降序），当前页派生的串补在后：词表抓不到时入口不关，改版也不丢。
       const vocabChips = categoryChipsForSource(source, categories, categoryVocab);
       const chipBySlug = {};

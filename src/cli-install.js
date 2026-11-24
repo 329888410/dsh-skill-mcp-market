@@ -35,6 +35,7 @@ export function npxRun(pkg, args, { timeoutMs = 90000, env = {} } = {}) {
       {
         timeout: timeoutMs,
         maxBuffer: 16 * 1024 * 1024,
+        windowsVerbatimArguments: true,
         windowsHide: true,
         env: { ...process.env, ...env, NO_COLOR: "1", npm_config_yes: "true" },
       },
@@ -60,7 +61,7 @@ export function npxRun(pkg, args, { timeoutMs = 90000, env = {} } = {}) {
 
 function quoteForCmd(text) {
   if (!/[\s"&|<>^]/.test(text)) return text;
-  return `"${text.replace(/"/g, '\\"')}"`;
+  return `"${text.replace(/"/g, '""')}"`;
 }
 
 /**
