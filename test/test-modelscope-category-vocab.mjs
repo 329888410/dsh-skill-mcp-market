@@ -313,7 +313,10 @@ console.log('Test 9: 接线（下发 + 面板归属 + 导出 + 进门登记 + �
   check('extra-sources 导出三件', typeof esMod.searchModelScope === 'function' && typeof vocabFn === 'function' && typeof catOfFn === 'function', MISSING_EXPORTS.join(','));
   const pkg = JSON.parse(read('package.json'));
   check('新套件已登记进 test:chain', String(pkg.scripts['test:chain']).indexOf('test/test-modelscope-category-vocab.mjs') >= 0, 'chain');
-  check('版本已升到 0.5.165', pkg.version === '0.5.165', pkg.version);
+  // 版本判据按「不低于本批改动的落地版本」比较，不写死等号：写死等号时每升一次版本就得红一次门。
+  const verNums = String(pkg.version).split('.').map((x) => Number(x));
+  const atLeast = (a) => { const b = String(a).split('.').map((x) => Number(x)); for (let k = 0; k < 3; k += 1) { if ((verNums[k] || 0) > b[k]) return true; if ((verNums[k] || 0) < b[k]) return false; } return true; };
+  check('版本不低于本批落地版本 0.5.165', atLeast('0.5.165'), pkg.version);
   check('searchModelScope 接受注入 transport', /transport/.test(readLf('src/extra-sources.js').split('function searchModelScope')[1] || ''), 'param');
 }
 

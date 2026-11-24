@@ -27,7 +27,10 @@ console.log('Test 1: 下发键 = 选中键（缺陷 2）');
 {
   check('effSort 不再把未知键塌成空串', !/sort === 'name' \? 'name' : ''/.test(c));
   check('effSort 原样透传选中键', /const effSort = reqSort === 'default' \? 'installCount' : reqSort;/.test(c));
-  check('effSort 尊重显式 options.sort（切源时传入新键）', /const reqSort = options && options\.sort !== undefined \? options\.sort : sort;/.test(c));
+  // 0.5.166：兜底不再是裸 sort state（搜索态残留 trending 会被下发），改走 keepSortForForm。
+  // 这条锁保留的原意是「显式 options.sort 必须原样透传」——切源 onClick 传进来的新键不能被兜底吃掉。
+  check('reqSort 尊重显式 options.sort（切源时传入新键）', /const reqSort = options && options\.sort !== undefined \? options\.sort :/.test(c));
+  check('reqSort 兜底走 keepSortForForm（不再裸吃 sort state）', /const reqSort = options && options\.sort !== undefined \? options\.sort : keepSortForForm\(/.test(c));
 }
 
 console.log('');

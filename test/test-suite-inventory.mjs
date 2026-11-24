@@ -47,7 +47,6 @@ const helpers = allFiles.filter((x) => !x.startsWith('test-') || importedBy.has(
 // 豁免表：不进门的套件必须写清理由，且文件必须真实存在（防豁免表腐烂）。
 const EXEMPT = {
   'test-sources.mjs': '交互式海量探针（--skill/--mcp 参数），120s 不收敛，不适合当 CI 门',
-  'test-sort-form-switch.mjs': 'RED 判据：keepSortForForm 尚未落码（0.5.165 落地后转绿再进 test:chain）；先随包入库，判据不得只留在可清理的 scratch 目录',
 };
 const unlisted = onDisk.filter((f) => !listed.includes(f) && !helpers.includes(f));
 const silent = unlisted.filter((f) => !Object.prototype.hasOwnProperty.call(EXEMPT, f));

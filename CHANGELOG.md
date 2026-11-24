@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.166
+- 修「browse→search 形态切换不复位 sort」（0.5.164 就入库的 RED 判据 test/test-sort-form-switch.mjs 本批转绿 20/0）：用户在 clawhub 浏览态选了「热门」，再输入关键词，请求仍带着该形态不支持的 trending——UI 下拉里已经没有这个选项，请求却还在发，正是 0.5.101 起反复判死的「选了没反应」的排序变体
+- 修法：client.js 新增纯函数 keepSortForForm(sortKey, entry, hasQuery)（:26-31，内部复用 capsFor，Test 3 单一口径成立），reqSort 兜底从裸 sort state 改走它；能力表经 liveRef 快照读（sortCaps 进 liveRef.current），searchSkills 的 useCallback deps 保持 [sort, liveRef, source, size] 不变——deps 里放 sortCaps 会让能力表一到就换函数，tab effect 把整页列表再搜一次
+- 显式 options.sort 原样透传（切源 onClick 传入的新键不被兜底吃掉）；能力表未到达时非 default 一律回落 installCount，不猜键
+- 判据：test-sort-form-switch.mjs 14→20 passed（Test 4 用 client.js 真实 searchSkills 体端到端跑：残留 trending+查询 ⇒ 实发 installCount 且缓存键同口径；浏览态 trending 仍原样下发；显式透传；无能力表回落），不只源码锁
+- 变异四向逐向见红：M1 兜底退回裸 sort ⇒ 16/4（honesty 同红）；M2 过度复位（一律 default）⇒ 15/5；M3 不看能力表 ⇒ 14/6；M4 显式透传被吃 ⇒ 18/2；还原 sha=d90f74ce9a47b44c 逐字节 MATCH
+- 随动：test-sort-ui-honesty.mjs :30 的 reqSort 整行锁承认 keepSortForForm 兜底（40/0）；test-search-fanout-latency.mjs 的 Test14/Test20 注入线上真实现（capsFor+keepSortForForm 同一作用域封箱，分开封箱会让 capsFor 引用落到 global——测的就不是线上那份），解构清单与两个 env 补绑 keepSortForForm（207/0）
+- EXEMPT 撤销、test:chain 67→68 段（sort-form-switch 转绿进门）、version 0.5.165→0.5.166；keepSortForForm 只管「无显式 sort 的调用点」（回车/搜索按钮/分类 chip/改每页条数/安装后刷新），切源 keep 判定（0.5.164 已落）继续管「换源」
+- 提交前全量门抓到一处既有判据自身的不合理：test/test-modelscope-category-vocab.mjs:316 写死 pkg.version === '0.5.165'，于是每升一次版本都必红一次门（本批首跑 66/68）。改成「不低于本批落地版本」的单调比较（160/0），版本锁的语义保住、门不再被版本推进本身绊倒。全仓 grep 确认这是唯一一处等号版本锁。
+- 本批首跑门余下一红 test-profile-sync（profile=0.5.165 work=0.5.166）＝发布前预期中间态，0.5.163/0.5.164/0.5.165 同形先例，装完 profile 转绿。
+
 ## 0.5.165
 - 窗外分类合并成一个「其他」chip（用户 21:59 拍板：「更多分类里对应的技能只有几百个吧？你可以合并进一个“其他”标签中。」）：lobehub 词表 246 类，默认窗口只给前 32 类，剩下的 214 类合计 743 条=全部 334,640 条的 0.22%。0.5.164 的处理是给它们一个「更多分类（共 246 个）」展开态，实测那仍然是把 246 个标签摆给用户看，所以本批把展开态整体拆掉：client.js 新增 CAT_OTHER = '__cat_other' 与 foldChips(vocabChips, limit)，窗口 = 前 CAT_CHIP_FOLD(=32) 类 + 1 个「其他」，「其他」的 totalAll 是窗外各类上游真条数之和、covers 记窗外全部 slug，visibleSkills 的分类谓词加 CAT_OTHER 分支（category===CAT_OTHER 时按 covers 命中放行），点「其他」= 筛出这 743 条而不是再列一遍标签。grep 复核 categoryExpanded / __cat_fold / 更多分类 三处均 0 命中，展开态确已移除。
 - 撞名防御是必须的：modelscope 静态词表本来就有一个真分类「其他」（ChineseName 其他、565 条）。所以 foldChips 第一步先滤掉上游行里 value===CAT_OTHER 的条目（合成入口不能被上游顶掉），且「其他」chip 的文案自带出身——渲染成「其他 · 窗外 214 类合计 743 条」，只写「其他 743 条」会被读成上游那个 565 条的类。

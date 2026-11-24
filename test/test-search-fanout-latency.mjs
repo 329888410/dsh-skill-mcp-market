@@ -42,6 +42,24 @@ let shouldSkipInflight = null;
   const en = blockEnd(src, st, 'shouldSkipInflight');
   shouldSkipInflight = new Function(srcLines.slice(st, en + 1).join(String.fromCharCode(10)) + String.fromCharCode(10) + 'return shouldSkipInflight;')();
 }
+let keepSortForForm = null;
+{
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'client.js'), 'utf8').replace(/\r\n/g, String.fromCharCode(10));
+  const srcLines = src.split(String.fromCharCode(10));
+  const grab = (decl, label) => {
+    const i = srcLines.findIndex((l) => l.includes(decl));
+    if (i < 0) throw new Error('client.js 未找到 ' + label);
+    return srcLines.slice(i, blockEnd(src, i, label) + 1).join(String.fromCharCode(10));
+  };
+  // 两个函数一起装进同一个作用域：keepSortForForm 体内复用 capsFor（Test 3 的单一口径），
+  // 分开封箱会让那个引用落到 global 上 —— 测的就不再是线上那一份实现。
+  keepSortForForm = new Function(
+    grab('function capsFor(entry, hasQuery)', 'capsFor') + String.fromCharCode(10) +
+    grab('function keepSortForForm(sortKey, entry, hasQuery)', 'keepSortForForm') + String.fromCharCode(10) +
+    'return keepSortForForm;')();
+}
 
 console.log('Test 1: fanOutSources 并发（fake handler，无网络）');
 if (typeof fanOutSources !== 'function') {
@@ -535,11 +553,11 @@ console.log('Test 14: 请求序号守卫 —— 先发请求的结果不得覆�
     const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
       '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage, CAT_OTHER,' +
       '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setError, setBusy,' +
-      '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight } = deps;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
+      '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight, keepSortForForm } = deps;' + String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
     const fired = [];
     const delays = {};
     const env = {
-      liveRef: { current: { source: 'clawhub', category: 'all' } },
+      liveRef: { current: { source: 'clawhub', category: 'all', sortCaps: { skills: { clawhub: { browse: ['downloadCount', 'stars', 'newest', 'updated', 'trending', 'name'], search: ['downloadCount', 'stars', 'newest', 'updated', 'name'] } } } } },
       resultCacheRef: { current: {} },
       reqSeqRef: { current: 0 },
       size: 24,
@@ -547,6 +565,7 @@ console.log('Test 14: 请求序号守卫 —— 先发请求的结果不得覆�
       skillCacheKey: () => '',
       inflightRef: { current: new Set() },
       shouldSkipInflight,
+      keepSortForForm,
       resolvePageSize: (o, s) => (o && o.size) || s,
       CAT_OTHER: '__cat_other',
       setSkills: (rows) => fired.push(rows),
@@ -984,7 +1003,7 @@ console.log('Test 20: 面板空列表必须复述逐源失败（S1 展示侧；�
   const mk = new Function('deps', 'return async (text, options) => {' + String.fromCharCode(10) +
     '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage, CAT_OTHER,' +
     '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setError, setBusy,' +
-    '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight, trustedTotal, totalBaseRef } = deps;' +
+    '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight, trustedTotal, totalBaseRef, keepSortForForm } = deps;' +
     String.fromCharCode(10) + body + String.fromCharCode(10) + '};');
   const mkEnv = (payload, key, seed) => {
     const notices = [];
@@ -1000,6 +1019,7 @@ console.log('Test 20: 面板空列表必须复述逐源失败（S1 展示侧；�
       shouldSkipInflight: () => false,
       resolvePageSize: (o, s) => (o && o.size) || s,
       trustedTotal: (t) => t,
+      keepSortForForm,
       setSkills: () => {}, setSkillsPage: () => {}, setSkillsTotalPages: () => {}, setSkillsTotal: () => {},
       setSkillsHasMore: () => {}, setServerFacet: () => {}, setError: (e) => { if (String(e === null || e === undefined ? '' : e) !== '') notices.push('ERR:' + e); }, setBusy: () => {},
       setNotice: (t) => notices.push(t),

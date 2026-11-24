@@ -18,6 +18,17 @@ window.__ModuleLoader__.load({
       if (!entry) return null;
       return Array.isArray(entry) ? entry : (hasQuery ? entry.search : entry.browse);
     }
+    // 搜索态/浏览态是两套能力：只在「用户没有显式指定排序键」时读当前查询词态（capsFor 同一口径）。
+    // options.sort 由切源 chip、sort effect、搜索重发显式传入：调用方已经按那一刻的能力算过，
+    // 这里再判一次会把「同一 sort 值 + 能力翻转」的重复请求退化成 default，服务端排序形同被面板改写；
+    // 不判又会让浏览态点「按热门」后进搜索残留的 trending 原样发给上游（上游不认 trending，
+    // 返回的是全目录序，而下拉框在搜索态本就不列「按热门」——控件与结果两张皮）。
+    function keepSortForForm(sortKey, entry, hasQuery) {
+      if (sortKey === undefined || sortKey === null || sortKey === 'default') return 'default';
+      const caps = capsFor(entry, hasQuery);
+      if (caps && caps.indexOf(sortKey) >= 0) return sortKey;
+      return 'default';
+    }
     // 连接生命周期文案。unknown 是诚实态：探测不到就不假装知道（回退到旧的布尔语义）。
     const PHASE_LABEL = { active: '· 已连接', loading: '· 启动中', failed: '· 连接失败', unloaded: '· 未挂载', unknown: '' };
     // 工具浮窗一次铺满几十个工具时，每输入一个字符都要重建整棵子树
@@ -745,7 +756,9 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       });
       // 这面镜子在每次渲染时同步最新选择，回调里读它拿到的是当前值而不是初值。
       const liveRef = useRef({});
-      liveRef.current = { source, category, size, mcpSource, mcpCategory, mcpSort };
+      // sortCaps 也进快照：searchSkills 的 useCallback 依赖里不放它（否则能力表一到就换函数，
+      // tab effect 会把整页列表再搜一次），但「浏览态选了热门、进搜索态」这一判定必须读当前能力。
+      liveRef.current = { source, category, size, mcpSource, mcpCategory, mcpSort, sortCaps };
       // 会话日志体检：检测并修复「空 tool-call」导致的会话永久损坏
       const [sessionScan, setSessionScan] = useState(null);
       const [sessionBusy, setSessionBusy] = useState('');
@@ -910,7 +923,8 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         // 只有「首页」进缓存；翻页是增量追加，缓存它没有意义还会撑爆内存
         // 旧写法把 stars/newest/updated/trending 全塌成 ''，服务端根本收不到排序意图 →「选了没反应」。
         // 现在原样下发选中的键；default 仍映射 installCount（保持既有默认视图语义）。
-        const reqSort = options && options.sort !== undefined ? options.sort : sort;
+        const capsNow = liveRef.current && liveRef.current.sortCaps ? liveRef.current.sortCaps : null;
+        const reqSort = options && options.sort !== undefined ? options.sort : keepSortForForm(sort, capsNow && capsNow.skills ? capsNow.skills[src] : null, Boolean(String(text || '').trim()));
         const effSort = reqSort === 'default' ? 'installCount' : reqSort;
         const cacheKey = skillCacheKey({ source: src, query: q, category: cat, page: pageNo, size: pageSize, sort: effSort, append: Boolean(options && options.append) });
         // 同条件已在途 → 这次直接不发（连按两次回车不该各打一次上游）。
