@@ -47,7 +47,12 @@ mkdirSync(storeDir, { recursive: true });
 // ⚠️ 必须异步：假上游服务器跑在**父进程**的事件循环里，用 spawnSync 会把父进程阻塞住，
 // 子进程的请求永远排不到响应 ⇒ 首版 Test 2/5/8 全红、Test 4「因为错而绿」的假绿就是这个坑。
 const run = (script, env, withPreload = true) => new Promise((resolve) => {
-  const nodeEnv = { ...process.env, DSH_REPLAY_DIR: storeDir, ...env };
+  // DSH_REPLAY_MISSLOG 显式改到私有文件：门用每套件一份账本，而本套件的子进程
+  // **故意**打未录请求（Test 3 的 never-recorded=1 就是要证守卫生效）。若让它继承
+  // 门塞进来的账本，这条故意 miss 会被门算成「本套件有未命中」⇒ 判据家自己在回放态
+  // 必然假红（01:48/01:52 两次实测：`.miss-<pid>-test-gate-replay.mjs.log = 1`）。
+  // 守卫的行为由 Test 3 自己断言，门的账本只该记「意外逃逸」的网络。
+  const nodeEnv = { ...process.env, DSH_REPLAY_MISSLOG: join(storeDir, ".private-miss.log"), DSH_REPLAY_DIR: storeDir, ...env };
   if (withPreload) nodeEnv.NODE_OPTIONS = "--import=" + new URL("./replay/preload.mjs", import.meta.url).href;
   else delete nodeEnv.NODE_OPTIONS;
   const kb = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, 120000);
@@ -215,6 +220,10 @@ console.log("\nTest 10: 门侧端到端 —— 空档案回放必须让门真红
         DSH_REPLAY_DIR: emptyDir,
         DSH_GATE_ONLY: "test-global-sort.mjs",
         DSH_GATE_TIMEOUT_MS: "120000",
+        // 账本目录显式指定并隔离：不设时 run-gate 用 `.miss-<父pid>-<套件>.log`，
+        // 而父进程就是本套件 ⇒ 文件名与我 Test 11 那份撞车，01:48 实测外层读到
+        // `.miss-25296-test-global-sort.mjs.log = 3`（Test 10 的 miss 记在 Test 11 账里）。
+        DSH_REPLAY_MISS_DIR: emptyDir + "-miss",
       },
     });
     let out = "";
@@ -225,7 +234,7 @@ console.log("\nTest 10: 门侧端到端 —— 空档案回放必须让门真红
   check("门判 REPLAY-MISS 而非 PASS", /REPLAY-MISS/.test(gate.out), gate.out.split("\n").slice(0, 4).join(" | ").slice(0, 160));
   check("门退出码非 0（发布被拦）", (gate.status || 0) !== 0, "status=" + gate.status);
   check("红灯里有 publish blocked", /publish blocked/.test(gate.out), '');
-  try { rmSync(emptyDir, { recursive: true, force: true }); } catch {}
+  try { rmSync(emptyDir, { recursive: true, force: true }); rmSync(emptyDir + "-miss", { recursive: true, force: true }); } catch {}
 }
 
 console.log("\nTest 12: 编排器参数不许静默忽略（01:13 我传 --suites/--rounds 被吞，实跑成 68 套件）");
