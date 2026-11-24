@@ -123,7 +123,7 @@ if (!vocabFixture || !facetFixture || !multiFixture) {
     process.exit(1);
 }
 // 监测方 m13927 ①：词表类数不得少于他逐页数出来的 26，且必须包含第 1 页之外的分类。
-const NAMED_SLUGS = ['browser-automation', 'gaming', 'finance', 'pdf-documents', 'devops-cloud', 'smart-home-iot', 'calendar-scheduling'];
+const NAMED_SLUGS = ['browser-automation', 'gaming', 'finance', 'pdf-documents', 'devops-cloud', 'smart-home-iot', 'calendar-scheduling', 'speech-transcription'];
 const RAW_NONEMPTY = vocabFixture.filter((r) => String(r.category || '').trim() !== '').length;
 const RAW_SLUGFORM = vocabFixture.filter((r) => /^[a-z][a-z0-9-]*$/.test(String(r.category || '').trim())).length;
 console.log('夹具实测：总行数=' + vocabFixture.length + ' 非空=' + RAW_NONEMPTY + ' 规范 slug 形态=' + RAW_SLUGFORM + ' 自由标签=' + (RAW_NONEMPTY - RAW_SLUGFORM));
@@ -500,7 +500,21 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     check('派生行的 10 上限已放开（词表在手时是权威，缺词表时用户也不该只看到 10 个入口）',
         derivedLine !== '' && !/\.slice\(0,\s*10\)/.test(derivedLine) && /\.slice\(0,\s*\d{2,}\)/.test(derivedLine),
         derivedLine.slice(0, 180));
-    check('折叠常量未被改动（chip 多了照样折叠，UI 不炸）', /const CAT_CHIP_FOLD = 12;/.test(client), '');
+    // 真判据（不是源码锁）：默认窗口必须容得下用户点名的分类。做法=从 client.js 读出当前
+    // CAT_CHIP_FOLD 的实际值，对词表驱动的真 chip 序列取同样的窗口宽度，再断言 8 个点名分类全在窗内；
+    // 同时断言 246 类仍大于窗口（折叠入口还在，UI 不会被 246 个 chip 挤没）。
+    const foldMatch = client.match(/const CAT_CHIP_FOLD = (\d+);/);
+    const foldN = foldMatch ? Number(foldMatch[1]) : 0;
+    check('折叠常量存在且是两位数（既没被删成不折叠，也没退回个位数）', foldN >= 10 && foldN <= 60, 'fold=' + foldN);
+    const winChips = runChips(['lobehub', [], { lobehub: lhVocab }]);
+    const winVals = Array.isArray(winChips) ? winChips.slice(0, foldN).map((c) => c.value) : [];
+    const winMiss = NAMED_SLUGS.filter((s) => !winVals.includes(s));
+    check('点名分类全部落在默认窗口内（不点「更多分类」就能看见、能点）',
+        Array.isArray(winChips) && winChips.length > foldN && winMiss.length === 0,
+        'chip=' + (winChips && winChips.length) + ' fold=' + foldN + ' 窗外点名=' + winMiss.join(','));
+    check('超出窗口的分类仍有「更多分类」承接（不是静默截断）',
+        Array.isArray(winChips) && winChips.length > foldN,
+        'chip=' + (winChips && winChips.length) + ' fold=' + foldN);
     const many = Array.from({ length: 40 }, (_, i) => 'cat-' + i);
     const got = runChips(['skills.sh', many, {}]);
     check('无词表源在 40 个派生分类时给出 40 个入口（改前被截到 10）', Array.isArray(got) && got.length === 40,
