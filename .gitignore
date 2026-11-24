@@ -14,7 +14,7 @@ test-results.json
 # 回放档案（一条请求一份 JSON，本机录制产物，8~15 MB 量级）。
 # 档案一律放仓库外、由 DSH_REPLAY_DIR 指过去；这条只是兜底，
 # 防止默认路径 test/replay/store 被 `git add -A` 收进提交（本仓有同类历史事故）。
-test/replay/store/
+test/replay/store*/
 
 # ── 核验临时件兜底（历史事故：.gate.txt/.msg.txt 曾被 git add -A 收进提交）
 # 核验脚本应写到仓库外；这些模式保证即便误写进仓库根也不会进版本库，

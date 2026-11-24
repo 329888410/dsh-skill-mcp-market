@@ -155,6 +155,11 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
   `DSH_GATE_PARALLEL=4` ⇒ `69/69 green` / `total 85s` / **墙钟 36s** / 未命中 0 条、exit=0。
   ⇒ **开发迭代期一遍全门 1076s → 36s（约 30×）**。此前 02:52/03:22 的数字依赖 replay-full/p4
   两份档案，已被 04:54 那次 scratch 清收删除，**从本行起以 replay-full2 为准**。
+  ⚠️**档案必须留两份**：scratch 已被别的会话清收扫过两次（04:54 一次删掉 replay-full/p4 共 30MB 级），
+  所以本轮起 `replay-full2` 除 `C:\Users\Public\dsh-scratch\` 外另存一份
+  `test/replay/store-full2/`（`.gitignore` 的 `test/replay/store*/` 已把它和默认 store 一起排除，
+  不会被 `git add -A` 收进提交）。档案没了就等于判据没了——数字还能写在 README 里，
+  但下一个人复现不出来，那正是 04:54 之后我重录一轮的全部理由。
   · 整门档案仍缺两类请求，本轮手工补齐（都属边界⑧的 A 类）：
   trusttools `…&search=agent` 的 page=1/2/3（12s 聚合预算挡掉，录制轮根本不发出；
   从 worktree 默认 store 按 key 搬成功形态）+ lobehub `market.lobehub.com/api/v1/skills/categories`
