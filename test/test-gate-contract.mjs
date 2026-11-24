@@ -76,5 +76,34 @@ console.log('Test 3: 登记进门的套件必须自己符合契约（静态锁�
 }
 
 console.log('');
+console.log('Test 4: 回放层接线（方案 B：门必须能注入 --import，且未命中必须让门真红）');
+{
+  const gateSrc = fs.readFileSync(path.join(W, 'test', 'run-gate.mjs'), 'utf8');
+  check('run-gate 读 DSH_REPLAY/DSH_REPLAY_MODE', /DSH_REPLAY(_MODE)?/.test(gateSrc), '未见回放开关');
+  // 注入必须走 spawn 参数，不是 NODE_OPTIONS：取证 probe-inherit2 证明
+  // 「父进程也带 NODE_OPTIONS」时会被父进程被顶掉的 child_process 自欺（{status:0,stdout:''}）。
+  check('注入走 spawn 参数（--import=…replay/preload.mjs）', /replayArgs/.test(gateSrc) && /--import=/.test(gateSrc), '未见显式 --import 参数注入');
+  // ⚠️ --import 的值必须是 file:// URL：首版直接塞 Windows 绝对路径，套件立刻
+  // ERR_UNSUPPORTED_ESM_URL_SCHEME（「On Windows, absolute paths must be valid file:// URLs」），
+  // 门整片红。这条锁防的就是「换台机器/换写法又退回裸路径」。
+  check('--import 走 pathToFileURL（不是裸路径）', /pathToFileURL/.test(gateSrc) && !/--import=' \+ path\.join/.test(gateSrc), 'run-gate 里 --import 仍拼裸路径');
+  // 契约的可证伪核心：回放态下未录到的请求必须让套件非零退出，
+  // 而不是拿到空数组静默变绿（空 = 「该源没有数据」= 假绿，「绿不等于做了」同款）。
+  check('gateVerdict 判 REPLAY-MISS 红', gateVerdict({ code: 1, killed: false, out: 'REPLAY-MISS abc123 GET https://x\n' }).verdict === 'FAIL', 'REPLAY-MISS 文案未映射成 FAIL');
+  check('REPLAY-MISS 不算规范 summary（防空回放被当绿）', !/REPLAY[- ]MISS/.test(gateVerdict({ code: 0, killed: false, out: 'REPLAY-MISS abc123 GET https://x\n' }).summary || ''), '误当 summary');
+  // 关键一条：未命中账本优先于套件自报。实测空档案下 test-global-sort 把未命中
+  // 降级成 skip、打印「4 passed, 0 failed, 3 skipped」并退出 0 —— 若门只听它，就放行了。
+  check('退出0+规范绿 summary 但有未命中 → REPLAY-MISS', gateVerdict({ code: 0, killed: false, out: 'x\n4 passed, 0 failed, 3 skipped\n', misses: 5 }).verdict === 'REPLAY-MISS', JSON.stringify(gateVerdict({ code: 0, killed: false, out: 'x\n4 passed, 0 failed, 3 skipped\n', misses: 5 })));
+  check('misses=0 不影响判定（真网络门零参与）', gateVerdict({ code: 0, killed: false, out: 'x\n5 passed, 0 failed\n', misses: 0 }).verdict === 'PASS', '');
+  check('run-gate 给每套件传独立 misslog', /DSH_REPLAY_MISSLOG/.test(fs.readFileSync(path.join(W, 'test', 'run-gate.mjs'), 'utf8')), 'run-gate 未接账本');
+  // ⚠️ 账本目录必须可被外层编排者指定，且指定时门不得删它。
+  // 实测（00:48）：backfill 在门外自己设 DSH_REPLAY_MISSLOG，被 run-gate 的每套件账本覆盖，
+  // 门末又把整个 MISS_DIR 删掉 ⇒ 外层永远读到 0 条，把「REPLAY-MISS 24 条」报成 CONVERGED。
+  // 这是第二层假收敛：守卫本身是对的，读数路径是断的。
+  check('账本目录可用 DSH_REPLAY_MISS_DIR 指定', /DSH_REPLAY_MISS_DIR/.test(gateSrc), 'run-gate 不容外层指定账本目录');
+  check('外层指定账本时门末不删', /if \(replayOn && !missDirGiven\)/.test(gateSrc) || /missDirGiven/.test(gateSrc), 'MISS_DIR 清理未受 missDirGiven 保护');
+}
+
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

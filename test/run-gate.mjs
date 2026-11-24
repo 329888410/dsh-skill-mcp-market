@@ -12,7 +12,9 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { gateVerdict } from './gate-verdict.mjs';
+import { safeTempDir } from '../src/home.js';
 
 const W = path.resolve(import.meta.dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(W, 'package.json'), 'utf8'));
@@ -49,6 +51,26 @@ if (!suites.length) {
 // full-sort 的 all 聚合）额外等 30–180s。300s 会把这些「慢但正常」误判成 TIMEOUT。
 const perTimeout = Math.max(30000, Number(process.env.DSH_GATE_TIMEOUT_MS) || 420000);
 
+// 回放层（方案 B）：DSH_REPLAY=record|1|replay 时给每个套件注入 --import 预加载。
+// 刻意用 spawn 参数注入，而不是只靠 NODE_OPTIONS 继承：取证 probe-inherit2 显示
+// 「父进程自己也带 NODE_OPTIONS」时父进程的 node:child_process 已被替身顶掉，
+// spawnSync 返回的是替身的 {status:0,stdout:''} —— 继承看起来生效、实际是自欺。
+// 显式加进 argv 让「注入了没有」在门日志里可见、可锁。
+const replayMode = process.env.DSH_REPLAY_MODE || process.env.DSH_REPLAY || '';
+const replayOn = replayMode === 'record' || replayMode === '1' || replayMode === 'replay';
+const replayArgs = replayOn ? ['--import=' + pathToFileURL(path.join(import.meta.dirname, 'replay', 'preload.mjs')).href] : [];
+const replayEnv = replayOn
+  ? { ...process.env, DSH_REPLAY_DIR: process.env.DSH_REPLAY_DIR || path.join(W, 'test', 'replay', 'store') }
+  : process.env;
+// 未命中账本放临时区：它是门运行时产物，不是档案的一部分 —— 混进 store 会被一起提交，
+// 也会污染「档案大小」这个度量。按 pid 隔离避免并发门互踩，门结束时整目录删除。
+// 父目录必须走 safeTempDir()（test-temp-hygiene 锁：裸 os.tmpdir() 与 mkdtempSync 都判红）。
+// DSH_REPLAY_MISS_DIR 是外部编排者（test/replay/backfill.mjs）指定的账本目录：给了就**不删**，
+// 否则门末的清理会让外层永远读到 0 条 —— 00:48 实测那层假收敛就是这么来的。
+const missDirGiven = replayOn ? String(process.env.DSH_REPLAY_MISS_DIR || '') : '';
+const MISS_DIR = replayOn ? (missDirGiven || path.join(safeTempDir(), 'dsh-replay-miss-' + process.pid)) : '';
+if (replayOn) { try { fs.mkdirSync(MISS_DIR, { recursive: true }); } catch {} }
+
 // GitHub Actions 用 % 做属性转义、行首 :: 触发命令解析；断言原文可能含这些字符。
 // 注解消息里把 % 转 %25、去掉行首 :: 与换行，避免污染工作流命令。
 function gateEscape(text) {
@@ -56,7 +78,13 @@ function gateEscape(text) {
 }
 const runOne = (file) => new Promise((resolve) => {
   const t0 = Date.now();
-  const child = spawn(process.execPath, [path.join(W, 'test', file)], { cwd: W, env: process.env });
+  // 每个套件一份独立账本：谁未命中就判谁红，不靠套件自己怎么汇报。
+  const misslog = replayOn ? path.join(MISS_DIR, '.miss-' + process.pid + '-' + file + '.log') : '';
+  if (replayOn) { try { fs.mkdirSync(MISS_DIR, { recursive: true }); fs.rmSync(misslog, { force: true }); } catch {} }
+  const child = spawn(process.execPath, [...replayArgs, path.join(W, 'test', file)], {
+    cwd: W,
+    env: misslog ? { ...replayEnv, DSH_REPLAY_MISSLOG: misslog } : replayEnv,
+  });
   let out = '';
   let killed = false;
   const timer = setTimeout(() => { killed = true; child.kill('SIGKILL'); }, perTimeout);
@@ -65,11 +93,15 @@ const runOne = (file) => new Promise((resolve) => {
   child.stderr.on('data', grab);
   child.on('close', (code) => {
     clearTimeout(timer);
-    resolve({ file, code, killed, ms: Date.now() - t0, out });
+    let misses = 0;
+    if (misslog) {
+      try { misses = fs.readFileSync(misslog, 'utf8').split('\n').filter(Boolean).length; } catch {}
+    }
+    resolve({ file, code, killed, ms: Date.now() - t0, out, misses });
   });
 });
 
-console.log(`[GATE] ${suites.length} suites, per-suite timeout ${Math.round(perTimeout / 1000)}s`);
+console.log(`[GATE] ${suites.length} suites, per-suite timeout ${Math.round(perTimeout / 1000)}s` + (replayOn ? `, replay=${replayMode} dir=${replayEnv.DSH_REPLAY_DIR}` : ''));
 const results = [];
 for (const s of suites) {
   const r = await runOne(s);
@@ -97,4 +129,7 @@ if (bad.length) {
   process.exit(1);
 }
 console.log('[GATE] total ' + Math.round(results.reduce((a, x) => a + x.ms, 0) / 1000) + 's across ' + results.length + ' suites');
+// 未命中账本是运行时产物：门跑完即清理（正常退出路径；红路径已用 process.exit，
+// 残留按 pid 隔离不互踩，下轮 mkdirSync 覆盖）。外层指定目录时不清——它还要读。
+if (replayOn && !missDirGiven) { try { fs.rmSync(MISS_DIR, { recursive: true, force: true }); } catch {} }
 

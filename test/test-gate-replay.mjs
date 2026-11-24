@@ -1,0 +1,250 @@
+#!/usr/bin/env node
+// test/test-gate-replay.mjs — 门提速方案 B（录制/回放）的判据家。零真网络：上游用本地 http 服务器假扮。
+//
+// 为什么先立它（用户 21:45 定 B 为主刀，纪律=RED 先行）：提速的前提不是删断言，
+// 而是把「真网络」换成「可重放的确定输入」，而**回放最容易犯的错是把上游形状漂移藏起来**
+// ——本仓 CHANGELOG 自己写下过「『绿』不等于『做了』」，全回放的门正好是那个坑的反面。
+// 所以这里的判据不是「跑得快」，而是四条诚实性：
+//   ① 未录到的请求必须抛 REPLAY-MISS，绝不返回空数组/空对象（空 = 「该源没有数据」= 假绿）；
+//   ② 请求身份必须含 query 与 body（否则「换分类/换页不重拉」类判据被同一条记录糊过去）；
+//   ③ 失败也要落档并原样重现（「上游不可达时的诚实降级」这条判据不许在回放里消失）；
+//   ④ 真网络门不许消失（DSH_REPLAY 未设时零参与），且本地动作（git/tar/sh）不许冻进档案。
+//
+// 判据 9 是门侧接线（run-gate 注入 --import + 契约同批改），实现未落 ⇒ 预期 RED。
+import { spawn, spawnSync } from "node:child_process";
+import http from "node:http";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { safeTempDir } from "../src/home.js";
+import * as engine from "./replay/engine.mjs";
+
+const W = fileURLToPath(new URL("..", import.meta.url));
+const PRELOAD = pathToFileURL(join(W, "test", "replay", "preload.mjs")).href;
+let passed = 0, failed = 0, skipped = 0;
+const check = (n, ok, d = "") => { if (ok) { passed++; console.log("  \u2713 " + n); } else { failed++; console.log("  \u2717 " + n + (d ? "  [" + String(d).slice(0, 170) + "]" : "")); } };
+const skip = (n, d = "") => { skipped++; console.log("  SKIP " + n + (d ? "  [" + String(d).slice(0, 90) + "]" : "")); };
+
+// ---------------------------------------------------------------- 假上游
+const server = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (c) => { body += String(c); });
+  req.on("end", () => {
+    server.__hits.push(req.url + "|" + body);
+    if (req.url.startsWith("/boom")) { res.writeHead(500); res.end("not json at all"); return; }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, url: req.url, body, seq: server.__hits.length }));
+  });
+});
+server.__hits = [];
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const ORIGIN = `http://127.0.0.1:${server.address().port}`;
+const storeDir = join(safeTempDir(), "dsh-replay-" + Date.now());
+mkdirSync(storeDir, { recursive: true });
+
+// 子进程跑一段脚本，带回它的 stdout/stderr。
+// ⚠️ 必须异步：假上游服务器跑在**父进程**的事件循环里，用 spawnSync 会把父进程阻塞住，
+// 子进程的请求永远排不到响应 ⇒ 首版 Test 2/5/8 全红、Test 4「因为错而绿」的假绿就是这个坑。
+const run = (script, env, withPreload = true) => new Promise((resolve) => {
+  const nodeEnv = { ...process.env, DSH_REPLAY_DIR: storeDir, ...env };
+  if (withPreload) nodeEnv.NODE_OPTIONS = "--import=" + new URL("./replay/preload.mjs", import.meta.url).href;
+  else delete nodeEnv.NODE_OPTIONS;
+  const kb = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, 120000);
+  const p = spawn(process.execPath, ["-e", script], { cwd: W, env: nodeEnv });
+  let stdout = "", stderr = "";
+  p.stdout.on("data", (d) => { stdout += String(d); });
+  p.stderr.on("data", (d) => { stderr += String(d); });
+  p.on("close", (status) => { clearTimeout(kb); resolve({ status, stdout, stderr }); });
+});
+
+console.log("\nTest 1: 键含 query 与 body（否则换分类/换页被同一条记录糊过去）");
+{
+  const a = engine.requestKey({ method: "PUT", url: ORIGIN + "/api?PageNumber=1&Query=pdf", body: "{}" });
+  const b = engine.requestKey({ method: "PUT", url: ORIGIN + "/api?PageNumber=2&Query=pdf", body: "{}" });
+  const c = engine.requestKey({ method: "PUT", url: ORIGIN + "/api?PageNumber=1&Query=pdf", body: '{"category":"市场推广"}' });
+  check("换页改键", a !== b, "a==b");
+  check("换 body 改键", a !== c, "a==c");
+  const d = engine.requestKey({ method: "PUT", url: ORIGIN + "/api?PageNumber=1&Query=pdf", body: "{}" });
+  check("同请求同键（可重放）", a === d, a + "!=" + d);
+}
+
+console.log("\nTest 2: 录制态真打一次并落档；回放态零网络命中同一份字节");
+{
+  server.__hits.length = 0;
+  const script = `
+    import { getJson } from "./src/http.js";
+    const r = await getJson("${ORIGIN}/api?PageNumber=1");
+    console.log("JSON:" + JSON.stringify(r));
+  `;
+  const rec = await run(script, { DSH_REPLAY: "record" });
+  const recOut = String(rec.stdout || "");
+  check("record 子进程退出 0", (rec.status || 0) === 0, "status=" + rec.status + " " + String(rec.stderr || "").slice(0, 140));
+  check("record 真打了上游一次", server.__hits.length === 1, "hits=" + server.__hits.length);
+  const recJson = (recOut.match(/JSON:(.*)/) || [])[1];
+  check("record 拿到响应", Boolean(recJson), recOut.slice(0, 120));
+
+  server.__hits.length = 0;
+  const rep = await run(script, { DSH_REPLAY: "1" });
+  const repJson = (String(rep.stdout || "").match(/JSON:(.*)/) || [])[1];
+  check("replay 子进程退出 0", (rep.status || 0) === 0, "status=" + rep.status + " " + String(rep.stderr || "").slice(0, 140));
+  check("replay 零真网络", server.__hits.length === 0, "hits=" + server.__hits.length);
+  check("replay 字节与 record 同值", repJson === recJson, "rec=" + String(recJson).slice(0, 60) + " rep=" + String(repJson).slice(0, 60));
+}
+
+console.log("\nTest 3: 未录到必须 REPLAY-MISS，绝不返回空（反假绿的核心一条）");
+{
+  server.__hits.length = 0;
+  const script = `
+    import { getJson } from "./src/http.js";
+    try {
+      const r = await getJson("${ORIGIN}/api?never-recorded=1");
+      console.log("RETURNED:" + JSON.stringify(r));
+    } catch (e) {
+      // 消息里带「哪条请求没录到」才可诊断；截 40 字会把 URL 切掉（首版就这么假红过）
+      console.log("THREW:" + (e.code || "") + ":" + String(e.message).slice(0, 240));
+    }
+  `;
+  const r = await run(script, { DSH_REPLAY: "1" });
+  const out = String(r.stdout || "");
+  check("未录请求抛错而非返回空", /THREW:REPLAY_MISS/.test(out), out.trim().slice(0, 140));
+  check("抛错里带请求身份（能定位哪条没录到）", /never-recorded=1/.test(out), out.trim().slice(0, 140));
+  check("回放态没偷偷打上游", server.__hits.length === 0, "hits=" + server.__hits.length);
+}
+
+console.log("\nTest 4: 失败也落档，回放态重现同一句错误（诚实降级不许在回放里消失）");
+{
+  server.__hits.length = 0;
+  const script = `
+    import { getJson } from "./src/http.js";
+    try { await getJson("${ORIGIN}/boom"); console.log("NO-ERROR"); }
+    catch (e) { console.log("ERR:" + String(e.message).slice(0, 60)); }
+  `;
+  const rec = await run(script, { DSH_REPLAY: "record" });
+  const recErr = ((String(rec.stdout || "").match(/ERR:(.*)/) || [])[1] || "").trim();
+  check("record 态失败被录下", Boolean(recErr), String(rec.stdout || "").trim().slice(0, 120));
+  server.__hits.length = 0;
+  const rep = await run(script, { DSH_REPLAY: "1" });
+  const repErr = ((String(rep.stdout || "").match(/ERR:(.*)/) || [])[1] || "").trim();
+  check("replay 态错误文案一致", repErr === recErr && Boolean(repErr), "rec=" + recErr + " rep=" + repErr);
+  check("replay 态零真网络", server.__hits.length === 0, "hits=" + server.__hits.length);
+}
+
+console.log("\nTest 5: 绕过 http.js 的裸 fetch 也被截（实测 14 处，钩子管不到全局对象）");
+{
+  server.__hits.length = 0;
+  const script = `
+    const r = await fetch("${ORIGIN}/bare?x=1");
+    console.log("BARE:" + JSON.stringify(await r.json()));
+  `;
+  const rec = await run(script, { DSH_REPLAY: "record" });
+  check("裸 fetch 录制成功", (rec.status || 0) === 0 && /BARE:/.test(String(rec.stdout || "")), String(rec.stderr || "").slice(0, 140));
+  const n = server.__hits.length;
+  server.__hits.length = 0;
+  const rep = await run(script, { DSH_REPLAY: "1" });
+  check("裸 fetch 回放零网络", server.__hits.length === 0 && n === 1, "recHits=" + n + " repHits=" + server.__hits.length);
+  check("裸 fetch 回放的 Response 可用（ok/json）", /"ok":true/.test(String(rep.stdout || "")), String(rep.stdout || "").trim().slice(0, 120));
+}
+
+console.log("\nTest 6: 本地动作不许冻进档案（git/tar/sh 必须放行回真）");
+{
+  check("npx 判定为网络", engine.isNetworkCli("npx", ["-y", "@lobehub/market-cli", "search"]) === true, "npx");
+  check("curl 判定为网络", engine.isNetworkCli("curl.exe", ["-s", ORIGIN]) === true, "curl");
+  check("cmd.exe 里包 npx 也判定为网络", engine.isNetworkCli("cmd.exe", ["/d", "/s", "/c", 'npx -y "browse" skills find']) === true, "cmd+npx");
+  check("git 不判为网络", engine.isNetworkCli("git", ["ls-remote", "origin", "master"]) === false, "git");
+  check("tar 不判为网络", engine.isNetworkCli("tar", ["-xzf", "a.tgz"]) === false, "tar");
+  check("sh 不判为网络", engine.isNetworkCli("sh", ["-c", "printf x >> ~/.profile"]) === false, "sh");
+  check("node 不判为网络", engine.isNetworkCli(process.execPath, ["test/x.mjs"]) === false, "node");
+}
+
+console.log("\nTest 7: 替身导出面与真模块逐字对齐（少一个名字=链接期崩=没有汇总行的红）");
+{
+  const realSrc = readFileSync(join(W, "src", "http.js"), "utf8");
+  const realNames = [...realSrc.matchAll(/export async function (\w+)|export function (\w+)/g)].map((m) => m[1] || m[2]).sort();
+  check("真模块导出六个通道", realNames.length === 6, realNames.join(","));
+  const probe = await run(`
+    import * as h from "./src/http.js";
+    console.log("EXPORTS:" + Object.keys(h).sort().join(","));
+  `, { DSH_REPLAY: "1" });
+  const got = ((String(probe.stdout || "").match(/EXPORTS:(.*)/) || [])[1] || "").trim().split(",").filter(Boolean);
+  check("回放态导出名与真模块全等", got.join(",") === realNames.join(","), "got=" + got.join(",") + " want=" + realNames.join(","));
+}
+
+console.log("\nTest 8: DSH_REPLAY 未设时零参与（真网络门不许消失）");
+{
+  server.__hits.length = 0;
+  const script = `
+    import { getJson } from "./src/http.js";
+    const r = await getJson("${ORIGIN}/api?off=1");
+    console.log("OFF:" + JSON.stringify(r).slice(0, 40));
+  `;
+  const off = await run(script, { DSH_REPLAY: "" }, false);
+  check("off 态真打上游", server.__hits.length === 1, "hits=" + server.__hits.length);
+  check("off 态拿到响应", /OFF:.*"ok":true/.test(String(off.stdout || "")), String(off.stdout || "").trim().slice(0, 120));
+  check("engine.mode() 默认 off", engine.mode() === "off", engine.mode());
+}
+
+console.log("\nTest 9: 门侧接线（run-gate 注入 --import，且契约同批改）");
+{
+  const gateSrc = readFileSync(join(W, "test", "run-gate.mjs"), "utf8");
+  check("run-gate 读 DSH_REPLAY 并注入 --import", /DSH_REPLAY/.test(gateSrc) && /--import/.test(gateSrc), "run-gate.mjs 里未见 DSH_REPLAY/--import");
+  check("注入走 spawn 参数而非 NODE_OPTIONS 继承（实验 6 证伪过继承自欺）", /execPath,\s*\[[^\]]*--import/.test(gateSrc) || /replayArgs/.test(gateSrc), "未见显式 --import 参数注入");
+  const contractSrc = readFileSync(join(W, "test", "test-gate-contract.mjs"), "utf8");
+  check("契约锁住「回放态未命中让门变红」", /REPLAY[-_]MISS|REPLAY_MISS/.test(contractSrc), "test-gate-contract 未锁这条");
+  const pkg = JSON.parse(readFileSync(join(W, "package.json"), "utf8"));
+  check("本套件已登记进 test:chain", /test-gate-replay\.mjs/.test(pkg.scripts["test:chain"] || ""), "未登记 ⇒ 门不会跑它");
+}
+
+console.log("\nTest 10: 门侧端到端 —— 空档案回放必须让门真红（不许因套件自报 skip 而放行）");
+{
+  const emptyDir = join(storeDir, "..", "dsh-replay-empty-" + Date.now());
+  mkdirSync(emptyDir, { recursive: true });
+  const gate = await new Promise((resolve) => {
+    const p = spawn(process.execPath, ["test/run-gate.mjs"], {
+      cwd: W,
+      env: {
+        ...process.env,
+        DSH_REPLAY: "1",
+        DSH_REPLAY_DIR: emptyDir,
+        DSH_GATE_ONLY: "test-global-sort.mjs",
+        DSH_GATE_TIMEOUT_MS: "120000",
+      },
+    });
+    let out = "";
+    p.stdout.on("data", (d) => { out += String(d); });
+    p.stderr.on("data", (d) => { out += String(d); });
+    p.on("close", (status) => resolve({ status, out }));
+  });
+  check("门判 REPLAY-MISS 而非 PASS", /REPLAY-MISS/.test(gate.out), gate.out.split("\n").slice(0, 4).join(" | ").slice(0, 160));
+  check("门退出码非 0（发布被拦）", (gate.status || 0) !== 0, "status=" + gate.status);
+  check("红灯里有 publish blocked", /publish blocked/.test(gate.out), '');
+  try { rmSync(emptyDir, { recursive: true, force: true }); } catch {}
+}
+
+server.close();
+try { rmSync(storeDir, { recursive: true, force: true }); } catch {}
+
+console.log("\nTest 11: 账本可被外层编排者读取（run-gate 不得把外层指定的账本删掉）");
+{
+  // 00:48 实测的假收敛：backfill 在门外自己设 DSH_REPLAY_MISSLOG ⇒ 被 run-gate 的
+  // 每套件账本覆盖，门末又删整个 MISS_DIR ⇒ 外层永远读到 0 条。契约锁 run-gate 的
+  // 源码形态；这条锁行为：外层给 DSH_REPLAY_MISS_DIR ⇒ 门跑完账本仍在、且有内容。
+  const missRoot = join(safeTempDir(), "dsh-replay-missout-" + Date.now());
+  mkdirSync(missRoot, { recursive: true });
+  const r = spawnSync(process.execPath, ["--import=" + PRELOAD, join(W, "test", "run-gate.mjs")], {
+    cwd: W, encoding: "utf8", timeout: 120000,
+    env: {
+      ...process.env,
+      DSH_REPLAY: "1", DSH_REPLAY_DIR: storeDir, DSH_REPLAY_MISS_DIR: missRoot,
+      DSH_GATE_ONLY: "test-global-sort.mjs", DSH_GATE_TIMEOUT_MS: "300000",
+      DSH_TMP: storeDir,   // 门内的套件会往缓存写东西；把 DSH_TMP 也钉进临时区
+    },
+  });
+  const logs = existsSync(missRoot) ? readdirSync(missRoot).filter((f) => f.startsWith(".miss-")) : [];
+  check("门跑完外层账本目录仍在", existsSync(missRoot), "被门删了");
+  check("外层账本有内容（未命中真的记了账）", logs.length > 0, "账本空=" + logs.length);
+  server.__hits.length = 0;
+  try { rmSync(missRoot, { recursive: true, force: true }); } catch {}
+}
+
+console.log("\n" + passed + " passed, " + failed + " failed, " + skipped + " skipped");
+process.exit(failed ? 1 : 0);
