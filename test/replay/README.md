@@ -97,6 +97,17 @@ warm-budget 6 / func-fixes 1），不作为收敛或失败的判定。
 会写进 Test 11 的账本，把「外层账本有内容」糊成假绿。⇒ **凡自己造 miss 的套件，
 都要显式改 `DSH_REPLAY_MISSLOG` 或 `DSH_REPLAY_MISS_DIR` 到私有路径并在收尾删掉。**
 
+**⑦ 本地夹具不是网络：认「孪生文件」形态，别指望 `DSH_REPLAY_CLI=off`。**
+回放层截 `execFile` 的判据只看 argv 里有没有 npx/curl/npm，**看不出这条 npx 是真是假**。
+套件常用的假 npx 夹具（`npx.cmd` 转发到同目录 `cli.cjs`）零网络，一旦被档案截住，
+夹具不执行、它落盘的 `argv.json` 不存在 ⇒ 依赖 argv 的判据全红，而红的形状
+（`argv=null`）与被测代码真的坏掉**完全一样**（02:05 实测九条）。
+`fixtureShimActive()` 用「PATH 第一个 npx.cmd 目录里同时有 cli.cjs」放行；
+整条旁路（`DSH_REPLAY_CLI=off`）代价是真 npx 打网络，实测 10 套件 11s→213s，所以只作逃生阀。
+⇒ **新写夹具型套件时，夹具目录用纯 ASCII 路径**：`safeTempDir()` 在本机含中文用户名，
+`npx.cmd` 以 UTF-8 写、cmd.exe 按 OEM 码页读 ⇒ 路径变 `C:\Users\??\` ⇒ 子 node
+`ERR_MODULE_NOT_FOUND`（02:47 复现；真实套件同进程自写自读不受影响）。
+
 ## 本地动作不许冻进档案
 
 `isNetworkCli` 只认 curl / npx / npm（以及 `cmd.exe /c` 里包着这些命令的命令行）；
@@ -105,7 +116,21 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
 
 ## 现状与待办
 
-- **全门回放实测（01:32，68 套件）：墙钟 43s**，对真网络 1064s（67 套件）。
+- **全门回放终态（02:52，68 套件、夹具识别与 Test 13 都落码后）：**
+  · 串行 `DSH_REPLAY=1` ⇒ `[GATE] 68/68 suites green` / `total 45s`，墙钟 45s，外层账本 0 条未命中。
+  · `DSH_GATE_PARALLEL=4` ⇒ `[GATE] 68/68 suites green` / `total 53s`，**墙钟 25s**（exit=0、账本 0 条）。
+  · 真网络基线 `gate165-post.txt` = `[GATE] 67/67 suites green` / `total 1371s`。
+  ⇒ **开发迭代期一遍全门 1371s → 25s（约 55×）**；档案 353 条 / 15.8 MB，放在仓库外。
+  注：并发那轮 `total 53s` 大于墙钟 25s 是各套件墙钟求和（并发重叠），不是变慢。
+- **两条回放层真缺陷（已修，判据都在判据家）：**
+  ① 套件自带的**假 npx 夹具被档案截走** ⇒ lobehub 九条读 argv 落盘的判据全拿 `argv=null`（02:05）。
+  修法=`cp-replay.fixtureShimActive()` 认 PATH 首个 `npx.cmd` 目录里的孪生 `cli.cjs`，放行回真；
+  逃生阀 `DSH_REPLAY_CLI=off` 实测**默认不能开**（那 10 套件从 11s 涨回 213s，档案 CLI 通道会整条旁路）。
+  ② 我自己写的 Test 13 **首版是空判据**：子进程 `node -e` 直接 import `child_process` 不在
+  `hooks.CP_PARENTS` 白名单内 ⇒ 走真 execFile ⇒ 关掉夹具识别照样全绿（02:38 变异实测）。
+  改从生产入口 `searchLobeHubMarket` 打进去后，变异 ⇒ 46/2（红因 `REPLAY-MISS 054db3…` +
+  `argv.json=(无)`），还原 ⇒ 48/0。**教训：判据家测替身层必须从生产入口进，不能自己直接调被截的 API。**
+- **全门回放早期一轮（01:32，68 套件）：墙钟 43s**，对真网络 1064s（67 套件）。
   该轮 62/68 green，6 条红的判读（**都不算回放层缺陷**）：
   · test-func-fixes / test-paging / test-index-runtime 各「未命中 1 条」+
   test-lobehub-category-vocab 21 条红（`REPLAY-MISS … cmd.exe ["/d","/s","/c","npx -y @lobehub/market-cli …"]`）
