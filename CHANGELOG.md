@@ -9,6 +9,9 @@
 - test-suite-inventory 新增残渣判据（+1 条，12/0）：仓库根不得出现字面环境变量目录（%…%、$… 开头）或 GUID 式缓存树。根因取证：shell 子进程环境缺 SYSTEMDRIVE 时，Windows shell 把字面量 `%SystemDrive%` 当相对路径在 cwd 下重建整棵浏览缓存（5 个 .db、990504B），仓库里任何脚本都不含该字符串——此前两轮 grep 排查猜错的原因。RED/GREEN 实测：造目录 10/2、删除 12/0；且把该目录写进 .gitignore 使 git status 失明后新判据仍 11/1 抓住（磁盘扫描与 git-status 判据不等价）。仓库根与工作区根两份既有残渣已逐一取证删除。
 - 门禁：本轮首跑 62/64 —— test-sort-honesty TIMEOUT 是并发窗口内上游网络抖动（单跑 6.8s 12/0 绿，附日志），test-profile-sync 报 profile:client.js/profile:src\sources.js stale 是发布前中间态（0.5.160 段已有同类先例记录，装本版后转绿）。发布后在干净 HEAD 重跑全量门并附原文。
 - 效率项口径不变：「每源预算差异化」中改变可见条目数的那半仍待用户决策；本轮全部改动不改变任何成功路径的可见条目集合。
+- 发布后干净 HEAD 全量门：工作树=HEAD b67f02a（profile 已装 0.5.161）重跑 → `gate161-clean.log`：**[GATE] 64/64 suites green**、total 395s，上一轮两红全部转绿——`test-sort-honesty.mjs PASS 18s 12 passed, 0 failed, 0 skipped`（并发抖动定性得证）、`test-profile-sync.mjs PASS 7 passed, 0 failed`（profile 装上即闭合）。
+- 发布收口（六阶段 RESULT: PUBLISHED-VERIFIED，取证 chain161b.txt）：提交 b67f02a（7 files +208/-6）、tag v0.5.161（object 6e46c28，peel=提交）、推送 try=1 直连 PUSH-OK（push161.log，0a8afd3..b67f02a + [new tag]）；CI run#45301330409 publish success；npm dist-tags.latest=0.5.161、shasum ebfde367d61156970998c867ed9ff3b1e86c7c7c、tarball GET=200（214722B）——传播教训：HEAD 请求可 404 而 GET 200，判断就绪以 GET/包文档为准；profile 经 dsh plugin --profile desktop add 升到 0.5.161（profile161.txt，Done in 12.8s）；四方一致 parity161.txt＝HEAD = worktree = profile : 32/32、HEAD = npm tarball : 32/32。
+- live 半段闭合（宿主重启后端口 64060，截图取证）：trusttools 面板 chip 实测 9 类（ai-automation/development/data/devops/security/productivity/docs/cloud/design），点分类不再白转——cat=security 实测 wall=4154ms items=24 total=9293 serverFacet=true、cat=zzz-bogus 退回全库 total=579074 serverFacet=false，0.5.159 的 pagination.total 自证在真面板后端生效。S1 服务端半段仍需再一次重启才生效：当前宿主进程内仍是 0.5.160 服务端，实测指纹——skillhub cat=zzz-bogus + q=pdf → items=0、degraded="SkillHub HTTP 400"、sourceErrors=[]（面板仍谎称「没有找到匹配的技能。」），同形 q="" 时 sourceErrors 非空；0.5.161 已装入 profile，下次重启即暴露修复。
 
 ## 0.5.160
 
