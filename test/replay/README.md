@@ -111,5 +111,12 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
 - 档案 **不进 git**（13.3 MB，大头是 skills.sh sitemap 891KB×9 分片）；
   放在仓库外的目录，由 `DSH_REPLAY_DIR` 指过去。要长期用就得加一条「档案过期就重录」的
   节奏（建议：每次改 `src/**` 的取数逻辑后重录一轮）。
-- 方案 C（并发 4~8）还没做：前提是先有 B，且要同批改 `test-gate-contract` 的
-  超时判定（`perTimeout=420s` 是按串行最慢套件定的，并发下总墙钟变短但单套件可能互相拖慢）。
+- 方案 C（并发）已落，**默认关**：`DSH_GATE_PARALLEL` 不设 ⇒ `limit=1` ⇒ 与串行版行为
+  逐字一致（CI 路径不变，故不改 `perTimeout=420s`）。回放态实测（01:43，`parallel=4`，
+  同样那 10 个慢套件）：`[GATE] total 11s across 10 suites`、**墙钟 4s**。
+  归属核对：同四套件（含一个不在档案里的 lobehub 套件）在 `parallel=4` 与串行下
+  逐字同结果——都是 `69 passed, 20 failed` + 账本 `.miss-<pid>-test-lobehub-category-vocab.mjs.log`
+  **9 条**，另外三件 PASS 且各自账本零行 ⇒ 并发没把 A 的未命中串到 B 头上
+  （账本按套件名分文件的直接收益，判据见 `test-gate-contract` Test 5）。
+  真网络态不建议开：并发会污染计时类判据（warm-budget 的预算、latency-recovery 的延迟），
+  理由写在 `test/gate-pool.mjs` 头注释。

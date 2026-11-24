@@ -3,6 +3,7 @@
 // 套件必须让 gate 变红。此前它只是 run-gate 循环体里的口头约定，同类虚高基线
 // 正是靠这条约定挡住的，所以它自己也得有回归锁。
 import { gateVerdict } from './gate-verdict.mjs';
+import { poolLimit, runPool } from './gate-pool.mjs';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -102,6 +103,34 @@ console.log('Test 4: 回放层接线（方案 B：门必须能注入 --import，
   // 这是第二层假收敛：守卫本身是对的，读数路径是断的。
   check('账本目录可用 DSH_REPLAY_MISS_DIR 指定', /DSH_REPLAY_MISS_DIR/.test(gateSrc), 'run-gate 不容外层指定账本目录');
   check('外层指定账本时门末不删', /if \(replayOn && !missDirGiven\)/.test(gateSrc) || /missDirGiven/.test(gateSrc), 'MISS_DIR 清理未受 missDirGiven 保护');
+}
+
+console.log('');
+console.log('Test 5: 并发层（方案 C：默认串行、上限 8、归属按索引、账本按套件名隔离）');
+{
+  check('poolLimit 默认 1（不设环境变量=串行）', poolLimit(undefined, 10) === 1, String(poolLimit(undefined, 10)));
+  check('poolLimit 下界 1', poolLimit('0', 10) === 1 && poolLimit('-3', 10) === 1, '');
+  check('poolLimit 上界 8（防把 CPU 打满制造假 TIMEOUT）', poolLimit('99', 40) === 8, String(poolLimit('99', 40)));
+  check('poolLimit 不超过套件数', poolLimit('8', 3) === 3, String(poolLimit('8', 3)));
+  // 归属正确性：并发完成顺序被打乱时，results[i] 仍须对应 items[i]。
+  // 这条是「并发把红灯安到别的套件头上」的直接防线。
+  const order = [];
+  const rs = await runPool(['a', 'b', 'c', 'd'], async (f, i) => {
+    await new Promise((r) => setTimeout(r, (4 - i) * 20)); // d 先完成、a 最后
+    order.push(f);
+    return { file: f, tag: 'x' + f };
+  }, 4);
+  check('runPool 结果按输入序回填', rs.map((x) => x.file).join(',') === 'a,b,c,d', rs.map((x) => x.file).join(','));
+  check('runPool 真并发（完成序≠输入序）', order[0] === 'd' && order[order.length - 1] === 'a', order.join(','));
+  check('runPool 不丢项', rs.length === 4 && rs.every(Boolean), String(rs.length));
+  // limit=1 时必须是严格串行（上一条的 setTimeout 若在串行下完成序会等于输入序）
+  const seq = [];
+  await runPool(['p', 'q', 'r'], async (f) => { seq.push('start:' + f); await new Promise((r) => setTimeout(r, 5)); seq.push('end:' + f); return f; }, 1);
+  check('limit=1 严格串行', seq.join(',') === 'start:p,end:p,start:q,end:q,start:r,end:r', seq.join(','));
+  const gateSrc = fs.readFileSync(path.join(W, 'test', 'run-gate.mjs'), 'utf8');
+  check('run-gate 读 DSH_GATE_PARALLEL', /DSH_GATE_PARALLEL/.test(gateSrc), '门未接并发开关');
+  // 账本按套件名分文件：并发时若共用一个文件，miss 数会串号（A 的未命中算到 B 头上）。
+  check('账本文件名含 file（逐字符核）', gateSrc.includes("'.miss-' + process.pid + '-' + file + '.log'"), '账本命名与判据不一致');
 }
 
 console.log('');

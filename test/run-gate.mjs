@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gateVerdict } from './gate-verdict.mjs';
+import { poolLimit, runPool } from './gate-pool.mjs';
 import { safeTempDir } from '../src/home.js';
 
 const W = path.resolve(import.meta.dirname, '..');
@@ -50,6 +51,8 @@ if (!suites.length) {
 // 420s：本地最慢套件 full-sort≈189s；CI 冷 npx 缓存会让触发 lobehub CLI 的套件（func-fixes、
 // full-sort 的 all 聚合）额外等 30–180s。300s 会把这些「慢但正常」误判成 TIMEOUT。
 const perTimeout = Math.max(30000, Number(process.env.DSH_GATE_TIMEOUT_MS) || 420000);
+// 并发度（方案 C）：不设 DSH_GATE_PARALLEL ⇒ 1 ⇒ 与串行版行为逐字一致（CI 路径不变）。
+const limit = poolLimit(process.env.DSH_GATE_PARALLEL, suites.length);
 
 // 回放层（方案 B）：DSH_REPLAY=record|1|replay 时给每个套件注入 --import 预加载。
 // 刻意用 spawn 参数注入，而不是只靠 NODE_OPTIONS 继承：取证 probe-inherit2 显示
@@ -101,24 +104,31 @@ const runOne = (file) => new Promise((resolve) => {
   });
 });
 
-console.log(`[GATE] ${suites.length} suites, per-suite timeout ${Math.round(perTimeout / 1000)}s` + (replayOn ? `, replay=${replayMode} dir=${replayEnv.DSH_REPLAY_DIR}` : ''));
+console.log(`[GATE] ${suites.length} suites, per-suite timeout ${Math.round(perTimeout / 1000)}s` + (replayOn ? `, replay=${replayMode} dir=${replayEnv.DSH_REPLAY_DIR}` : '') + (limit > 1 ? `, parallel=${limit}` : ''));
+// 并发（方案 C）：limit=1 时 runPool 就是串行，日志顺序与旧版逐字一致；
+// >1 只在回放/本地提速场景开（判据理由见 gate-pool.mjs 头注释）。
+// 归属安全：results 按索引回填，判定行随完成打印但带套件名，互不串行依赖。
 const results = [];
-for (const s of suites) {
-  const r = await runOne(s);
+const report = (r) => {
   // 判定唯一来源：gate-verdict.mjs 的纯函数（test-gate-contract 锁住其全部分支）。
   const { verdict, summary } = gateVerdict(r);
-  results.push({ file: s, verdict, summary, ms: r.ms });
-  console.log(`[GATE] ${s.padEnd(26)} ${verdict.padEnd(9)} ${Math.round(r.ms / 1000)}s  ${summary}`);
+  results.push({ file: r.file, verdict, summary, ms: r.ms });
+  console.log(`[GATE] ${r.file.padEnd(26)} ${verdict.padEnd(9)} ${Math.round(r.ms / 1000)}s  ${summary}`);
   if (verdict !== 'PASS') {
     // ::error:: 会被 GitHub 转成 check-run annotation（公开可读，无需 admin 拉日志），
     // 因此红灯的「哪个套件、什么判定」必须进这一行。
-    console.log('::error::[GATE] ' + s + ' ' + verdict + ' (' + gateEscape(summary) + ', ' + Math.round(r.ms / 1000) + 's)');
+    console.log('::error::[GATE] ' + r.file + ' ' + verdict + ' (' + gateEscape(summary) + ', ' + Math.round(r.ms / 1000) + 's)');
     const bad = r.out.split('\n').filter((l) => /FAIL|✗|Error|npm error/.test(l)).slice(0, 8);
     for (const l of bad) console.log('        | ' + l.trim().slice(0, 160));
     // 失败断言也各出一条 annotation，便于在 Checks 页直接看到是哪一项
-    for (const l of bad.slice(0, 4)) console.log('::error::[GATE] ' + s + ' :: ' + gateEscape(l.trim()).slice(0, 180));
-    if (verdict === 'TIMEOUT') console.log('::error::[GATE] ' + s + ' 被单套件超时 ' + Math.round(perTimeout / 1000) + 's 杀死（可调 DSH_GATE_TIMEOUT_MS）');
+    for (const l of bad.slice(0, 4)) console.log('::error::[GATE] ' + r.file + ' :: ' + gateEscape(l.trim()).slice(0, 180));
+    if (verdict === 'TIMEOUT') console.log('::error::[GATE] ' + r.file + ' 被单套件超时 ' + Math.round(perTimeout / 1000) + 's 杀死（可调 DSH_GATE_TIMEOUT_MS）');
   }
+};
+if (limit === 1) {
+  for (const s of suites) report(await runOne(s));
+} else {
+  await runPool(suites, async (s) => { const r = await runOne(s); report(r); return r; }, limit);
 }
 const bad = results.filter((x) => x.verdict !== 'PASS');
 console.log('');
