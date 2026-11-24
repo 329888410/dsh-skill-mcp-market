@@ -88,6 +88,15 @@ round 2 回放即 0 未命中（10 套件线实测 rounds=2 CONVERGED）。
 红因大头 full-sort 25 / sort-honesty 16 / total-pages 11 / sort-options 7 /
 warm-budget 6 / func-fixes 1），不作为收敛或失败的判定。
 
+**⑥ 门的 miss 账本语义 = 「意外逃逸的网络」，故意造 miss 的套件要自己隔离。**
+门在回放态给每个子进程塞 `DSH_REPLAY_MISSLOG=<MISS_DIR>/.miss-<父pid>-<套件名>.log`
+并按行数判 REPLAY-MISS。若某套件**故意**打未录请求来证守卫生效（如 test-gate-replay
+的 Test 3 never-recorded=1），这条故意的 miss 会落进门为该套件开的账本 ⇒ 判据家在
+回放态被自己的判据误红（01:48 / 01:52 两次实测：46/0/0 全绿却被门判「未命中 1 条」）。
+撞车还是双向的：Test 10 跑真门时若不指定私有 `DSH_REPLAY_MISS_DIR`，它那 3 条 miss
+会写进 Test 11 的账本，把「外层账本有内容」糊成假绿。⇒ **凡自己造 miss 的套件，
+都要显式改 `DSH_REPLAY_MISSLOG` 或 `DSH_REPLAY_MISS_DIR` 到私有路径并在收尾删掉。**
+
 ## 本地动作不许冻进档案
 
 `isNetworkCli` 只认 curl / npx / npm（以及 `cmd.exe /c` 里包着这些命令的命令行）；
