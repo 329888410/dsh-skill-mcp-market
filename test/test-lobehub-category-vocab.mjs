@@ -21,7 +21,7 @@
 //      同仓库两份同构实现（src/cli-install.js:61-64、src/lobehub-market.js:38-42）必须一起判掉。
 //
 // 判据全部真跑：真 import 生产模块、真起进程（PATH 注入假 npx，argv 落盘自证）、真解析夹具，零网络。
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -511,25 +511,31 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
 
 
 console.log('');
-releaseShim();
-check('假 npx 夹具未污染真实 PATH（判据跑完必须还原）', process.env.PATH === savedPath, (process.env.PATH || '').slice(0, 80));
-const { rmSync } = await import('node:fs');
-try { rmSync(SHIM, { recursive: true, force: true }); } catch (e) {}
-console.log('');
-console.log(passed + ' passed, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
 
 console.log('');
 console.log('Test 9: 平台分支自证（零假绿 / 零 spawn 痕迹）');
 {
-    // 非 win32 分支：夹具一次都没执行 => PATH 从未被指向假 npx，SHIM 里除 cli.cjs/npx.cmd 之外
-    // 不得出现任何 argv/stdout 落盘文件（那些文件只有真 spawn 过才会生成）。win32 侧反向要求跑过。
+    // 非 win32 分支必须一条夹具断言都没执行、PATH 从未被指向假 npx、SHIM 里除夹具自身
+    // 文件之外没有任何 argv/stdout 落盘（那些文件只有真 spawn 过才会生成）。
+    // 注意 leftovers 用 readdirSync 实读目录：目录不存在时视作零落盘（未 spawn 的正确形态），
+    // 不能把「读不到」算成痕迹——CI 上第一次就是这么误判的（本断言自身写错，已改测试侧）。
     const leftovers = (() => {
-        try { return readdirSync(SHIM).filter((f) => !/^cli\.cjs$|^npx\.cmd$/.test(f)); } catch (e) { return ['(no-shim-dir)']; }
+        let names = null;
+        try { names = readdirSync(SHIM); } catch (e) { return []; }
+        return names.filter((f) => !/^cli\.cjs$|^npx\.cmd$/.test(f));
     })();
     check('平台分支自证：win32 跑过夹具 / 非 win32 零 spawn 痕迹',
         IS_WIN ? shimPathApplied > 0 && fixtureChecksRun === 22 : (shimPathApplied === 0 && fixtureChecksRun === 0 && leftovers.length === 0),
         JSON.stringify({ IS_WIN, platform: process.platform, shimPathApplied, fixtureChecksRun, leftovers }));
 }
+releaseShim();
+check('假 npx 夹具未污染真实 PATH（判据跑完必须还原）', process.env.PATH === savedPath, (process.env.PATH || '').slice(0, 80));
+const { rmSync } = await import('node:fs');
+try { rmSync(SHIM, { recursive: true, force: true }); } catch (e) {}
+console.log('');
 console.log('[FIXTURE] 夹具分支内实际执行断言=' + fixtureChecksRun + '（IS_WIN=' + IS_WIN + '；非 win32 必须为 0，否则即假绿）');
 console.log('[PLATFORM] process.platform=' + process.platform + ' DSH_LH_WIN_ONLY=' + (process.env.DSH_LH_WIN_ONLY || '(unset)') + ' SKIP点名=' + skipped);
+console.log(passed + ' passed, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
+
+console.log('');
 process.exit(failed ? 1 : 0);
