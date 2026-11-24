@@ -160,6 +160,12 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
   `test/replay/store-full2/`（`.gitignore` 的 `test/replay/store*/` 已把它和默认 store 一起排除，
   不会被 `git add -A` 收进提交）。档案没了就等于判据没了——数字还能写在 README 里，
   但下一个人复现不出来，那正是 04:54 之后我重录一轮的全部理由。
+  · **两份只治本机，不治换机（07:28 实测后写清）**：仓库内副本 `DSH_REPLAY_DIR=$PWD\test\replay\store-full2`
+  冷缓存复跑 ⇒ 串行 `69/69 green / total 80s / 墙钟 80s / 未命中 0`、`parallel=4` `69/69 / total 85s /
+  墙钟 36s / 未命中 0`，与 07:05 的 scratch 档案数字逐字对得上 ⇒ 证明**搬目录不影响判据**。
+  但 `store*/` 不进 git ⇒ **新克隆的人手上没有档案**，第一遍必然全门 REPLAY-MISS（那是守卫在起作用，
+  不是回归）。换机唯一姿势=自己 `DSH_REPLAY=record` 整门录一遍（一次性 1076s 级），
+  或把 `store-full2` 目录当构建产物手工带过去。别指望 `git clone` 自带回放能力。
   · 整门档案仍缺两类请求，本轮手工补齐（都属边界⑧的 A 类）：
   trusttools `…&search=agent` 的 page=1/2/3（12s 聚合预算挡掉，录制轮根本不发出；
   从 worktree 默认 store 按 key 搬成功形态）+ lobehub `market.lobehub.com/api/v1/skills/categories`
