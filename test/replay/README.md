@@ -136,10 +136,13 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
   · 真网络基线 `gate165-post.txt` = `[GATE] 67/67 suites green` / `total 1371s`。
   ⇒ **开发迭代期一遍全门 1371s → 25s（约 55×）**；档案 353 条 / 15.8 MB，放在仓库外。
   注：并发那轮 `total 53s` 大于墙钟 25s 是各套件墙钟求和（并发重叠），不是变慢。
-- **rebase 到 0.5.166 之后（03:22，链 69 段 = 主树 68 + 我的 test-gate-replay）：**
-  `DSH_GATE_PARALLEL=4` ⇒ `[GATE] 68/69 suites green`，**墙钟 35s**、未命中 0 条；
+- **rebase 到 0.5.166 之后（链 69 段 = 主树 68 + 我的 test-gate-replay）：**
+  · `DSH_GATE_PARALLEL=4`（03:13）⇒ `[GATE] 68/69 suites green`，墙钟 35s、未命中 0 条；
   唯一红 `test-profile-sync.mjs 5 passed, 2 failed` = `work=0.5.166 profile=0.5.165`
-  （目标会话 0.5.166 已提交但还没发到 npm/profile），与回放层无关，装后门时自然对齐。
+  （目标会话 0.5.166 已提交但那一刻还没发到 profile），与回放层无关。
+  · profile 装到 0.5.166 后复验（03:22，冷缓存 + 外层账本）⇒ `test-profile-sync 7 passed, 0 failed`，
+  全门 **串行 `[GATE] 69/69 suites green` / `total 78s`**、`DSH_GATE_PARALLEL=4` 墙钟 35s，
+  未命中 0 条。这条中间态被误当回归的风险，正是 03:13 那轮该读 profile 版本而不是读代码的理由。
   rebase 唯一冲突面是 `package.json` 的 `test:chain`：主树把 `test-sort-form-switch.mjs`
   加进链、我把 `test-gate-replay.mjs` 加进链 ⇒ 解法是两侧都留（69 段），
   用集合差核过「mine 独有 1 段 / head 独有 1 段」，没有静默丢段。
