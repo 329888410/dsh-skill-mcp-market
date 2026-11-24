@@ -108,19 +108,23 @@ warm-budget 6 / func-fixes 1），不作为收敛或失败的判定。
 `npx.cmd` 以 UTF-8 写、cmd.exe 按 OEM 码页读 ⇒ 路径变 `C:\Users\??\` ⇒ 子 node
 `ERR_MODULE_NOT_FOUND`（02:47 复现；真实套件同进程自写自读不受影响）。
 
-**⑧ 回放态会走真网络走不到的分支——这类缺口补录永远补不上，只能整链重录。**
-05:25 实测：`test-full-sort.mjs:274` 的聚合段带 `query='agent' + sort='installCount'`，
-真网络态下 trusttools 在 12s 预算（`sources.js:550 DEFAULT_BUDGET_MS`）内回不来 ⇒
-走 `skip` 分支 ⇒ **那条 `…&search=agent` 请求从未发出**（空档案录制 records=60，
-trusttools 只有 3 条浏览态、无 search=agent，target key present=false）。
-回放态档案秒回 ⇒ 该分支走通 ⇒ 发出这条请求 ⇒ REPLAY-MISS。
-`backfill --rounds=4` 每轮稳定复现、`verdict=NOT-CONVERGED`：录制轮和回放轮走的分支不同，
-**收敛循环也吃不平**——它只能在「同一分支」上补齐档案。
-⇒ 判据：回放态的 miss 若来自「真网络被预算/超时挡掉的分支」，属档案代际问题，
-整链重录（换一份干净 store 从头 record）才是解；手工定向补录会把失败形态
-（`error` 记录）也掺进档案，反而多测一条假分支。05:27 那次手工补录就留下 2 条 ERR 记录。
+**⑧ 录放分支不一致有两类，成因不同、解法也不同（06:30 实测更正）。**
+`test-full-sort.mjs:274` 的聚合段带 `query='agent' + sort='installCount'`，回放态档案秒回、
+该分支走通 ⇒ 发出 `ai.trusttools.cn/api/skills?…&search=agent` 的 page 1/2/3；
+录制态这三条**从未发出**——不是进程 exit 掐死在途（单套件录制轮 188s 跑完仍 `present=false`），
+而是聚合层给每源 12s 预算（`sources.js:550 DEFAULT_BUDGET_MS`）内 trusttools 回不来 ⇒
+走 `skip` 分支 ⇒ 档案里永远没有这个键。`backfill --rounds=4` 每轮稳定 NOT-CONVERGED 即此因。
+⇒ **A 类（预算挡掉的分支）：整链重录无效，只能绕过预算定向补录。**
+直调 `searchTrustTools(...)`（不经 fanOutSources 预算）实测能拿到 14,345B 真字节并落档；
+上游该端点**时好时坏**（05:27 成功、06:30 连四次 `python 取数失败`），
+所以补录要么重试到成功形态，要么从别处已成功的档案搬同一 key 的记录
+（schema/method/url 逐字一致才可搬）。**失败形态落档是允许的**——引擎会把录到的错误原样重现，
+`page=3` 那条就是 ERR 形态，回放态如实走 degraded/skip，与真网络一致。
+⇒ **B 类（cursor 链型）：定向补录无效，只能靠收敛循环在同一时刻吃满整条链**（见边界④）。
+两类混在一起时按 miss 的 URL 形状分流：带 `cursor=` 的是 B，带固定 query 参数的是 A。
 **顺带：回放态比真网络「多测」不是好事**——它意味着录放覆盖不一致，
-要么把该分支的预算调成录制轮也能走通，要么承认这条判据只在回放态成立。
+要么把该分支的预算调成录制轮也能走通（`budgetOverrides` 形参已有、无 env 缝），
+要么承认这条判据只在回放态成立。
 
 ## 睡眠不是慢：SUSPEND-SUSPECT
 门的「被杀」判定原本只有 TIMEOUT 一种归因，于是**整机睡眠会被当成套件真慢**。
