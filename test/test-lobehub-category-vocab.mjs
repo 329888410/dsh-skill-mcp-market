@@ -492,9 +492,41 @@ console.log('Test 7: 端到端——带分类的 lobehub 请求必须服务端�
 }
 
 console.log('');
+// 0.5.169 撞名判据的家（m19018 取证，port=54733 settings.get → categoryVocabulary）：
+//   lobehub 第 190 类 slug=general / label「其他」（1 条）；modelscope 第 7 类 slug「其他」；clawhub 第 14 类 slug=other。
+// 上游真有这些杂项桶，而面板自造的窗外入口以前也叫「其他」——两个「其他」并排，用户分不清哪个能点出什么；
+// 且上游桶点开来往往是空的（skillsmp 的 education/design 实测 total 上千但 facet 抖动，桶类则 1 条），
+// 所以 0.5.169 起：窗外入口改叫「窗外」，上游杂项桶沉到词表尾、且不进可点 chip。
+const BUCKET_TOKENS = ['other', 'others', 'general', '其他'];
+const bucketNorm = (text) => String(text === undefined || text === null ? '' : text).toLowerCase().replace(/[\s_/·．.\-]+/g, '');
+const isBucketText = (text) => BUCKET_TOKENS.indexOf(bucketNorm(text)) >= 0;
+const isBucketChip = (chip) => !!chip && (isBucketText(chip.value) || isBucketText(chip.label));
+const isBucketSlug = (slug) => isBucketText(slug);
+// 可喂假源码的锁函数自证：面板里的桶判定必须与这里同一套 token，否则下面的判据是在判自己的实现。
+const bucketLockSrc = [
+    'function isGenericBucketText(text) {',
+    '    const s = String(text || EMPTY_STRING).toLowerCase().replace(STRIPPED, EMPTY_STRING);',
+    '    if (!s) { return false; }',
+    '    return TOKENS.indexOf(s) >= 0;',
+    '}',
+].join(String.fromCharCode(10));
+const runBucketLock = (tokens) => new Function('EMPTY_STRING', 'STRIPPED', 'TOKENS', bucketLockSrc + String.fromCharCode(10) + 'return isGenericBucketText;')('', '/[\\s_/·．.-]+/g', tokens);
+check('桶判定锁函数自证（喂同一套 token 才认桶，喂错的名单不认）',
+    runBucketLock(BUCKET_TOKENS)('其他') === true && runBucketLock(BUCKET_TOKENS)('General') === true &&
+    runBucketLock(BUCKET_TOKENS)('开发工具') === false && runBucketLock(['nope'])('其他') === false, '');
+const tailTextRe = /^窗外 \d+ 类合计 [\d,]+ 条$/;
+const isTailText = (text) => tailTextRe.test(String(text));
+check('窗外文案自证：正常形通过、旧「其他 · 窗外」形不通过',
+    isTailText('窗外 214 类合计 743 条') === true && isTailText('其他 · 窗外 214 类合计 743 条') === false, '');
+
 console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只留 10 个分类）');
 {
     const client = readLf('client.js');
+    const genericBody = (client.match(/const isGenericBucket = \(r\) => \{[\s\S]{0,600}?\n {2}\};/) || [''])[0];
+    check('client.js 的桶判定用同一套 token，且在 mergeCategoryVocab 里真把桶沉到底',
+        BUCKET_TOKENS.every((t) => genericBody.indexOf(t) >= 0) &&
+        /const sorted = ranked\.concat\(sunk\);/.test(client) && /for \(const r of sorted\)/.test(client) &&
+        /const expandedChips = splitBuckets\(vocabChips\.filter\(realChip\)\);/.test(client), genericBody.slice(0, 120));
     const _dl = client.split(NL).find((l) => l.includes("new Set(skills.map(") && l.includes(".slice(")) || "";
     const derivedLine = (_dl === undefined ? '' : _dl).trim();
     check('派生行的 10 上限已放开（词表在手时是权威，缺词表时用户也不该只看到 10 个入口）',
@@ -519,18 +551,19 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     const foldBody = bodyOf('function foldChips(');
     check('client.js 里 foldChips 合并岛可被真跑（bodyOf 取到函数体）', foldBody !== null, foldBody === null ? '未取到函数体' : '');
     const otherSlug = (client.match(/const CAT_OTHER = '([^']+)';/) || [])[1] || '';
-    check('「其他」入口用稳定 slug，且不与任何上游分类同名', otherSlug !== '' && otherSlug.indexOf('其他') < 0, 'CAT_OTHER=' + otherSlug);
+    const tailLabel = (client.match(/const CAT_TAIL_LABEL = '([^']+)';/) || [])[1] || '';
+    check('窗外入口的标签常量存在且不叫「其他」（撞名判死的依据）', tailLabel !== '' && tailLabel.indexOf('其他') < 0, 'CAT_TAIL_LABEL=' + tailLabel);
     const runFold = (() => {
         if (foldBody === null || !Array.isArray(winChips)) return { err: 'unavailable' };
         try {
-            return new Function('CAT_OTHER', foldBody + NL + 'return foldChips;')(otherSlug)(winChips, foldN);
+            return new Function('CAT_OTHER', 'CAT_TAIL_LABEL', foldBody + NL + 'return foldChips;')(otherSlug, tailLabel)(winChips, foldN, tailLabel);
         } catch (e) { return { err: String((e && e.message) || e) }; }
     })();
     const tail = Array.isArray(winChips) ? winChips.slice(foldN) : [];
     const tailTotal = tail.reduce((n, c) => n + (Number(c.totalAll) || 0), 0);
-    check('窗外分类由「其他」承接：窗口 = 前 foldN 类 + 1 个其他（246 类不再逐个铺开）',
-        !runFold.err && runFold.window.length === foldN + 1 && !!runFold.other && runFold.other.label === '其他',
-        JSON.stringify({ win: runFold.window && runFold.window.length, err: runFold.err }));
+    check('窗外分类由「窗外」入口承接：窗口 = 前 foldN 类 + 1 个窗外入口（246 类不再逐个铺开）',
+        !runFold.err && runFold.window.length === foldN + 1 && !!runFold.other && runFold.other.label === '窗外',
+        JSON.stringify({ win: runFold.window && runFold.window.length, label: runFold.other && runFold.other.label, err: runFold.err }));
     check('「其他」的条数 = 窗外合计的上游真数（实测只有几百，不是全目录总数）',
         !!runFold.other && runFold.other.totalAll === tailTotal && tailTotal > 0 && tailTotal < 1000,
         JSON.stringify({ other: runFold.other && runFold.other.totalAll, tailTotal }));
@@ -569,16 +602,22 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
         const winStub = { scrollTo: () => {} };
         const lite = new Function(labelBody + NL + 'return categoryLabelLite;')();
         try {
-            const nodesRun = new Function('chipEntries', 'chipFold', 'categoryLabelLite', 'h', 'S', 'category', 'setCategory', 'searchSkills', 'query', 'source', 'size', 'sort', 'window', 'CATS_COLLAPSE', 'toggleCats',
+            const nodesRun = new Function('chipEntries', 'chipFold', 'categoryLabelLite', 'h', 'S', 'category', 'setCategory',
+                'searchSkills', 'query', 'source', 'size', 'sort', 'window', 'CATS_COLLAPSE', 'CAT_OTHER', 'bucketSlug', 'toggleCats',
                 'return (' + renderSrc + NL + ');')(entries, runFold, lite, hh, SS, 'all',
                 (v) => clickCalls.push({ kind: 'setCategory', v }), (q, o) => clickCalls.push({ kind: 'searchSkills', o }),
-                '天气 预报', 'lobehub', 24, 'installCount', winStub, collapseSlug, (v) => toggleCalls.push(v));
+                '天气 预报', 'lobehub', 24, 'installCount', winStub, collapseSlug, otherSlug, bucketSlug, (v) => toggleCalls.push(v));
             return { nodes: nodesRun, calls: clickCalls, toggles: toggleCalls };
         } catch (e) { return { err: String((e && e.message) || e) }; }
     };
+    // 渲染集合按 client.js 的口径自己算一遍：收起态=窗口+窗外入口；
+    // 展开态=上游真类逐个铺开（杂项桶沉尾，窗外入口与收起哨兵不露身份）。
+    const realChips = winChips.filter((c) => c && c.value && c.value !== otherSlug);
+    const bucketSlug = realChips.map((c) => String(c.value)).filter(isBucketSlug)[0] || 'general';
     const collapsedEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }].concat(runFold.window);
     const expandedEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }]
-        .concat(winChips.filter((c) => c && c.value && c.value !== otherSlug))
+        .concat(realChips.filter((c) => !isBucketChip(c)))
+        .concat(realChips.filter(isBucketChip))
         .concat([{ value: collapseSlug, label: '收起分类', totalAll: 0, fixed: true }]);
     const runCollapsed = runRenderFor(collapsedEntries);
     const runExpanded = runRenderFor(expandedEntries);
@@ -596,8 +635,8 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
         'active=' + nodes.filter((n) => n.props.style.active).length);
     const otherNode = nodes[foldN + 1];
     const otherText = otherNode ? String(otherNode.kids[0]) : '';
-    check('「其他」文案自带身份（窗外出身写进标签，不与上游同名分类混读）',
-        !!otherNode && otherText.indexOf('其他') === 0 && /窗外 \d+ 类合计 [\d,]+ 条/.test(otherText) && otherText !== '其他',
+    check('窗外入口文案自带身份：叫「窗外」不叫「其他」，不与上游同名分类混读',
+        !!otherNode && otherText.indexOf('窗外') === 0 && isTailText(otherText) && otherText.indexOf('其他') < 0,
         JSON.stringify(otherText));
     const pdfIdx = nodes.findIndex((n) => n.props.key === 'pdf-documents');
     check('窗内分类 chip 带上游真条数（categoryLabelLite 真接到渲染层）',
@@ -619,6 +658,8 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
         !!otherNode && String(otherNode.props.key).indexOf('__cat_other') < 0 && String(otherNode.props.key) !== otherSlug,
         'key=' + (otherNode && otherNode.props.key));
     const buttonKeys = nodes.filter((n) => n.tag === 'button').map((n) => String(n.props.key));
+    check('上游杂项桶（other/General/其他）不进可点 chip（点了没货=假控件，m19018 后半）',
+        buttonKeys.filter((k) => isBucketSlug(k)).length === 0, JSON.stringify(buttonKeys.filter((k) => isBucketSlug(k))));
     check('收起态可点 chip = all + 前 foldN 真 slug + 1 个展开入口（不掺派生值）',
         buttonKeys.length === foldN + 2 && buttonKeys[0] === 'all' &&
         buttonKeys.slice(1, foldN + 1).every((k) => winValsAsSlugs.indexOf(k) >= 0),
@@ -639,7 +680,7 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
         !runExpanded.err && xnodes.length === winChips.length + 2,
         JSON.stringify({ err: runExpanded.err, n: xnodes.length, want: winChips.length + 2 }));
     const xkeys = xnodes.map((n) => String(n.props.key));
-    const tailSlugs = winValsAsSlugs.slice(foldN);
+    const tailSlugs = winValsAsSlugs.slice(foldN).filter((s) => !isBucketSlug(s));
     check('展开态里窗外 slug 逐个成点（用户要的是能点，不是能看）',
         tailSlugs.length > 0 && tailSlugs.every((s) => xkeys.indexOf(s) >= 0),
         JSON.stringify({ tail: tailSlugs.length, miss: tailSlugs.filter((s) => xkeys.indexOf(s) < 0).slice(0, 3) }));
@@ -661,12 +702,14 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
         JSON.stringify({ key: collapseNode && collapseNode.props.key, toggles: ctoggles }));
     // 源码锁：展开偏好必须真进渲染集合与持久化，否则上面两次跑的是同一套集合（假绿）。
     check('渲染集合随 catsExpanded 切换（不是恒按窗口铺开）',
-        /catsExpanded \? allRealChips/.test(client) && /const allRealChips = vocabChips\.filter/.test(client),
+        /catsExpanded \? allRealChips/.test(client) && /const allRealChips = expandedChips;/.test(client),
         (client.split(NL).find((l) => l.includes('catsExpanded ?')) || '(none)').trim().slice(0, 160));
     check('展开偏好持久化（跨重挂载与刷新保留，与回收站/分组折叠同口径）',
         /dsh-skill-mcp-market\.cats-expanded/.test(client) && /localStorage\.setItem\(CATS_EXPANDED_KEY/.test(client), '');
     check('收起态 chip 行是单行横向滚动（报障主诉求：不占大半个空间）',
-        /chipRow: \{[^\n]*flexWrap: 'nowrap'/.test(client) && /style: catsExpanded \? S\.row : S\.chipRow/.test(client), '');
+        /chipRow: \{[^\n]*flexWrap: 'nowrap'/.test(client) && /style: catsExpanded \? S\.catsRow : S\.chipRow/.test(client), '');
+    check('展开态 chip 行限高并内部纵向滚动（m19004：246 类不再铺满半屏）',
+        /catsRow: \{[^\n]*maxHeight: 116[^\n]*overflowY: 'auto'/.test(client), (client.split(NL).find((l) => l.includes('catsRow:')) || '(none)').trim().slice(0, 160));
     check('foldChips 外露 tail（窗外集合可点的前提；旧实现只给 covers 不给行）',
         Array.isArray(runFold.tail) && runFold.tail.length === tail.length &&
         runFold.tail.every((c) => c && c.value && c.value !== otherSlug),

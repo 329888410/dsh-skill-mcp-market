@@ -451,6 +451,94 @@ else {
     check('live：绝不声明 serverFacet', lv.v.serverFacet !== true, JSON.stringify(lv.v.serverFacet));
   }
 }
+
+console.log('');
+console.log('Test 13: 0.5.169 —— 上游「其他」沉到词表尾 + 本地过滤空分类的近似搜索出路');
+{
+  // 用户 m19018：modelscope 词表第 7 类就是上游真分类「其他」，夹在真分类中间读起来像
+  // 「本市场只有这些类」，还和面板自造的窗外入口撞名；同一条报障的后半是「部分类型标签的搜索结果为空」。
+  // 撞名事实（port=54733 settings.get → categoryVocabulary 实测）：modelscope 第 7 类 slug=其他、
+  // lobehub 第 190 类 slug=general(label 其他)、clawhub 第 14 类 slug=other。
+  const msChips = runChips(['modelscope', [], { modelscope: vocabFn() }]);
+  const msOrder = Array.isArray(msChips) ? msChips.map((c) => String(c.value)) : [];
+  check('上游杂项桶「其他」沉到 chip 行末尾（m19018 的原话诉求）',
+    msOrder.length === 20 && msOrder[19] === '其他' && msOrder.indexOf('其他') === 19, JSON.stringify(msOrder.slice(-3)));
+  check('沉底不得误伤真分类（「通用工具」含「通用」二字，仍在原位、不是桶）',
+    msOrder.indexOf('通用工具') >= 0 && msOrder.indexOf('通用工具') < 19, JSON.stringify(msOrder));
+  check('除「其他」外 19 类相对顺序不变（只沉桶，不重排）',
+    JSON.stringify(msOrder.filter((v) => v !== '其他')) === JSON.stringify(VOCAB_CN.filter((v) => v !== '其他')), JSON.stringify(msOrder.slice(0, 6)));
+  // 出路条的三段判据全部真跑 client.js 的源码，不在套件里复制实现。
+  const needleBody = bodyOf('function nearbySearchNeedle(');
+  check('client.js 里 nearbySearchNeedle 函数体可被真跑', needleBody !== '', needleBody === '' ? '未取到函数体' : '');
+  const runNeedle = needleBody === '' ? null : new Function(needleBody + NL + 'return nearbySearchNeedle;')();
+  const NEEDLE_CASES = [
+    [{ label: '文档处理 (PDF/PPTX/DOCX)' }, '文档处理'],
+    [{ label: 'UI/UX 设计' }, 'UI'],
+    [{ label: '开发工具' }, '开发工具'],
+    [{ label: '监控' }, '监控'],
+    [{ label: 'AI 自动化' }, 'AI 自动化'],
+    [{ value: 'general' }, 'general'],
+    [{ label: 'media / streaming' }, 'media'],
+  ];
+  const needleMiss = runNeedle ? NEEDLE_CASES.filter((c) => runNeedle(c[0]) !== c[1]) : NEEDLE_CASES;
+  check('近似词取自分类名本身：剥掉括号限定语与斜杠后缀，不加「搜索」这类噪声',
+    needleMiss.length === 0, JSON.stringify(needleMiss.map((c) => [c[0], runNeedle ? runNeedle(c[0]) : null])));
+  const chipAt = clientLines.findIndex((l) => l.indexOf('const nearbyChip =') >= 0);
+  const chipSrc = chipAt < 0 ? '' : clientLines.slice(chipAt, chipAt + 4).join(NL);
+  check('触发条件的源码段可从 client.js 整段取到（4 行：nearbyChip 三元 + nearbyNeedle）',
+    /const nearbyChip =/.test(chipSrc) && /const nearbyNeedle =/.test(chipSrc), chipSrc.slice(0, 120));
+  const runTrigger = (chipAt < 0 || runNeedle === null) ? null : new Function(
+    'category', 'serverFacet', 'busy', 'error', 'skills', 'vocabChips', 'nearbySearchNeedle',
+    chipSrc + NL + 'return nearbyNeedle;');
+  const MON = { value: '监控', label: '监控', totalAll: 0, fixed: true };
+  const MS_VCB = runChips(['modelscope', [], { modelscope: vocabFn() }]);
+  const trig = (over) => {
+    if (runTrigger === null) return 'unavailable';
+    const base = { category: '监控', serverFacet: false, busy: false, error: '', skills: [], vocabChips: MS_VCB.concat([MON]) };
+    const o = Object.assign(base, over || {});
+    try { return runTrigger(o.category, o.serverFacet, o.busy, o.error, o.skills, o.vocabChips, runNeedle); } catch (e) { return String((e && e.message) || e); }
+  };
+  check('本地过滤 0 条 ⇒ 给近似搜索出路（needle=监控）', trig(null) === '监控', JSON.stringify(trig(null)));
+  check('上游 facet 说 0（serverFacet）不是本地口径缺口 ⇒ 不给出路（转移视线）', trig({ serverFacet: true }) === '', JSON.stringify(trig({ serverFacet: true })));
+  check('取数失败（error）⇒ 不给出路', trig({ error: '上游超时' }) === '', JSON.stringify(trig({ error: '上游超时' })));
+  check('正在加载（busy）⇒ 不给出路', trig({ busy: true }) === '', JSON.stringify(trig({ busy: true })));
+  check('筛出了条目（skills 非空）⇒ 不给出路', trig({ skills: [{ id: 'a' }] }) === '', JSON.stringify(trig({ skills: [{ id: 'a' }] })));
+  check('未选分类（category=all）⇒ 不给出路', trig({ category: 'all' }) === '', JSON.stringify(trig({ category: 'all' })));
+  check('分类值不在词表里（派生/自造值）⇒ 不给出路，不拿它当近似词', trig({ category: '__cat_other' }) === '', JSON.stringify(trig({ category: '__cat_other' })));
+  // 出路条本身真跑：文案诚实 + 按下只走全文搜索，绝不下发假分类。
+  const barAt = clientLines.findIndex((l) => l.trim() === 'nearbyNeedle');
+  let barEnd = -1;
+  if (barAt >= 0) for (let i = barAt + 1; i < clientLines.length; i += 1) { if (clientLines[i].trim() === ': null,') { barEnd = i; break; } }
+  const barSrc = barAt < 0 || barEnd < 0 ? '' : clientLines.slice(barAt, barEnd + 1).join(NL).replace(/:\s*null,\s*$/, ': null');
+  check('出路条渲染块可从 client.js 整段取到', /h\('button'/.test(barSrc) && /近似搜索/.test(barSrc), barSrc.slice(0, 120));
+  const barCalls = [];
+  const barNodes = barSrc === '' ? null : new Function('nearbyNeedle', 'S', 'h', 'setQuery', 'setCategory', 'searchSkills', 'query', 'source', 'size', 'sort', 'window',
+    'return (' + barSrc + NL + ');')('监控',
+    { row: {}, status: {}, chip: (a) => ({ active: Boolean(a) }) },
+    (tag, props, ...kids) => ({ tag, props, kids }),
+    (v) => barCalls.push({ kind: 'setQuery', v }), (v) => barCalls.push({ kind: 'setCategory', v }),
+    (q, o) => barCalls.push({ kind: 'searchSkills', q, o }),
+    '', 'modelscope', 24, 'stars', { scrollTo: () => {} });
+  check('出路条在 needle 为空时不渲染（空分类才露脸）',
+    barNodes && barNodes.tag === 'div' && barNodes.kids.length === 2, JSON.stringify(barNodes && barNodes.tag));
+  const barText = barNodes ? barNodes.kids.map((n) => String(n.kids && n.kids[0])).join(' | ') : '';
+  check('出路条文案如实承认口径缺口，并明写「近似，不等于该分类」（不假装是分类过滤）',
+    barText.indexOf('本地过滤') >= 0 && barText.indexOf('可达集合') >= 0 && barText.indexOf('近似，不等于该分类') >= 0, barText.slice(0, 160));
+  check('按钮文案带上近似词（用户知道要点的是什么）', barText.indexOf('近似搜索「监控」') >= 0, barText.slice(0, 200));
+  const btn = barNodes ? barNodes.kids[1] : null;
+  check('出路按钮是真 button 且有 onClick（只有文字=假控件，正是 m18209 报的那一半）',
+    !!btn && String(btn.tag) === 'button' && typeof btn.props.onClick === 'function', JSON.stringify(btn && btn.tag));
+  let barErr = '';
+  if (btn && btn.props.onClick) { try { btn.props.onClick(); } catch (e) { barErr = String((e && e.message) || e); } }
+  check('按下出路按钮不得抛错（下发参数写错=点了没反应，m18209 的假控件同类）', barErr === '', barErr);
+  const sk = barCalls.filter((c) => c.kind === 'searchSkills');
+  check('按下：全文搜索用近似词，且下发的 category 是 all（自造/上游桶分类绝不塞进下发）',
+    barCalls.filter((c) => c.kind === 'setQuery').length === 1 && barCalls.some((c) => c.kind === 'setCategory' && c.v === 'all') &&
+    sk.length === 1 && sk[0].q === '监控' && !!sk[0].o && sk[0].o.category === 'all' && sk[0].o.page === 1 && sk[0].o.source === 'modelscope',
+    JSON.stringify(barCalls.map((c) => c.kind + '=' + (c.v !== undefined ? c.v : c.q)).slice(0, 4)));
+  check('按下仍带当前排序与页大小（出路不改用户的排序意图）',
+    sk.length === 1 && sk[0].o.sort === 'stars' && sk[0].o.size === 24, JSON.stringify(sk[0] && sk[0].o));
+}
 if (MISSING_EXPORTS.length) console.log('  待补：' + MISSING_EXPORTS.join(', '));
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));

@@ -168,9 +168,20 @@ function mergeCategoryVocab(derived, vocab) {
     .map((r, i) => ({ r, i }))
     .sort((a, b) => ((Number(b.r && b.r.totalAll) || 0) - (Number(a.r && a.r.totalAll) || 0)) || a.i - b.i)
     .map((x) => x.r);
+  // 用户 m18814：上游自造的杂项桶夹在真分类中间，读起来像「本市场就这些类」，还和面板的窗外入口撞名。
+  // 桶一律沉到词表序末尾：条数降序只在真分类之间生效，桶始终垫底（同桶之间保持原相对顺序）。
+  const isGenericBucket = (r) => {
+    const s = String((r && r.slug) || '').trim().toLowerCase();
+    const l = String((r && (r.name || r.label)) || '').trim().toLowerCase();
+    return s === 'other' || s === 'others' || s === 'general' || l === '其他' || l === 'other' || l === 'others';
+  };
+  const ranked = [];
+  const sunk = [];
+  for (const r of ordered) (isGenericBucket(r) ? sunk : ranked).push(r);
+  const sorted = ranked.concat(sunk);
   const out = [];
   const seen = new Set();
-  for (const r of ordered) {
+  for (const r of sorted) {
     const v = String((r && r.slug) || '').trim();
     if (!v || seen.has(v)) continue;
     seen.add(v);
@@ -247,7 +258,12 @@ const CAT_OTHER = '__cat_other';
 // 展开态行尾的「收起分类」是渲染集合里的一个哨兵，不是分类值：它永远不进 category。
 const CATS_COLLAPSE = '__cats_collapse';
 
-function foldChips(vocabChips, limit) {
+// 窗外那一个入口的文案：它不是上游分类，是「把没列出的 N 类合起来」的合并入口，所以不写「其他」——
+// 写「其他」就和上游词表里真叫「其他」的类撞名（lobehub 第 190 类 general 的 label 就是「其他」1 条，
+// modelscope 第 6 类 slug=其他 2360 条），用户 m18787 撞上的正是这个歧义。
+const CAT_TAIL_LABEL = '窗外';
+
+function foldChips(vocabChips, limit, otherLabel) {
   const chips = [];
   for (const c of (Array.isArray(vocabChips) ? vocabChips : [])) if (c && c.value && c.value !== CAT_OTHER) chips.push(c);
   const cap = Number(limit) > 0 ? Number(limit) : chips.length;
@@ -257,10 +273,19 @@ function foldChips(vocabChips, limit) {
   let otherTotal = 0;
   const covers = [];
   for (const c of tail) { otherTotal += Number(c.totalAll) || 0; covers.push(c.value); }
-  const other = { value: CAT_OTHER, label: '其他', totalAll: otherTotal, fixed: true, covers };
+  const other = { value: CAT_OTHER, label: String(otherLabel || CAT_TAIL_LABEL), totalAll: otherTotal, fixed: true, covers };
   // tail 外露：窗外类不是取不回的桶，每个都是上游真 slug，展开后逐个可点、真出结果。
   return { window: head.concat([other]), tail: tail, other: other, otherCount: tail.length, otherTotal: otherTotal };
 }
+// 本地过滤空分类的出路（用户 m18814「部分类型标签的搜索结果为空」）：把分类名当关键词走全文搜索。
+// 括号里/斜杠后的限定语要丢掉——「文档处理 (PDF/PPTX/DOCX)」整串去搜实测 0 条。
+// 纯函数、无副作用、可被 new Function 真跑；近似搜索绝不冒充分类结果（文案必须写「近似」）。
+function nearbySearchNeedle(chip) {
+  const raw = String((chip && (chip.label || chip.value)) || '');
+  const cut = raw.replace(/\s*[（(][^（()）]*[)）]\s*/g, ' ').replace(/\s*\/\s*[^\/]*$/, ' ').replace(/\s+/g, ' ').trim();
+  return cut || raw.trim();
+}
+
 // 路径 tab 的降级模型：settings.get 失败（0.5.148 实测：缺 import 时每次必抛）只该让
 // 「依赖它的那几个字段」变成未知，不该让整页消失——目录草稿本来就来自本地 state，
 // 会话日志体检更是一个字段都不依赖 settings。旧写法把整个 tab gate 在 settings 上，
@@ -498,6 +523,8 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // 用户报障（m18209）：分类 chip 铺开 6 行，卡片只剩 3 行没法浏览。默认收成一行横向滚动，
       // 行尾给展开/收起；展开态回到 S.row 多行铺开。只加一个样式，不动 S.row 本身（57 处在用它）。
       chipRow: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'nowrap', overflowX: 'auto', overflowY: 'hidden', paddingBottom: 2 },
+      // 展开态限高 + 内部纵向滚动：246 类铺开曾把卡片区挤出屏幕（用户 m18800「怎么还是搞这么多分类」）。
+      catsRow: { display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', maxHeight: 116, overflowY: 'auto', overflowX: 'hidden' },
       // 搜索行吸顶：吸附在标签栏（约 48px）之下
       // 搜索栏固定：它和标签栏一样在滚动容器之外，滚动时永不移位
 
@@ -1908,12 +1935,27 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const vocabChips = categoryChipsForSource(source, categories, categoryVocab);
       // 默认窗口外的分类不再逐个铺开：合并成一个「其他」（窗内条数仍是上游真数，窗外合计如实标注）。
       // 声明顺序要紧：chipEntries 与 visibleSkills 都读 chipFold，写在后面会撞 TDZ（node --check 看不见）。
-      const chipFold = foldChips(vocabChips, CAT_CHIP_FOLD);
+      const chipFold = foldChips(vocabChips, CAT_CHIP_FOLD, CAT_TAIL_LABEL);
       // 渲染集合必须自己带上 'all' 首入口：chipFold.window 只有分类，照它铺开会让「全部分类」
       // 从面板上静默消失（用户没法取消筛选）。0.5.164 的中间量 chipBySlug/chipSlugs 在折叠改造后
       // 没有任何消费方——留着就是死量，判据（lobehub Test 8）直接锁这两行不再出现。
       // 展开/收起只换渲染集合，绝不换筛选值：category 里永远只出现上游真 slug 或 'all'。
-      const allRealChips = vocabChips.filter((chip) => chip && chip.value && chip.value !== CAT_OTHER);
+      // 展开态铺「窗内 + 窗外」全集：窗外类也是上游真 slug，逐个可点、真出结果（m18787 的口径）。
+      // 上游自造的杂项桶（其他/Other/general）沉到末尾，与面板自造的窗外入口分开放，不互相冒充（m18814）。
+      const realChip = (chip) => chip && chip.value && chip.value !== CAT_OTHER && chip.value !== CATS_COLLAPSE;
+      const genericBucket = (chip) => {
+        const s = String((chip && chip.value) || '').trim().toLowerCase();
+        const l = String((chip && chip.label) || '').trim().toLowerCase();
+        return s === 'other' || s === 'others' || s === 'general' || l === '其他' || l === 'other' || l === 'others';
+      };
+      const splitBuckets = (list) => {
+        const kept = [];
+        const sunk = [];
+        for (const c of list) (genericBucket(c) ? sunk : kept).push(c);
+        return kept.concat(sunk);
+      };
+      const expandedChips = splitBuckets(vocabChips.filter(realChip));
+      const allRealChips = expandedChips;
       const collapseChip = { value: CATS_COLLAPSE, label: '收起分类', totalAll: 0, fixed: true };
       const toggleCats = (next) => {
         const want = next === true;
@@ -1931,6 +1973,12 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // 异类行仍严格剔除（判据在 test-category-info-declaration Test 6，真跑本行函数体）。
       // 「其他」不是可点入口（渲染块已把它降级为披露 span）：窗外集合只报条数，不参与过滤，
       // 所以这里绝不能有 CAT_OTHER 分支——面板自造的伪分类不许混进真实分类口径。
+      // 空分类的出路只在「本市场确实一条都没筛出来」时给：上游 facet 说的 0（serverFacet）、取数失败
+      // （sourceErrors/error）、正在加载（busy）都不算——那三种给「近似搜索」按钮是转移视线。
+      const nearbyChip = (category === 'all' || serverFacet || busy || error || skills.length > 0)
+        ? null
+        : vocabChips.find((chip) => chip && chip.value === category);
+      const nearbyNeedle = nearbyChip ? nearbySearchNeedle(nearbyChip) : '';
       const visibleSkills = orderedSkills.filter((item) => serverFacet || category === 'all' || !item.category || item.category === category);
       const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
         h('div', { key: item.id, style: S.card },
@@ -2411,7 +2459,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                     }, cat === 'all' ? '全部分类' : categoryLabel(cat))))
               : null,
             tab === 'skills' && (categories.length > 0 || vocabChips.length > 0)
-              ? h('div', { style: catsExpanded ? S.row : S.chipRow },
+              ? h('div', { style: catsExpanded ? S.catsRow : S.chipRow },
                   // 0.5.165 真缺陷（离线+肉眼同证）：foldChips 之后 chipFold.window 里装的是 chip 对象，
                   // 渲染块还按 0.5.164 的字符串数组写——cat === 'all' 恒假、chipBySlug[对象] 取不到、
                   // onClick 还把对象塞进 category。面板上「全部分类」丢失、chip 文案塌成 [object Object]、
@@ -2424,7 +2472,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                     // 「其他」是面板自造入口，必须把自己的身份写进文案：只报「其他 743 条」
                     // 会被读成上游那一个叫「其他」的分类（modelscope 就有 565 条的同名类）。
                     const chipText = foldChip
-                      ? '其他 · 窗外 ' + chipFold.otherCount + ' 类合计 ' + Number(chip.totalAll || 0).toLocaleString() + ' 条'
+                      ? chipFold.other.label + ' ' + chipFold.otherCount + ' 类合计 ' + Number(chip.totalAll || 0).toLocaleString() + ' 条'
                       : categoryLabelLite(chip);
                     if (collapseHere) {
                       // 收起态与展开态共用一个哨兵：它只是把渲染集合换回窗口，不参与任何筛选。
@@ -2478,6 +2526,14 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
               : null,
             error ? h('div', { style: S.err }, error) : null,
             notice ? h('div', { style: S.status }, notice) : null,
+            nearbyNeedle
+              ? h('div', { style: { ...S.row, gap: 8, alignItems: 'center' } },
+                  h('span', { style: S.status }, '该分类在已取回的条目里没有命中：分类是本地过滤口径，条目可能排在可达集合之外。可以用分类名做一次全文搜索（近似，不等于该分类）：'),
+                  h('button', {
+                    style: S.chip(false),
+                    onClick: () => { setQuery(nearbyNeedle); setCategory('all'); searchSkills(nearbyNeedle, { source, size, category: 'all', page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },
+                  }, '近似搜索「' + nearbyNeedle + '」'))
+              : null,
             installProgress
               ? h('div', { style: { ...S.row, gap: 10, alignItems: 'center' } },
                   h('span', { style: { fontSize: 12, whiteSpace: 'nowrap' } },

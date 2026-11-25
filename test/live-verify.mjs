@@ -105,7 +105,9 @@ export function vocabOf(settings, source) {
 }
 
 /**
- * lobehub 窗外复算（与面板「其他 · 窗外 N 类合计 M 条」逐位对账的算法）。
+ * lobehub 窗外复算（与面板「窗外 N 类合计 M 条」逐位对账的算法）。
+ * 0.5.169 起面板窗外入口不再叫「其他」（与上游真分类 lobehub general / modelscope 其他 撞名，
+ * 见 CHANGELOG 0.5.169 段），这里的算术不变，只是文案口径跟着改。
  * 窗口取默认 32（client.js CAT_CHIP_FOLD），窗外 = 其余全部类的 count 之和。
  */
 export function lobeWindowFold(cats, windowSize) {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.169
+- 一句话：收掉用户三条报障（「其他」到底是干什么的、lobehub 展开后还是铺满屏、modelscope「其他」该放末尾且部分标签搜不出东西），并把面板里两个撞名的「其他」彻底分开。
+- 窗外入口改名「窗外」（新增 CAT_TAIL_LABEL，foldChips 第三参下发）：以前面板自造的窗外披露叫「其他」，而上游词表里真有同名分类——lobehub 第 190 类 slug=general / label 其他（1 条）、modelscope 第 7 类 slug 其他、clawhub 第 14 类 slug=other。两个「其他」并排，用户按 m18991 的原话就是「我搞不懂操作逻辑」。文案现在是「窗外 214 类合计 743 条」，身份自证。
+- 上游杂项桶（other / others / general / 其他）在 mergeCategoryVocab 里一律沉到词表尾（isGenericBucket + ranked/sunk 分流），展开态再按同一口径 splitBuckets 沉一次：m19018 的原话诉求「其他标签应该放在末尾」。桶判定只认 slug 或 label 全文等于这几个 token，「通用工具」这类含字串的真分类不受影响（判据点名）。
+- 展开态不再铺满屏（m19004「lobehub 技能市场怎么还是搞这么多分类？」）：新增 S.catsRow（maxHeight 116 / overflowY auto / flexWrap wrap），渲染容器从 catsExpanded ? S.row 改为 S.catsRow。246 类仍可点，但只占固定 116px 高的内部滚动区，卡片区不再被挤成 3 行。
+- 展开态不再重复挂窗外入口：窗外类已经逐个铺开，再挂「窗外 N 类」= 死控件（点了没任何反应）。allRealChips 改为 expandedChips（splitBuckets 的结果），窗外入口只存在于收起态行尾。
+- 本地过滤空分类给出路（m19018 后半「部分类型标签的搜索结果为空」）：新增纯函数 nearbySearchNeedle(chip)（从分类名剥掉括号限定语与斜杠后缀），出路条只在本市场确实一条都没筛出来时出现——serverFacet 报 0、取数失败、加载中、已有条目四种情况一律不给（那三种给按钮是转移视线）。按下=用分类名做一次全文搜索，文案如实写「近似，不等于该分类」，下发 category 恒为 all。出口实测：modelscope「监控」可达集合内 0 条，query=监控 全文 1252 条，这条路真出货。
+- 判据随动：test-lobehub-category-vocab Test 8 的 runFold 绑定补 CAT_TAIL_LABEL（漏绑即 CAT_TAIL_LABEL is not defined，11 条红），承接 / 文案 / label 三断言改判「窗外」，新增桶不进可点 chip、catsRow 限高锁、allRealChips=expandedChips 源码锁；模块作用域补可喂假名单的锁函数自证 runBucketLock 与 tailTextRe 自证（BUCKET_TOKENS 必须与面板同一套，写进 misc/通用 立刻红）。⇒ 105 passed / 0 failed（起点 89）。
+- 新判据家 test-modelscope-category-vocab Test 13（21 条，全部真跑 client.js 源码、不复制实现）：桶沉尾 / 不误伤「通用工具」/ 其余 19 类顺序不变；nearbySearchNeedle 七例真跑；触发条件源码段整段取来跑六态（本地 0 条给出路，facet 报 0 / 取数失败 / 加载中 / 有条目 / 未选类 / 词表外值 一律不给）；出路条文案诚实性与按下参数。⇒ 181 passed / 0 failed / 2 skipped（起点 160）。
+- 判据家自伤与加固（教训：判据代码也是代码）：(a) 桶断言与 genericBody 锁写在 Test 8 的 const client 声明之前 ⇒ ReferenceError，必须 relocate；(b) buttonKeys 断言插在声明之前 ⇒ Cannot access before initialization；(c) 一次 splice 残留重复的 .concat 行 ⇒ Unexpected token 点号；(d) bodyOf 取函数体的锚按 function 写法找，面板里是箭头函数 const 所以取空、锁等于没跑；(e) M_send 变异把 category 的 all 写成透传变量 ⇒ 按下时 ReferenceError 直接崩掉整个套件（红得没有汇总行），于是补 try/catch 与「按下不得抛错」断言，让同类缺陷报成逐条 FAIL。变异自证：M_sink 2 红、M_facet 1 红、M_honest 1 红、M_needle 1 红、M_send 3 红（补判据前是 0 红 1 崩）；lobehub 侧 M-label 3 红、M-catsRow 1 红、M-chips 1 红。
+- test/live-verify.mjs 的窗外复算注释随面板文案改写（只改口径描述，算术不变；该脚本判据④不锁文案，无假绿风险）。
+- targeted 复跑全绿：lobehub 105/0、modelscope 181/0/2skip、clawhub 62/0、skillsmp 61/0、trusttools 84/0、category-info 28/0、cleanup 14/0、suite-inventory 12/0、dead-exports 47/0、temp-hygiene 7/0、dead-all 6/0、live-verify 71/0、warm-budget 5/0、search-fanout-latency 207/0。
+- 已知边界（不在本轮修）：modelscope 目录 89,044 条，可达集合只到 30,000（上游 offset 硬上限，实测第 31 页起恒 500），30,000 名之后的条目在分类视图看不到——出路条只解决「看得见、有路走」，不解决全覆盖；全覆盖要换通路（按分类逐个搜），属产品决策，留待办。skillsmp 的 education/design/arts-crafts/defi/web3-tools 上一轮记为「拒 facet」已翻案：那是 AGGREGATE_COOLDOWN_MS=120000 的冷却瞬态，重测 63 类全接受，本轮不开「隐藏假控件」项。
+
 ## 0.5.168
 - 一句话：收掉用户两条报障（分类标签铺满半屏、「其他」只有文字不能点）与 modelscope「永远显示取数中断」，并把一键验收脚本的崩溃修掉。
 - chip 行默认收成一行横向滚动：新增 S.chipRow（flexWrap:'nowrap' + overflowX:'auto'），不动 S.row（57 处在用）。展开态才回到多行铺开；状态存 localStorage（key dsh-skill-mcp-market.cats-expanded），默认收起。
