@@ -105,21 +105,21 @@ else {
   check('browse.sh 仍走派生（新注册不得外溢）', Array.isArray(bs) && bs.length === 40 && bs[0].fixed === false, Array.isArray(bs) ? bs.length : JSON.stringify(bs));
 }
 
-// 假上游：45,000 行可达集合（上游目录 88,993，深度上限决定只能覆盖前者）。
-const FULL_ROWS = 45000;
+// 假上游：30,000 行可达集合（上游目录 88,993；实测第 31 页起 500，深度上限只能覆盖前 30,000 行）。
+const FULL_ROWS = 30000;
 const TOTAL_REAL = 88993;
 const SLOT = Object.create(null);
 // 槽位互不重叠：重叠会让「真实条数」与夹具意图不符，判据就成了假数（上一轮 40 变 37 即此）。
 const TAKEN = new Set();
 const claim = (list) => { const out = []; for (const n of list) { if (n < FULL_ROWS && !TAKEN.has(n)) { TAKEN.add(n); out.push(n); } } return out; };
 const put = (cn, list) => { for (const i of claim(list)) SLOT[i] = cn; };
-put('文档处理 (PDF/PPTX/DOCX)', [5001, 12002, 20003, 28004, 36005, 44998]);
-put('监控', [39001, 31007]);
-put('API 设计', [26000, 22500]);
-put('通用工具', [44999]);
-put('市场推广', Array.from({ length: 40 }, (unused, i) => 600 + i * 1100));
+put('文档处理 (PDF/PPTX/DOCX)', [5001, 12002, 20003, 26004, 28005, 29998]);
+put('监控', [27001, 21007]);
+put('API 设计', [18000, 22500]);
+put('通用工具', [29999]);
+put('市场推广', Array.from({ length: 40 }, (unused, i) => 600 + i * 700));
 put('移动开发', Array.from({ length: 25 }, (unused, i) => 14000 + i * 160));
-put('NO_CAT', Array.from({ length: 12 }, (unused, i) => i * 3700 + 1500));
+put('NO_CAT', Array.from({ length: 12 }, (unused, i) => 1750 + i * 2500));
 const mkRow = (n, cn) => {
   const raw = { Name: 'owner/ms-' + n, DisplayName: 'ms-' + n, Path: 'owner', Description: 'd' + n, DownloadCount: n, SourceStar: n, GmtCreate: 1700000000000, GmtModify: 1700000000000, LastSyncTime: 1700000000000, Tags: [] };
   if (cn && cn !== 'NO_CAT') raw.L1 = { CatalogID: 'cat-' + cn, ChineseName: cn, Name: 'en-' + cn };
@@ -159,7 +159,7 @@ let cacheSeq = 0;
 const mkCache = () => srcMod.makeCache(path.join(cacheRoot, 'c' + (cacheSeq += 1)));
 // 0.5.165 分页形状锁（与实现同源；改数值必须同步这里的期望）
 const MS_PAGE = 1000;
-const MS_MAX_PAGES = 45;
+const MS_MAX_PAGES = 30;
 
 console.log('');
 console.log('Test 3: 分类真过滤（跨页，全量可达集合内）——小条数子类也必须筛出非空');
@@ -179,7 +179,7 @@ else {
     check('分类「' + cn + '」条目全属该类', Array.isArray(v.items) && v.items.every((it) => it.category === cn), JSON.stringify((v.items || []).slice(0, 3).map((it) => it.category)));
     check('分类「' + cn + '」total = 可达集合内真实条数', v.total === COUNTS[cn], v.total);
     check('分类「' + cn + '」hasMore 与该 total 自洽', v.hasMore === (24 < v.total), v.hasMore);
-    check('分类「' + cn + '」hint 如实说明本地过滤 + 可达集合', /本地|客户端/.test(String(v.hint || '')) && /45,000|45000/.test(String(v.hint || '')), JSON.stringify(v.hint));
+    check('分类「' + cn + '」hint 如实说明本地过滤 + 可达集合', /本地|客户端/.test(String(v.hint || '')) && /30,000|30000/.test(String(v.hint || '')), JSON.stringify(v.hint));
     check('分类态绝不声明 serverFacet', v.serverFacet !== true, JSON.stringify(v.serverFacet));
     const ids = new Set(v.items.map((it) => it.id));
     for (const pg of [2, 3]) {
@@ -372,7 +372,7 @@ console.log('Test 11: 0.5.165 Fix B —— 首屏有界 + 取数失败绝不静�
   check('单页超时锁：MS_PAGE_TIMEOUT_MS 存在且 <= 30000（PageSize=1000 live=24.1s，给到 30s 一档）', timeoutLine !== undefined && Number(timeoutLine) > 0 && Number(timeoutLine) <= 30000, 'timeout=' + timeoutLine);
   check('不再沿用 90000 单次大页上限', msSeg.indexOf('90000') < 0, 'seg 内仍见 90000');
   check('硬上界 + 单次调用时间预算常量齐备（MS_MAX_PAGES / MS_FETCH_BUDGET_MS）', maxLine !== undefined && budgetLine !== undefined && Number(maxLine) > 0 && Number(budgetLine) > 0, 'pages=' + maxLine + ' budget=' + budgetLine);
-  check('上界仍覆盖实测深度 45,000 行（MS_MAX_PAGES*MS_PAGE >= 45000）', Number(maxLine) * Number(pageLine) >= 45000, String(Number(maxLine) * Number(pageLine)));
+  check('上界恰等于实测可达上界 30,000 行（MS_MAX_PAGES*MS_PAGE === 30000：取满实测深度，也不虚报没取到的行数）', Number(maxLine) * Number(pageLine) === 30000, String(Number(maxLine) * Number(pageLine)));
   check('预算算式：MS_FETCH_BUDGET_MS + MS_PAGE_TIMEOUT_MS < 旧 abort 90000（有界）', Number(budgetLine) + Number(timeoutLine) < 90000, String(Number(budgetLine) + Number(timeoutLine)));
   check('页数上界与实现常量一致（套件不再自说自话）', Number(maxLine) === MS_MAX_PAGES && Number(pageLine) === MS_PAGE, 'impl=' + pageLine + '/' + maxLine + ' suite=' + MS_PAGE + '/' + MS_MAX_PAGES);
   check('旧静默截断已消失：searchModelScope 内不得再有裸 catch+break', !/catch\s*\{\s*break;/.test(msSeg), '仍见 catch+break');
@@ -387,7 +387,7 @@ console.log('Test 11: 0.5.165 Fix B —— 首屏有界 + 取数失败绝不静�
     check('失败页码逐页点名（msFetchFailedPages 含 3）', String(part.v.msFetchFailedPages || '').indexOf('3') >= 0, JSON.stringify(part.v.msFetchFailedPages));
     const h = String(part.v.hint || '');
     check('hint 点名第 3 页取数失败/超时', /第 3 页/.test(h) && /取数失败|超时/.test(h), JSON.stringify(h.slice(0, 160)));
-    check('hint 行数 = 实际取回行数（2,000），不得再报没取到的 45,000', h.indexOf('2,000') >= 0 && h.indexOf('45,000') < 0, JSON.stringify(h.slice(0, 160)));
+    check('hint 行数 = 实际取回行数（2,000），不得再报没取到的 30,000', h.indexOf('2,000') >= 0 && h.indexOf('30,000') < 0, JSON.stringify(h.slice(0, 160)));
     check('失败态文案与「本类实测 0 条」可区分', h.indexOf('取数失败') >= 0 && h.indexOf('本类实测 0 条') < 0, JSON.stringify(h.slice(0, 160)));
     check('失败态绝不声明 serverFacet', part.v.serverFacet !== true, JSON.stringify(part.v.serverFacet));
   }

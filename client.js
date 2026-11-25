@@ -244,19 +244,22 @@ function categoryLabelLite(chip) {
 // chip 是面板自造的：它不代表任何一个上游分类，条数也绝不从上游总量里编——只如实报「窗外还有 N 类
 // / 合计 M 条」，实际可列出的条目由已取到的集合本地过滤得出（见 visibleSkills）。
 const CAT_OTHER = '__cat_other';
+// 展开态行尾的「收起分类」是渲染集合里的一个哨兵，不是分类值：它永远不进 category。
+const CATS_COLLAPSE = '__cats_collapse';
 
 function foldChips(vocabChips, limit) {
   const chips = [];
   for (const c of (Array.isArray(vocabChips) ? vocabChips : [])) if (c && c.value && c.value !== CAT_OTHER) chips.push(c);
   const cap = Number(limit) > 0 ? Number(limit) : chips.length;
-  if (chips.length <= cap) return { window: chips, other: null, otherCount: 0, otherTotal: 0 };
+  if (chips.length <= cap) return { window: chips, tail: [], other: null, otherCount: 0, otherTotal: 0 };
   const head = chips.slice(0, cap);
   const tail = chips.slice(cap);
   let otherTotal = 0;
   const covers = [];
   for (const c of tail) { otherTotal += Number(c.totalAll) || 0; covers.push(c.value); }
   const other = { value: CAT_OTHER, label: '其他', totalAll: otherTotal, fixed: true, covers };
-  return { window: head.concat([other]), other: other, otherCount: tail.length, otherTotal: otherTotal };
+  // tail 外露：窗外类不是取不回的桶，每个都是上游真 slug，展开后逐个可点、真出结果。
+  return { window: head.concat([other]), tail: tail, other: other, otherCount: tail.length, otherTotal: otherTotal };
 }
 // 路径 tab 的降级模型：settings.get 失败（0.5.148 实测：缺 import 时每次必抛）只该让
 // 「依赖它的那几个字段」变成未知，不该让整页消失——目录草稿本来就来自本地 state，
@@ -492,6 +495,9 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         '&::-webkit-scrollbar-thumb:hover': { background: '#3d444d' },
       },
       row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+      // 用户报障（m18209）：分类 chip 铺开 6 行，卡片只剩 3 行没法浏览。默认收成一行横向滚动，
+      // 行尾给展开/收起；展开态回到 S.row 多行铺开。只加一个样式，不动 S.row 本身（57 处在用它）。
+      chipRow: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'nowrap', overflowX: 'auto', overflowY: 'hidden', paddingBottom: 2 },
       // 搜索行吸顶：吸附在标签栏（约 48px）之下
       // 搜索栏固定：它和标签栏一样在滚动容器之外，滚动时永不移位
 
@@ -648,6 +654,11 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const [cardBatch, setCardBatch] = useState(1);
       const [sort, setSort] = useState('default');
       const [category, setCategory] = useState('all');
+      // 分类 chip 展开偏好：默认收起成一行（用户 m18209 的报障口径），跨面板重挂载与刷新保留。
+      const CATS_EXPANDED_KEY = 'dsh-skill-mcp-market.cats-expanded';
+      const [catsExpanded, setCatsExpanded] = useState(() => {
+        try { return window.localStorage.getItem(CATS_EXPANDED_KEY) === '1'; } catch { return false; }
+      });
       const [pageJump, setPageJump] = useState('');
       const [mcpPageJump, setMcpPageJump] = useState('');
       // 跳页被拒绝时的可见理由（两 tab 共用一个：同一时刻只有一个分页器可见）
@@ -1898,11 +1909,19 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // 默认窗口外的分类不再逐个铺开：合并成一个「其他」（窗内条数仍是上游真数，窗外合计如实标注）。
       // 声明顺序要紧：chipEntries 与 visibleSkills 都读 chipFold，写在后面会撞 TDZ（node --check 看不见）。
       const chipFold = foldChips(vocabChips, CAT_CHIP_FOLD);
-      const chipWindow = chipFold.window;
       // 渲染集合必须自己带上 'all' 首入口：chipFold.window 只有分类，照它铺开会让「全部分类」
       // 从面板上静默消失（用户没法取消筛选）。0.5.164 的中间量 chipBySlug/chipSlugs 在折叠改造后
       // 没有任何消费方——留着就是死量，判据（lobehub Test 8）直接锁这两行不再出现。
-      const chipEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }].concat(chipFold.window);
+      // 展开/收起只换渲染集合，绝不换筛选值：category 里永远只出现上游真 slug 或 'all'。
+      const allRealChips = vocabChips.filter((chip) => chip && chip.value && chip.value !== CAT_OTHER);
+      const collapseChip = { value: CATS_COLLAPSE, label: '收起分类', totalAll: 0, fixed: true };
+      const toggleCats = (next) => {
+        const want = next === true;
+        setCatsExpanded(want);
+        try { window.localStorage.setItem(CATS_EXPANDED_KEY, want ? '1' : '0'); } catch { /* 拒绝存储只是不记忆，不影响本次筛选 */ }
+      };
+      const chipEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }]
+        .concat(catsExpanded ? allRealChips.concat(chipFold.other ? [collapseChip] : []) : chipFold.window);
       // 上游已按分类筛过（serverFacet=true）时不再二次本地过滤：facet 页只有当前窗口的
       // 卡片，再按本地标签筛一遍会把未标注分类的条目无谓筛掉，还与分页器总数对不上。
       // 0.5.164：分类态本地过滤必须与聚合层同口径。src/sources.js:848 对「该源未标注分类」的行按
@@ -2392,8 +2411,8 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                     }, cat === 'all' ? '全部分类' : categoryLabel(cat))))
               : null,
             tab === 'skills' && (categories.length > 0 || vocabChips.length > 0)
-              ? h('div', { style: S.row },
-                  // 0.5.165 真缺陷（离线+肉眼同证）：foldChips 之后 chipWindow 里装的是 chip 对象，
+              ? h('div', { style: catsExpanded ? S.row : S.chipRow },
+                  // 0.5.165 真缺陷（离线+肉眼同证）：foldChips 之后 chipFold.window 里装的是 chip 对象，
                   // 渲染块还按 0.5.164 的字符串数组写——cat === 'all' 恒假、chipBySlug[对象] 取不到、
                   // onClick 还把对象塞进 category。面板上「全部分类」丢失、chip 文案塌成 [object Object]、
                   // 点上去分类参数是假值。既有套件全绿也抓不到它（Test 8 只测窗口集合，不测渲染 map），
@@ -2401,16 +2420,21 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                   chipEntries.map((chip) => {
                     const cat = chip && chip.value;
                     const foldChip = chipFold.other && chip === chipFold.other;
+                    const collapseHere = chip && chip.value === CATS_COLLAPSE;
                     // 「其他」是面板自造入口，必须把自己的身份写进文案：只报「其他 743 条」
                     // 会被读成上游那一个叫「其他」的分类（modelscope 就有 565 条的同名类）。
                     const chipText = foldChip
                       ? '其他 · 窗外 ' + chipFold.otherCount + ' 类合计 ' + Number(chip.totalAll || 0).toLocaleString() + ' 条'
                       : categoryLabelLite(chip);
+                    if (collapseHere) {
+                      // 收起态与展开态共用一个哨兵：它只是把渲染集合换回窗口，不参与任何筛选。
+                      return h('button', { key: 'cat_collapse', style: { ...S.chip(false), whiteSpace: 'nowrap' }, onClick: () => toggleCats(false) }, '收起分类');
+                    }
                     if (foldChip) {
-                      // 窗外 214 类合计 743 条=全目录 0.22%，散在几百个分页里；上游一次只收一个 slug，
-                      // 面板没有通路把这批条目取回来。做成可点的 chip 就是「点了没反应」的假控件
-                      // （live 实测下发假分类 ⇒ n=0 再谎报网络故障），所以它是披露不是入口。
-                      return h('span', { key: 'cat_tail_disclosure', style: { ...S.status, alignSelf: 'center', fontSize: 11 } }, chipText);
+                      // 「其他」是展开入口，不是筛选值：窗外 214 类每个都是上游真 slug，
+                      // 铺开后可点、真出结果。按下它只换渲染集合，绝不下发 CAT_OTHER
+                      // （:918 upstreamCat 映射与 visibleSkills 无 CAT_OTHER 分支两道防线保留）。
+                      return h('button', { key: 'cat_tail_toggle', style: { ...S.chip(false), whiteSpace: 'nowrap' }, onClick: () => toggleCats(true) }, chipText);
                     }
                     return h('button', {
                       key: cat,

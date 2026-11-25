@@ -542,11 +542,12 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     const got = runChips(['skills.sh', many, {}]);
     check('无词表源在 40 个派生分类时给出 40 个入口（改前被截到 10）', Array.isArray(got) && got.length === 40,
         JSON.stringify(got && got.length !== 40 ? { n: got.length } : { n: got.length }));
-    const fold = clientLines.filter((l) => /chipWindow|CAT_CHIP_FOLD/.test(l)).length;
-    check('窗口外仍有承接入口（现在是「其他」chip，不是靠截断分类）', fold >= 2, 'lines=' + fold);
-    // 渲染层真判据（0.5.165 自伤复盘）：foldChips 之后 chipFold.window 里是 chip 对象，渲染 map 曾照
-    // 0.5.164 的字符串数组写 —— 集合判据全绿，面板上「全部分类」却消失、文案塌成 [object Object]、
-    // onClick 把对象塞进 category。所以这里从 client.js 取真实渲染块执行，不复制实现。
+    const fold = clientLines.filter((l) => /CAT_CHIP_FOLD/.test(l)).length;
+    check('窗口外仍有承接入口（现在是可点的「其他」，不是靠截断分类）', fold >= 2 && !!runFold.other && runFold.otherCount > 0,
+        'lines=' + fold + ' otherCount=' + (runFold.other && runFold.otherCount));
+    // 渲染层真判据（0.5.165 自伤复盘 + 0.5.168 报障）：foldChips 之后 chipFold.window 里是 chip 对象，
+    // 渲染 map 曾照 0.5.164 的字符串数组写——集合判据全绿，面板上「全部分类」却消失、文案塌成
+    // [object Object]、onClick 把对象塞进 category。所以这里从 client.js 取真实渲染块执行，不复制实现。
     const renderSrc = (() => {
         const at2 = clientLines.findIndex((l) => l.includes('chipEntries.map((chip) =>'));
         if (at2 < 0) return null;
@@ -556,28 +557,37 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     check('渲染块可从 client.js 整段取到（chipEntries.map 收口完整）', renderSrc !== null, renderSrc === null ? '未取到：map 行或 }) 收口不在' : '');
     const winValsAsSlugs = winChips.map((c) => String(c.value));
     const labelBody = bodyOf('function categoryLabelLite(');
-    const runRender = (() => {
+    const collapseSlug = (client.match(/const CATS_COLLAPSE = '([^']+)';/) || [])[1] || '';
+    check('收起哨兵 slug 存在且不是上游分类名', collapseSlug !== '' && collapseSlug.indexOf('其他') < 0, 'CATS_COLLAPSE=' + collapseSlug);
+    // 两套渲染集合都真跑：收起态=窗口+「其他」，展开态=全部上游类+「收起分类」哨兵。
+    const runRenderFor = (entries) => {
         if (renderSrc === null || labelBody === null || runFold.err) return { err: 'unavailable' };
-        const entries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }].concat(runFold.window);
         const clickCalls = [];
+        const toggleCalls = [];
         const hh = (tag, props, ...kids) => ({ tag, props, kids });
         const SS = { chip: (active) => ({ active: Boolean(active) }) };
         const winStub = { scrollTo: () => {} };
         const lite = new Function(labelBody + NL + 'return categoryLabelLite;')();
         try {
-            const nodesRun = new Function('chipEntries', 'chipFold', 'categoryLabelLite', 'h', 'S', 'category', 'setCategory', 'searchSkills', 'query', 'source', 'size', 'sort', 'window',
+            const nodesRun = new Function('chipEntries', 'chipFold', 'categoryLabelLite', 'h', 'S', 'category', 'setCategory', 'searchSkills', 'query', 'source', 'size', 'sort', 'window', 'CATS_COLLAPSE', 'toggleCats',
                 'return (' + renderSrc + NL + ');')(entries, runFold, lite, hh, SS, 'all',
                 (v) => clickCalls.push({ kind: 'setCategory', v }), (q, o) => clickCalls.push({ kind: 'searchSkills', o }),
-                '天气 预报', 'lobehub', 24, 'installCount', winStub);
-            return { nodes: nodesRun, calls: clickCalls };
+                '天气 预报', 'lobehub', 24, 'installCount', winStub, collapseSlug, (v) => toggleCalls.push(v));
+            return { nodes: nodesRun, calls: clickCalls, toggles: toggleCalls };
         } catch (e) { return { err: String((e && e.message) || e) }; }
-    })();
-    const nodes = Array.isArray(runRender.nodes) ? runRender.nodes : [];
+    };
+    const collapsedEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }].concat(runFold.window);
+    const expandedEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }]
+        .concat(winChips.filter((c) => c && c.value && c.value !== otherSlug))
+        .concat([{ value: collapseSlug, label: '收起分类', totalAll: 0, fixed: true }]);
+    const runCollapsed = runRenderFor(collapsedEntries);
+    const runExpanded = runRenderFor(expandedEntries);
+    const nodes = Array.isArray(runCollapsed.nodes) ? runCollapsed.nodes : [];
     const texts = nodes.map((n) => String(n.kids[0]));
-    check('渲染块真跑（不抛、返回节点数组）', !runRender.err && nodes.length > 0, JSON.stringify({ err: runRender.err, n: nodes.length }));
+    check('收起态渲染块真跑（不抛、返回节点数组）', !runCollapsed.err && nodes.length > 0, JSON.stringify({ err: runCollapsed.err, n: nodes.length }));
     check('「全部分类」仍是首个 chip（渲染集合自带 all 入口，不靠折叠窗口）',
         nodes.length > 0 && nodes[0].props.key === 'all' && texts[0] === '全部分类', texts.slice(0, 2).join(' | '));
-    check('chip 数量 = 全部分类 + 前 foldN 类 + 1 个「其他」（246 类不铺开）',
+    check('chip 数量 = 全部分类 + 前 foldN 类 + 1 个「其他」（收起态不铺开 246 类）',
         nodes.length === foldN + 2, 'nodes=' + nodes.length + ' 期望=' + (foldN + 2));
     check('没有任何 chip 文案塌成 [object Object]',
         texts.every((t) => t !== '' && t.indexOf('[object Object]') < 0), JSON.stringify(texts.slice(0, 3)));
@@ -592,24 +602,31 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     const pdfIdx = nodes.findIndex((n) => n.props.key === 'pdf-documents');
     check('窗内分类 chip 带上游真条数（categoryLabelLite 真接到渲染层）',
         pdfIdx > 0 && /[\d,]{4,}/.test(texts[pdfIdx]), JSON.stringify({ pdfIdx, text: texts[pdfIdx] }));
-    // 渲染层的「其他」必须是披露，不是入口：窗外集合面板取不回，做成可点 chip 就是假控件。
-    const otherTag = otherNode ? String(otherNode.tag) : '(none)';
-    check('「其他」不是可点 chip（窗外集合取不回，可点即假控件）',
-        !!otherNode && otherTag === 'span' && otherNode.props.onClick === undefined,
-        JSON.stringify({ tag: otherTag, hasClick: !!(otherNode && otherNode.props.onClick) }));
-    check('「其他」的 key 不是上游分类 slug（面板自造值不得进任何下发链路）',
-        !!otherNode && String(otherNode.props.key).indexOf('__cat_other') < 0,
+    // 0.5.168 用户报障（m18209）：「其他」只有文字没有按钮，无法点击查看。它现在是展开入口，
+    // 但只换渲染集合、绝不进筛选链路：按下后 setCategory / searchSkills 一次都不许被调用。
+    check('「其他」是可点按钮（只有文字无法点=假控件，正是用户报的那一半）',
+        !!otherNode && String(otherNode.tag) === 'button' && typeof otherNode.props.onClick === 'function',
+        JSON.stringify({ tag: otherNode && otherNode.tag, hasClick: !!(otherNode && otherNode.props.onClick) }));
+    const otherBaseC = (runCollapsed.calls || []).length;
+    const otherBaseT = (runCollapsed.toggles || []).length;
+    if (otherNode && otherNode.props.onClick) otherNode.props.onClick();
+    const otherToggles = runCollapsed.toggles.slice(otherBaseT);
+    const otherClicks = runCollapsed.calls.slice(otherBaseC);
+    check('按下「其他」只展开集合，不产生任何筛选下发（自造 slug 绝不进 category）',
+        otherToggles.length === 1 && otherToggles[0] === true && otherClicks.length === 0,
+        JSON.stringify({ toggles: otherToggles, clicks: otherClicks.map((c) => c.kind) }));
+    check('「其他」按钮的 key 不是上游 slug 也不是 CAT_OTHER（面板自造值不进下发链路）',
+        !!otherNode && String(otherNode.props.key).indexOf('__cat_other') < 0 && String(otherNode.props.key) !== otherSlug,
         'key=' + (otherNode && otherNode.props.key));
     const buttonKeys = nodes.filter((n) => n.tag === 'button').map((n) => String(n.props.key));
-    check('渲染层可点的 chip 全是上游真 slug（含 all，不含派生/自造值）',
-        buttonKeys.length === foldN + 1 && buttonKeys[0] === 'all' &&
-        buttonKeys.every((k) => k === 'all' || (winValsAsSlugs && winValsAsSlugs.indexOf(k) >= 0)),
+    check('收起态可点 chip = all + 前 foldN 真 slug + 1 个展开入口（不掺派生值）',
+        buttonKeys.length === foldN + 2 && buttonKeys[0] === 'all' &&
+        buttonKeys.slice(1, foldN + 1).every((k) => winValsAsSlugs.indexOf(k) >= 0),
         JSON.stringify({ n: buttonKeys.length, keys: buttonKeys.slice(0, 3) }));
-    const clickBase = (runRender.calls || []).length;
+    const clickBase = (runCollapsed.calls || []).length;
     if (nodes.length > 1) nodes[1].props.onClick();
-    if (otherNode && otherNode.props.onClick) otherNode.props.onClick();
-    const clicks = (runRender.calls || []).slice(clickBase);
-    check('chip 按下：setCategory 与下发的 category 都是上游真 slug（对象/自造值一律不许）',
+    const clicks = runCollapsed.calls.slice(clickBase);
+    check('窗内 chip 按下：setCategory 与下发的 category 都是上游真 slug（对象/自造值一律不许）',
         clicks.length === 2 && typeof clicks[0].v === 'string' && clicks[0].v === nodes[1].props.key &&
         !!clicks[1].o && clicks[1].o.category === nodes[1].props.key &&
         String(clicks[0].v).indexOf('__cat_other') < 0,
@@ -617,9 +634,49 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     check('按下 chip 回第 1 页并带上当前源（渲染层仍接得住既有口径）',
         clicks.length === 2 && !!clicks[1].o && clicks[1].o.page === 1 && clicks[1].o.source === 'lobehub' && !!clicks[1].o.sort,
         JSON.stringify(clicks[1] && clicks[1].o));
-    check('0.5.164 的中间量 chipSlugs / chipBySlug 不再是无人消费的死声明',
-        !/const chipSlugs =/.test(client) && !/const chipBySlug =/.test(client),
-        'chipSlugs=' + /const chipSlugs =/.test(client) + ' chipBySlug=' + /const chipBySlug =/.test(client));
+    const xnodes = Array.isArray(runExpanded.nodes) ? runExpanded.nodes : [];
+    check('展开态渲染块真跑：全部上游类都铺开（窗外类不是取不回的桶）',
+        !runExpanded.err && xnodes.length === winChips.length + 2,
+        JSON.stringify({ err: runExpanded.err, n: xnodes.length, want: winChips.length + 2 }));
+    const xkeys = xnodes.map((n) => String(n.props.key));
+    const tailSlugs = winValsAsSlugs.slice(foldN);
+    check('展开态里窗外 slug 逐个成点（用户要的是能点，不是能看）',
+        tailSlugs.length > 0 && tailSlugs.every((s) => xkeys.indexOf(s) >= 0),
+        JSON.stringify({ tail: tailSlugs.length, miss: tailSlugs.filter((s) => xkeys.indexOf(s) < 0).slice(0, 3) }));
+    const tailIdx = xnodes.findIndex((n) => n.props.key === tailSlugs[0]);
+    const xBase = (runExpanded.calls || []).length;
+    if (tailIdx >= 0) xnodes[tailIdx].props.onClick();
+    const xclicks = runExpanded.calls.slice(xBase);
+    check('按下窗外 chip 下发该窗外真 slug（真出结果，不写 CAT_OTHER）',
+        xclicks.length === 2 && xclicks[0].v === tailSlugs[0] && !!xclicks[1].o && xclicks[1].o.category === tailSlugs[0],
+        JSON.stringify(xclicks.map((c) => c.kind + '=' + JSON.stringify(c.v !== undefined ? c.v : c.o && c.o.category)).slice(0, 2)));
+    const collapseNode = xnodes[xnodes.length - 1];
+    const cBase = (runExpanded.calls || []).length;
+    const cBaseT = (runExpanded.toggles || []).length;
+    if (collapseNode && collapseNode.props.onClick) collapseNode.props.onClick();
+    const ctoggles = runExpanded.toggles.slice(cBaseT);
+    check('展开态行尾「收起分类」按下只收起，不产生筛选下发',
+        !!collapseNode && String(collapseNode.props.key) === 'cat_collapse' && ctoggles.length === 1 && ctoggles[0] === false &&
+        (runExpanded.calls || []).length === cBase,
+        JSON.stringify({ key: collapseNode && collapseNode.props.key, toggles: ctoggles }));
+    // 源码锁：展开偏好必须真进渲染集合与持久化，否则上面两次跑的是同一套集合（假绿）。
+    check('渲染集合随 catsExpanded 切换（不是恒按窗口铺开）',
+        /catsExpanded \? allRealChips/.test(client) && /const allRealChips = vocabChips\.filter/.test(client),
+        (client.split(NL).find((l) => l.includes('catsExpanded ?')) || '(none)').trim().slice(0, 160));
+    check('展开偏好持久化（跨重挂载与刷新保留，与回收站/分组折叠同口径）',
+        /dsh-skill-mcp-market\.cats-expanded/.test(client) && /localStorage\.setItem\(CATS_EXPANDED_KEY/.test(client), '');
+    check('收起态 chip 行是单行横向滚动（报障主诉求：不占大半个空间）',
+        /chipRow: \{[^\n]*flexWrap: 'nowrap'/.test(client) && /style: catsExpanded \? S\.row : S\.chipRow/.test(client), '');
+    check('foldChips 外露 tail（窗外集合可点的前提；旧实现只给 covers 不给行）',
+        Array.isArray(runFold.tail) && runFold.tail.length === tail.length &&
+        runFold.tail.every((c) => c && c.value && c.value !== otherSlug),
+        JSON.stringify({ tail: runFold.tail && runFold.tail.length, covers: runFold.other && runFold.other.covers.length }));
+    check('窗外 chip 仍带各自上游真条数（展开态不靠合计糊弄）',
+        Array.isArray(runFold.tail) && runFold.tail.reduce((n, c) => n + (Number(c.totalAll) || 0), 0) === tailTotal,
+        JSON.stringify({ tailTotal }));
+    check('0.5.164/0.5.165 的中间量 chipSlugs / chipBySlug / chipWindow 不再是无人消费的死声明',
+        !/const chipSlugs =/.test(client) && !/const chipBySlug =/.test(client) && !/const chipWindow =/.test(client),
+        'chipSlugs=' + /const chipSlugs =/.test(client) + ' chipBySlug=' + /const chipBySlug =/.test(client) + ' chipWindow=' + /const chipWindow =/.test(client));
 }
 
 

@@ -8,7 +8,7 @@
 // 这里把三条全部钉成断言，并钉住「未测成绝不写 PASS」「覆盖缺口不判红」。
 import { fingerprintOf, pickHint, verdictB, usable, summarize, discoverPorts, portsFromPs, vocabOf, lobeWindowFold, wallVerdict, render } from './live-verify.mjs';
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 let passed = 0, failed = 0, skipped = 0;
@@ -67,6 +67,7 @@ console.log('\nTest 3: \u5224\u636e B \u56db\u6001\uff08PASS / LIVE-FAIL / GAP /
   check('\u8f6f\u62a5\u5206\u7c7b 0 \u6761\u4e14\u65e0\u4e2d\u65ad\u63aa\u8f9e \u2192 GAP\uff08\u4e0d\u5224\u7ea2\uff09', verdictB(z, { hard: false }).verdict === 'GAP');
   check('0 \u6761\u4f46\u6587\u6848\u81ea\u627f\u53d6\u6570\u4e2d\u65ad \u2192 LIVE-FAIL\uff08\u8f6f\u62a5\u4e5f\u4e0d\u653e\u8fc7\u9a97\u8bcd\uff09', verdictB({ http: 200, total: 0, hint: HINT_165_INTR }, { hard: false }).verdict === 'LIVE-FAIL');
   check('RPC \u975e 200 \u2192 LIVE-FAIL', verdictB({ http: 500 }, { hard: false }).verdict === 'LIVE-FAIL');
+  check('RPC 连不上（http=0 无状态码）→ NOT-TESTED（判据未执行，不判红）', verdictB({ http: 0 }, { hard: true }).verdict === 'NOT-TESTED' && verdictB({ http: 0 }, { hard: false }).verdict === 'NOT-TESTED' && verdictB(null, { hard: true }).verdict === 'NOT-TESTED');
 }
 
 console.log('\nTest 4: \u6c47\u603b\u2014\u2014\u672a\u6d4b\u6210\u7edd\u4e0d\u5199 PASS\uff0cGAP \u4e0d\u62c9\u4f4e\u7ed3\u8bba');
@@ -157,6 +158,37 @@ console.log('\nTest 8: \u811a\u672c\u81ea\u8eab\u7684\u5f62\u72b6\u9501\uff08\u4
   // 双重防线：即使分支落到文本打印，消费者截取第一个 '{' 也会吞进 RESULT 尾巴；正确形状只能是单份完整文档
   const single = render(rep, true);
   check('--json 单份文档且无 RESULT 尾巴', JSON.parse(single).rows[0].name === 'a' && !/RESULT:/.test(single));
+}
+
+
+// Test 9（新增段；原文件只到 Test 8）：端到端 —— RPC 打不通时脚本必须优雅退 3，绝不抛 TypeError。
+// 现网事故形状：node test/live-verify.mjs --port <死端口> --timeout 3000
+//   ⇒ TypeError: Cannot read properties of undefined (reading 'slice') at runAll（:214 的 JSON.stringify(zz.categoryNote).slice）
+//   exit=1 绕过 :16 的退出码契约（3=NOT-RUN 判据未执行，绝不写 PASS/FAIL），一个 row 都出不来。
+// 端口 59999 必须没人监听：本段绝不联网打活端口，只打 127.0.0.1 上的死端口。
+console.log('\nTest 9: 端到端 —— RPC 打不通 ⇒ exit=3 + NOT-RUN 行，绝不 TypeError');
+{
+  const ROOT = path.resolve(process.cwd());
+  const SCRIPT = path.join('test', 'live-verify.mjs');
+  const run = (extra) => {
+    const argv = [SCRIPT, '--port', '59999', '--timeout', '1500'].concat(extra || []);
+    const t0 = Date.now();
+    const r = spawnSync(process.execPath, argv, { cwd: ROOT, encoding: 'utf8', timeout: 180000, windowsHide: true });
+    return { r, wall: Date.now() - t0 };
+  };
+  const plain = run([]);
+  check('死端口文本形态 exit=3（NOT-RUN 契约，不是崩溃的 1）', plain.r.status === 3, 'status=' + String(plain.r.status) + ' wall=' + plain.wall + 'ms');
+  check('死端口 stdout 无 TypeError 字样', !/TypeError/.test(String(plain.r.stdout || '')), String(plain.r.stderr || '').slice(0, 160));
+  check('死端口 stderr 无 TypeError（崩溃兜不住时这里必现）', !/TypeError/.test(String(plain.r.stderr || '')), String(plain.r.stderr || '').slice(0, 200));
+  check('死端口 stdout 含 NOT-RUN「判据未执行」行', /NOT-RUN/.test(String(plain.r.stdout || '')) && /判据未执行/.test(String(plain.r.stdout || '')), String(plain.r.stdout || '').slice(0, 200));
+  check('死端口 stdout 不写 PASS/FAIL', !/RESULT: (PASS|LIVE-FAIL)/.test(String(plain.r.stdout || '')), String(plain.r.stdout || '').split('\n').slice(-2).join(' / '));
+  check('死端口 stdout 逐行列出判据（NOT-TESTED 行在位，不是空表）', /\[NOT-TESTED\]/.test(String(plain.r.stdout || '')), String(plain.r.stdout || '').split('\n').length + ' lines');
+  const jsonRun = run(['--json']);
+  check('死端口 --json 形态 exit=3', jsonRun.r.status === 3, 'status=' + String(jsonRun.r.status) + ' wall=' + jsonRun.wall + 'ms');
+  let doc = null, perr = '';
+  try { doc = JSON.parse(String(jsonRun.r.stdout || '')); } catch (e) { perr = String((e && e.message) || e); }
+  check('死端口 --json 是单份可 JSON.parse 的文档', doc !== null, perr + ' | ' + String(jsonRun.r.stdout || '').slice(0, 120));
+  check('死端口 --json result=NOT-RUN 且 rows 非空', !!doc && doc.result === 'NOT-RUN' && Array.isArray(doc.rows) && doc.rows.length > 0, doc ? String(doc.result) + ' rows=' + (doc.rows || []).length : 'unparsable');
 }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed, ' + skipped + ' skipped');

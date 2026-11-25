@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.168
+- 一句话：收掉用户两条报障（分类标签铺满半屏、「其他」只有文字不能点）与 modelscope「永远显示取数中断」，并把一键验收脚本的崩溃修掉。
+- chip 行默认收成一行横向滚动：新增 S.chipRow（flexWrap:'nowrap' + overflowX:'auto'），不动 S.row（57 处在用）。展开态才回到多行铺开；状态存 localStorage（key dsh-skill-mcp-market.cats-expanded），默认收起。
+- 「其他」恢复成真按钮，语义从「下发分类」改成「铺开窗外 214 类」：按下只 toggleCats(true)，零 setCategory、零 searchSkills；展开后每个窗外 chip 都是上游真 slug，点了真出结果；行尾「收起分类」按钮回到一行态。
+- foldChips 把 tail 外露（原来算完 otherCount/otherTotal 就把 tail 丢掉 ⇒ 展开无料可用）；CATS_COLLAPSE 是渲染哨兵，永不进 category。
+- 两道防线不许退（0.5.165 的假分类修复）：const upstreamCat = cat === CAT_OTHER ? 'all' : cat; 与 visibleSkills 不含 CAT_OTHER 分支。本轮翻转的是「能不能点」，不是「下发什么」。
+- 判据家随动：test-lobehub-category-vocab Test 8 整段重写，收起态与展开态两套 chip 集合各真跑一次（runRenderFor 绑 15 量），旧「otherNode 必须是 span 且无 onClick」的期望被推翻并写明理由 ⇒ 100 passed / 0 failed（起点 89）。源码锁 4 条 + 死声明锁扩到 chipSlugs/chipBySlug/chipWindow 三件（本轮顺手删掉 0.5.165 改写后无人消费的 chipWindow）。
+- 判据家自伤两次并被当场抓住（教训：判据代码也是代码）：(a) 用同一个 calls 计数器切「按下 other / 按下 collapse」且 splice 插错位置 ⇒ toggles:[] 红；(b) splice 换三行 check 时留下旧标题行 ⇒ SyntaxError missing ) after argument list，补 } 又漏一行 ⇒ Unexpected end of input。两次都靠 node 报错行号定位修好，最终 712 行 / CRLF / loneLF=0。
+- modelscope 可达集合上界纠错（用户 08:09 截图：已有 73 页仍显示「第 31 页取数失败/超时」）：直连上游逐页实测 offset≥30,000 一律 HTTP 500 + Message=list_skill_failed——p30/n1000=200(6.9s)、p31/p32/p40/p45=500、p6/n5000=200 而 p7..p10=500、p15/n2000=200 而 p16=500、p150/n200=200 而 p151=500 ⇒ 上界是 offset 乘积 30,000 行，与页长无关，带 Query 同样；total 恒 89,044。
+- 旧 MS_MAX_PAGES=45 让循环必然在第 31 页撞 500 ⇒ msFetchFailures 记账 ⇒ msPartial=true ⇒ 结果缓存永不写（:1556）⇒ 每次搜索都从第 31 页重试再失败，这就是「永远显示取数中断」的机制。修法=MS_MAX_PAGES 45→30（30×1000 恰实测上界），可达集合口径由 45,000 改为 30,000，注释与文案同批。
+- modelscope 判据随动：FULL_ROWS 45000→30000、夹具槽位重排进 30,000 内并保持六类计数 40/25/6/2/2/1、hint 正则与「不得见 30,000」两处口径同改、源码锁 :375 改为严格 ===30000。实测 160 passed / 0 failed / 2 skipped；test-sort-server 45/0/3skip。三向变异：上界退回 45 ⇒ 3 红；留越界槽位 ⇒ 3 红；中断态文案漏改 ⇒ 1 红、正常态 ⇒ 6 红。
+- 一键验收脚本的崩溃（监测方 08:14 报，我 07:48 那次改的是别处）：shape() 出来的 categoryNote/total/degraded 都可能是 undefined，端口连不上时 http=0，判据⑤那行 JSON.stringify(zz.categoryNote).slice(0,60) 直接 TypeError，一个 row 都出不来 ⇒ 绕过自己钉的退出码契约（3=NOT-RUN 本该在此出现）。修法=全字段兜底 + http=0 判「判据未执行」NOT-TESTED、http 真非 200 才 LIVE-FAIL。
+- 这条坑原来测不出来（「绿不等于做了」的形状）：新增端到端判据真 spawn node test/live-verify.mjs --port 59999 --timeout 1500 ⇒ exit=3、stdout 无 TypeError、14 行全 NOT-TESTED、fingerprint=unknown；--json 同参 ⇒ exit=3 且单份可解析。⇒ test-live-verify 71 passed / 0 failed。
+- 现网实跑（用户已点重启，端口自发现到 55303）：fingerprint=new ⇒ 服务端进程内已是新版；14 行里唯一 LIVE-FAIL=判据②「监控」0 条且文案自承取数中断，与本轮上界修正同根，装 0.5.168 后复验应转绿或转 GAP。
+- 监测方 09:27①「可达集合不推进」的机制读实（不是游标坏）：0.5.165 的 MS_MAX_PAGES=45 下，fullKey 缓存写 {rows:30000, next:31, done:false}，下一次调用 cachedPages=30 ⇒ next=31 ⇒ pagesNeeded=45 ⇒ 31<=45 真打第 31 页 ⇒ 上游恒 500 ⇒ 记账 ⇒ msPartial ⇒ 结果缓存永不写。⇒ 续暖每次都真打了那一页，只是上游 offset≥30,000 一律 500（list_skill_failed），所以看起来「不推进」。上界改成 30 后 next=31>pagesNeeded=30 ⇒ 循环不进 ⇒ msDone=true ⇒ done 写进 fullKey ⇒ 不再请求、不再中断、结果缓存恢复写入。夹具 (c) 场景（failFrom:3）仍锁「第二次从失败页继续且不重拉 1-2 页」，续暖语义没被削弱。
+- 监测方 09:27②「冷词聚合恒 12.0s」根因定位（本批不开项）：fanOutSources 的超时冷却是按 query 分键的——src/sources.js:677 cooldownKey = String(query).trim().toLowerCase()，:588 前缀 market_src_timeout:<query>:<source>，AGGREGATE_COOLDOWN_MS=120000。⇒ 全新词没有该源的冷却记录，必然付满 DEFAULT_BUDGET_MS=12000 等 trusttools（其单打实测 77.0s fetch failed）；同词 120s 内重打才会被跳过。真要降到 3–4s 需要「按源分键的失败记忆 / 连续 N 次超时降级为短预算并照报 degraded」，这会改变可见结果（哪些源被问），属产品决策，留 0.5.169 单独一轮。
+- 现网一键验收（lv-guard 交付终态，端口自发现到 52830，进程内 0.5.165+）⇒ RESULT: LIVE-FAIL exit=1，12 PASS / 1 GAP / 1 LIVE-FAIL=判据② 软报「监控」total=0 且文案自承取数中断——这一条正是上界 45 的现场证据，装 0.5.168 并重启后应转绿；同轮指纹=fingerprint=new ⇒ 服务端半边已换代。
+
 ## 0.5.167
 - 一句话验收入口落进仓库（监测方 07:21 需求）：node test/live-verify.mjs 一条命令同时回答「服务端已换代 + 五项红转绿」。端口自发现（Get-NetTCPConnection，回退 netstat）、不写死 60027；退出码 0=PASS / 1=LIVE-FAIL / 3=NOT-RUN（没找到 RPC 端点，显式声明「不写 PASS/FAIL」）/ 4=STALE-SERVER（进程内仍是旧码，该结论先于一切行结论）。
 - 版本指纹只认 hint 措辞（05:23 误判的根因固化成判据）：git show 逐字核对 ⇒ v0.5.164 写「分类在可达的」，v0.5.165 起正常态写「分类在已取回的」、中断态写「分类取数中断」；「可达集合外的分类会漏」两版都有 ⇒ 不是指纹。fingerprintOf 先判 NEW_MARKS（含"分类在已取回的""取数中断"）再判 OLD_MARKS（"分类在可达的"），判据家另加两条 git 源码互证（tag 历史缺失时显式 SKIP）。
