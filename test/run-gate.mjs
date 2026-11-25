@@ -12,7 +12,10 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { gateVerdict } from './gate-verdict.mjs';
+import { poolLimit, runPool } from './gate-pool.mjs';
+import { safeTempDir } from '../src/home.js';
 
 const W = path.resolve(import.meta.dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(W, 'package.json'), 'utf8'));
@@ -48,6 +51,35 @@ if (!suites.length) {
 // 420s：本地最慢套件 full-sort≈189s；CI 冷 npx 缓存会让触发 lobehub CLI 的套件（func-fixes、
 // full-sort 的 all 聚合）额外等 30–180s。300s 会把这些「慢但正常」误判成 TIMEOUT。
 const perTimeout = Math.max(30000, Number(process.env.DSH_GATE_TIMEOUT_MS) || 420000);
+// 睡眠判定的宽限（默认 60s 是生产口径；判据家把它降到 0 才能端到端复现）。
+// 刻意不用 `Number(env) || 60000`：那样 0 会被当成没设（0 是 falsy）而回落到默认值，
+// 于是「宽限=0」这个复现姿势永远走不到分支（03:07 端到端实测就是这么漏的）。
+// 生产上宽限必须 >0：正常被杀时 ms = perTimeout + 关流延迟（几十毫秒），宽限 0 会把
+// 每一次真超时都误报成睡眠。
+const graceEnv = process.env.DSH_GATE_SUSPEND_GRACE_MS;
+const suspendGrace = graceEnv === undefined || graceEnv === '' ? 60000 : Math.max(0, Number(graceEnv) || 0);
+// 并发度（方案 C）：不设 DSH_GATE_PARALLEL ⇒ 1 ⇒ 与串行版行为逐字一致（CI 路径不变）。
+const limit = poolLimit(process.env.DSH_GATE_PARALLEL, suites.length);
+
+// 回放层（方案 B）：DSH_REPLAY=record|1|replay 时给每个套件注入 --import 预加载。
+// 刻意用 spawn 参数注入，而不是只靠 NODE_OPTIONS 继承：取证 probe-inherit2 显示
+// 「父进程自己也带 NODE_OPTIONS」时父进程的 node:child_process 已被替身顶掉，
+// spawnSync 返回的是替身的 {status:0,stdout:''} —— 继承看起来生效、实际是自欺。
+// 显式加进 argv 让「注入了没有」在门日志里可见、可锁。
+const replayMode = process.env.DSH_REPLAY_MODE || process.env.DSH_REPLAY || '';
+const replayOn = replayMode === 'record' || replayMode === '1' || replayMode === 'replay';
+const replayArgs = replayOn ? ['--import=' + pathToFileURL(path.join(import.meta.dirname, 'replay', 'preload.mjs')).href] : [];
+const replayEnv = replayOn
+  ? { ...process.env, DSH_REPLAY_DIR: process.env.DSH_REPLAY_DIR || path.join(W, 'test', 'replay', 'store') }
+  : process.env;
+// 未命中账本放临时区：它是门运行时产物，不是档案的一部分 —— 混进 store 会被一起提交，
+// 也会污染「档案大小」这个度量。按 pid 隔离避免并发门互踩，门结束时整目录删除。
+// 父目录必须走 safeTempDir()（test-temp-hygiene 锁：裸 os.tmpdir() 与 mkdtempSync 都判红）。
+// DSH_REPLAY_MISS_DIR 是外部编排者（test/replay/backfill.mjs）指定的账本目录：给了就**不删**，
+// 否则门末的清理会让外层永远读到 0 条 —— 00:48 实测那层假收敛就是这么来的。
+const missDirGiven = replayOn ? String(process.env.DSH_REPLAY_MISS_DIR || '') : '';
+const MISS_DIR = replayOn ? (missDirGiven || path.join(safeTempDir(), 'dsh-replay-miss-' + process.pid)) : '';
+if (replayOn) { try { fs.mkdirSync(MISS_DIR, { recursive: true }); } catch {} }
 
 // GitHub Actions 用 % 做属性转义、行首 :: 触发命令解析；断言原文可能含这些字符。
 // 注解消息里把 % 转 %25、去掉行首 :: 与换行，避免污染工作流命令。
@@ -56,7 +88,13 @@ function gateEscape(text) {
 }
 const runOne = (file) => new Promise((resolve) => {
   const t0 = Date.now();
-  const child = spawn(process.execPath, [path.join(W, 'test', file)], { cwd: W, env: process.env });
+  // 每个套件一份独立账本：谁未命中就判谁红，不靠套件自己怎么汇报。
+  const misslog = replayOn ? path.join(MISS_DIR, '.miss-' + process.pid + '-' + file + '.log') : '';
+  if (replayOn) { try { fs.mkdirSync(MISS_DIR, { recursive: true }); fs.rmSync(misslog, { force: true }); } catch {} }
+  const child = spawn(process.execPath, [...replayArgs, path.join(W, 'test', file)], {
+    cwd: W,
+    env: misslog ? { ...replayEnv, DSH_REPLAY_MISSLOG: misslog } : replayEnv,
+  });
   let out = '';
   let killed = false;
   const timer = setTimeout(() => { killed = true; child.kill('SIGKILL'); }, perTimeout);
@@ -65,28 +103,46 @@ const runOne = (file) => new Promise((resolve) => {
   child.stderr.on('data', grab);
   child.on('close', (code) => {
     clearTimeout(timer);
-    resolve({ file, code, killed, ms: Date.now() - t0, out });
+    let misses = 0;
+    if (misslog) {
+      try { misses = fs.readFileSync(misslog, 'utf8').split('\n').filter(Boolean).length; } catch {}
+    }
+    resolve({ file, code, killed, ms: Date.now() - t0, out, misses });
   });
 });
 
-console.log(`[GATE] ${suites.length} suites, per-suite timeout ${Math.round(perTimeout / 1000)}s`);
+console.log(`[GATE] ${suites.length} suites, per-suite timeout ${Math.round(perTimeout / 1000)}s` + (replayOn ? `, replay=${replayMode} dir=${replayEnv.DSH_REPLAY_DIR}` : '') + (limit > 1 ? `, parallel=${limit}` : ''));
+// 并发（方案 C）：limit=1 时 runPool 就是串行，日志顺序与旧版逐字一致；
+// >1 只在回放/本地提速场景开（判据理由见 gate-pool.mjs 头注释）。
+// 归属安全：results 按索引回填，判定行随完成打印但带套件名，互不串行依赖。
 const results = [];
-for (const s of suites) {
-  const r = await runOne(s);
+const report = (r) => {
   // 判定唯一来源：gate-verdict.mjs 的纯函数（test-gate-contract 锁住其全部分支）。
-  const { verdict, summary } = gateVerdict(r);
-  results.push({ file: s, verdict, summary, ms: r.ms });
-  console.log(`[GATE] ${s.padEnd(26)} ${verdict.padEnd(9)} ${Math.round(r.ms / 1000)}s  ${summary}`);
+  // ms/perTimeout/宽限一起传进去：被杀但墙钟远超超时 ⇒ 判 SUSPEND-SUSPECT（疑似整机睡眠），
+  // 见 gate-verdict.mjs 注释里 08:24 那次 TIMEOUT 1524s 的实测。
+  // DSH_GATE_SUSPEND_GRACE_MS 只为判据家把宽限降到 0 好端到端复现，默认 60s。
+  const { verdict, summary } = gateVerdict({ ...r, perTimeout, suspendGraceMs: suspendGrace });
+  results.push({ file: r.file, verdict, summary, ms: r.ms });
+  console.log(`[GATE] ${r.file.padEnd(26)} ${verdict.padEnd(9)} ${Math.round(r.ms / 1000)}s  ${summary}`);
   if (verdict !== 'PASS') {
     // ::error:: 会被 GitHub 转成 check-run annotation（公开可读，无需 admin 拉日志），
     // 因此红灯的「哪个套件、什么判定」必须进这一行。
-    console.log('::error::[GATE] ' + s + ' ' + verdict + ' (' + gateEscape(summary) + ', ' + Math.round(r.ms / 1000) + 's)');
+    console.log('::error::[GATE] ' + r.file + ' ' + verdict + ' (' + gateEscape(summary) + ', ' + Math.round(r.ms / 1000) + 's)');
     const bad = r.out.split('\n').filter((l) => /FAIL|✗|Error|npm error/.test(l)).slice(0, 8);
     for (const l of bad) console.log('        | ' + l.trim().slice(0, 160));
     // 失败断言也各出一条 annotation，便于在 Checks 页直接看到是哪一项
-    for (const l of bad.slice(0, 4)) console.log('::error::[GATE] ' + s + ' :: ' + gateEscape(l.trim()).slice(0, 180));
-    if (verdict === 'TIMEOUT') console.log('::error::[GATE] ' + s + ' 被单套件超时 ' + Math.round(perTimeout / 1000) + 's 杀死（可调 DSH_GATE_TIMEOUT_MS）');
+    for (const l of bad.slice(0, 4)) console.log('::error::[GATE] ' + r.file + ' :: ' + gateEscape(l.trim()).slice(0, 180));
+    if (verdict === 'TIMEOUT') console.log('::error::[GATE] ' + r.file + ' 被单套件超时 ' + Math.round(perTimeout / 1000) + 's 杀死（可调 DSH_GATE_TIMEOUT_MS）');
+    if (verdict === 'SUSPEND-SUSPECT') {
+      // 归因单独成行：这一类先复跑，别照着它去改代码（0.5.162 那轮就是这样白跑两版）。
+      console.log('::error::[GATE] ' + r.file + ' 疑似整机睡眠（墙钟 ' + Math.round(r.ms / 1000) + 's >> 超时 ' + Math.round(perTimeout / 1000) + 's）⇒ 先单独复跑本套件确认，再谈机制');
+    }
   }
+};
+if (limit === 1) {
+  for (const s of suites) report(await runOne(s));
+} else {
+  await runPool(suites, async (s) => { const r = await runOne(s); report(r); return r; }, limit);
 }
 const bad = results.filter((x) => x.verdict !== 'PASS');
 console.log('');
@@ -97,4 +153,7 @@ if (bad.length) {
   process.exit(1);
 }
 console.log('[GATE] total ' + Math.round(results.reduce((a, x) => a + x.ms, 0) / 1000) + 's across ' + results.length + ' suites');
+// 未命中账本是运行时产物：门跑完即清理（正常退出路径；红路径已用 process.exit，
+// 残留按 pid 隔离不互踩，下轮 mkdirSync 覆盖）。外层指定目录时不清——它还要读。
+if (replayOn && !missDirGiven) { try { fs.rmSync(MISS_DIR, { recursive: true, force: true }); } catch {} }
 
